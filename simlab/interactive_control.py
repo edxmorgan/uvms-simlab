@@ -99,11 +99,17 @@ class BasicControlsNode(Node):
         self.taskspace_pc_publisher_ = self.create_publisher(PointCloud2,'workspace_pointcloud',pointcloud_qos)
         self.rov_pc_publisher_ = self.create_publisher(PointCloud2, 'base_pointcloud', pointcloud_qos)
 
+        # Load workspace point cloud and hull
         workspace_pts_path = os.path.join(package_share_directory, 'manipulator/workspace.npy')
         self.workspace_pts = np.load(workspace_pts_path)
-        self.workspace_hull = ConvexHull(self.workspace_pts)
+        # self.workspace_hull = ConvexHull(self.workspace_pts)
 
-        self.workspace_pts_list = self.workspace_pts.tolist()
+        # constrain workspace to a band for better planning
+        mask = (self.workspace_pts[:, 1] > -0.05) & (self.workspace_pts[:, 1] < 0.05) & (self.workspace_pts[:, 0] > 0.25) & (self.workspace_pts[:, 2] < -0.15)
+        self.constrained_workspace_pts = self.workspace_pts[mask]
+        self.constrained_workspace_hull = ConvexHull(self.constrained_workspace_pts)
+
+        # ROV ellipsoid point cloud and hull
         self.rov_ellipsoid_cl_pts = generate_rov_ellipsoid(a=0.3, b=0.3, c=0.2, num_points=10000)
         self.vehicle_body_hull = ConvexHull(self.rov_ellipsoid_cl_pts)
 
@@ -403,7 +409,8 @@ class BasicControlsNode(Node):
         header.frame_id = self.vehicle_marker_frame
         header.stamp = self.get_clock().now().to_msg()
 
-        rov_cloud_msg = pc2.create_cloud_xyz32(header, self.workspace_pts_list)
+        # rov_cloud_msg = pc2.create_cloud_xyz32(header, self.workspace_pts)
+        rov_cloud_msg = pc2.create_cloud_xyz32(header, self.constrained_workspace_pts)
         self.taskspace_pc_publisher_.publish(rov_cloud_msg)
 
         cloud_msg = pc2.create_cloud_xyz32(header, self.rov_ellipsoid_cl_pts)
@@ -537,7 +544,7 @@ class BasicControlsNode(Node):
             task_point = np.array([feedback.pose.position.x,
                                 feedback.pose.position.y,
                                 feedback.pose.position.z])
-            if is_point_valid(self.workspace_hull, self.vehicle_body_hull, task_point):
+            if is_point_valid(self.constrained_workspace_hull, self.vehicle_body_hull, task_point):
                 self.last_valid_task_pose = feedback.pose
                 relative_pose = get_relative_pose(self.arm_base_pose, self.last_valid_task_pose)
 
@@ -545,7 +552,7 @@ class BasicControlsNode(Node):
                     np.array([relative_pose.position.x, relative_pose.position.y, relative_pose.position.z]))
                 
 
-                [self.q0_des, self.q1_des, self.q2_des] = q_ik_sol
+                [self.q0_des, self.q1_des, self.q2_des, _] = q_ik_sol
                 
                 self.get_logger().debug(
                     f"Task marker updated with IK: {self.q0_des, self.q1_des, self.q2_des, self.q3_des}"
