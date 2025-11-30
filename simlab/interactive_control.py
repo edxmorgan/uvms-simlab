@@ -105,8 +105,14 @@ class BasicControlsNode(Node):
         # self.workspace_hull = ConvexHull(self.workspace_pts)
 
         # constrain workspace to a band for better planning
-        mask = (self.workspace_pts[:, 1] > -0.05) & (self.workspace_pts[:, 1] < 0.05) & (self.workspace_pts[:, 0] > 0.25) & (self.workspace_pts[:, 2] < -0.15)
-        self.constrained_workspace_pts = self.workspace_pts[mask]
+        workspace_mask = np.logical_and.reduce([
+                self.workspace_pts[:, 0] > 0.25,
+                self.workspace_pts[:, 1] > -0.03,
+                self.workspace_pts[:, 1] < 0.03,
+                self.workspace_pts[:, 2] < -0.15,
+            ])
+
+        self.constrained_workspace_pts = self.workspace_pts[workspace_mask]
         self.constrained_workspace_hull = ConvexHull(self.constrained_workspace_pts)
 
         # ROV ellipsoid point cloud and hull
