@@ -102,7 +102,7 @@ class BasicControlsNode(Node):
         # Load workspace point cloud and hull
         workspace_pts_path = os.path.join(package_share_directory, 'manipulator/workspace.npy')
         self.workspace_pts = np.load(workspace_pts_path)
-        # self.workspace_hull = ConvexHull(self.workspace_pts)
+        self.workspace_hull = ConvexHull(self.workspace_pts)
 
         # constrain workspace to a band for better planning
         workspace_mask = np.logical_and.reduce([
@@ -550,6 +550,7 @@ class BasicControlsNode(Node):
             task_point = np.array([feedback.pose.position.x,
                                 feedback.pose.position.y,
                                 feedback.pose.position.z])
+            # if is_point_valid(self.workspace_hull, self.vehicle_body_hull, task_point):
             if is_point_valid(self.constrained_workspace_hull, self.vehicle_body_hull, task_point):
                 self.last_valid_task_pose = feedback.pose
                 relative_pose = get_relative_pose(self.arm_base_pose, self.last_valid_task_pose)

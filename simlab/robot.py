@@ -38,7 +38,7 @@ from controller_msg import FullRobotMsg
 from controllers import LowLevelController
 from planner_markers import PathPlanner
 from cartesian_ruckig import CartesianRuckig
-
+from alpha_reach import Params as alpha_params
 class PS4Controller(Controller):
     def __init__(self, ros_node, prefix, **kwargs):
         super().__init__(**kwargs)
@@ -608,7 +608,21 @@ class Robot(Base):
 
     @classmethod
     def uvms_body_inverse_kinematics(cls, target_position):
-        return cls.ik_eval_cls(target_position).full().flatten().tolist()
+        A_hull= np.array([[ 0.05230925, -0.99863093],
+       [-0.99994784, -0.0102135 ],
+       [ 0.9999956 , -0.00296812],
+       [ 0.99014868, -0.14001997],
+       [ 0.07555474,  0.99714166],
+       [ 0.94837875,  0.31713994],
+       [ 0.08636132,  0.99626388],
+       [-0.0913111 , -0.99582242],
+       [-0.98080565, -0.19498787],
+       [-0.07451808,  0.99721966],
+       [-0.0232651 ,  0.99972933]])
+        b_hull = np.array([-0.74414354,  2.54983534, -3.75960604, -3.5294386 , -2.43412911,
+       -4.22436006, -2.4698489 , -0.31876642,  2.67460935, -1.96197269,
+       -2.11955509])
+        return cls.ik_eval_cls(target_position, alpha_params.joint_min, alpha_params.joint_max, A_hull, b_hull).full().flatten().tolist()
     
     def _mocap_pose_cb(self, msg: PoseStamped):
         p = msg.pose.position
