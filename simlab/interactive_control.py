@@ -415,8 +415,7 @@ class BasicControlsNode(Node):
         header.frame_id = self.vehicle_marker_frame
         header.stamp = self.get_clock().now().to_msg()
 
-        # rov_cloud_msg = pc2.create_cloud_xyz32(header, self.workspace_pts)
-        rov_cloud_msg = pc2.create_cloud_xyz32(header, self.constrained_workspace_pts)
+        rov_cloud_msg = pc2.create_cloud_xyz32(header, self.workspace_pts)
         self.taskspace_pc_publisher_.publish(rov_cloud_msg)
 
         cloud_msg = pc2.create_cloud_xyz32(header, self.rov_ellipsoid_cl_pts)
@@ -550,8 +549,7 @@ class BasicControlsNode(Node):
             task_point = np.array([feedback.pose.position.x,
                                 feedback.pose.position.y,
                                 feedback.pose.position.z])
-            # if is_point_valid(self.workspace_hull, self.vehicle_body_hull, task_point):
-            if is_point_valid(self.constrained_workspace_hull, self.vehicle_body_hull, task_point):
+            if is_point_valid(self.workspace_hull, self.vehicle_body_hull, task_point):
                 self.last_valid_task_pose = feedback.pose
                 relative_pose = get_relative_pose(self.arm_base_pose, self.last_valid_task_pose)
 

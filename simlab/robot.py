@@ -608,11 +608,7 @@ class Robot(Base):
 
     @classmethod
     def uvms_body_inverse_kinematics(cls, target_position):
-        return cls.ik_eval_cls(target_position, 
-                               alpha_params.joint_min,
-                               alpha_params.joint_max, 
-                               alpha_params.A_hull, 
-                               alpha_params.b_hull).full().flatten().tolist()
+        return cls.ik_eval_cls(target_position).full().flatten().tolist()
     
     def _mocap_pose_cb(self, msg: PoseStamped):
         p = msg.pose.position
