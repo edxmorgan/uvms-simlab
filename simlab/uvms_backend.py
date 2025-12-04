@@ -322,9 +322,8 @@ class UVMSBackend:
 
         if self.robot_selected:
             k_planner = self.robot_selected.planner
-
             if k_planner.planned_result and k_planner.planned_result['is_success']:
-                k_planner.update(
+                k_planner.update_path_viz(
                     stamp=stamp_now,
                     frame_id=self.base_frame,
                     xyz_np=k_planner.planned_result["xyz"],
@@ -332,10 +331,10 @@ class UVMSBackend:
                     wp_size=0.08,
                     goal_size=0.14,
                 )
-            state = self.robot_selected.get_state()
+        for robot in self.robots:
+            state = robot.get_state()
             if state['status'] == 'active':
-                self.robot_selected.publish_robot_path()
-
+                robot.publish_robot_path()
 
     def fcl_update_timer(self):
         self.fcl_world.update_from_tf(self.tf_buffer, rclpy.time.Time())

@@ -37,7 +37,7 @@ class PathPlanner:
         self._last_arr = None
         self._last_wp_count = 0
 
-    def update(self,
+    def update_path_viz(self,
                stamp,
                frame_id,
                xyz_np,
