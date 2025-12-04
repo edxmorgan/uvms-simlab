@@ -115,8 +115,13 @@ class UVMSBackend:
         self.fcl_update_timer_handle = self.node.create_timer(1.0 / self.fcl_update_frequency, self.fcl_update_timer)
         self.control_timer = self.node.create_timer(1.0 / self.control_frequency, self.control_timer_callback)
 
-    def set_robot_selected(self, robot):
-        self.robot_selected = robot
+    def set_robot_selected(self, robot_k):
+        for r in self.robots:
+            if r.k_robot == robot_k:
+                self.robot_selected = r
+                self.node.get_logger().info(f"Robot {self.robot_selected.prefix} selected for planning.")
+                return
+        raise self.node.get_logger().error(f"No robot with k_robot={robot_k}")
 
     def control_timer_callback(self):
         for k, robot in enumerate(self.robots):

@@ -168,9 +168,8 @@ class BasicControlsNode(Node):
                 else:
                     # otherwise, a robot menu item was clicked
                     if feedback.menu_entry_id in self.menu_id_to_robot_index:
-                        selected_robot_index = self.menu_id_to_robot_index[feedback.menu_entry_id]
-                        self.backend.set_robot_selected(self.robots[selected_robot_index])
-                        self.get_logger().info(f"Robot {self.robots_prefix[selected_robot_index]} selected for planning.")
+                        selected_robot_k = self.menu_id_to_robot_index[feedback.menu_entry_id]
+                        self.backend.set_robot_selected(selected_robot_k)
 
             elif feedback.event_type == InteractiveMarkerFeedback.POSE_UPDATE:
                 pass
