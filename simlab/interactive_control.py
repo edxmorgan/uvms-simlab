@@ -23,11 +23,6 @@ from rclpy.node import Node
 from visualization_msgs.msg import InteractiveMarkerControl, InteractiveMarkerFeedback
 from interactive_markers.interactive_marker_server import InteractiveMarkerServer
 from interactive_markers.menu_handler import MenuHandler
-from rclpy.qos import QoSProfile, QoSHistoryPolicy, QoSDurabilityPolicy, QoSReliabilityPolicy
-import tf2_ros
-from std_msgs.msg import Header
-import sensor_msgs_py.point_cloud2 as pc2
-from sensor_msgs.msg import PointCloud2
 import interactive_utils as marker_util
 from uvms_backend import UVMSBackend
 
@@ -38,22 +33,9 @@ class BasicControlsNode(Node):
 
         # FCL for planning, env in world frame
         urdf_string = self.get_parameter('robot_description').get_parameter_value().string_value
-        self.tf_broadcaster = tf2_ros.TransformBroadcaster(self)
-        self.tf_buffer = tf2_ros.Buffer()
-        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
-        
-        self.backend = UVMSBackend(self, self.tf_buffer, urdf_string)
+        self.vehicle_marker_frame = "vehicle_marker_frame"
+        self.backend = UVMSBackend(self, urdf_string, self.vehicle_marker_frame)
  
-        pointcloud_qos = QoSProfile(
-            history=QoSHistoryPolicy.KEEP_LAST,
-            depth=1,
-            durability=QoSDurabilityPolicy.VOLATILE,
-            reliability=QoSReliabilityPolicy.RELIABLE,
-        )
-
-        self.taskspace_pc_publisher_ = self.create_publisher(PointCloud2,'workspace_pointcloud',pointcloud_qos)
-        self.rov_pc_publisher_ = self.create_publisher(PointCloud2, 'base_pointcloud', pointcloud_qos)        
-
         # Create marker server, menu handler
         self.server = InteractiveMarkerServer(self, "uvms_interactive_controls")
 
@@ -73,9 +55,6 @@ class BasicControlsNode(Node):
         run_pick_place = self.menu_handler.insert("Run pick & place")
         # phases: MOVE_TO_PICK_APPROACH ->LOWER_AND_GRASP -> RETRACT -> MOVE_TO_PLACE_APPROACH -> LOWER_AND_RELEASE -> RETRACT.
 
-        self.vehicle_marker_frame = "vehicle_marker_frame"
-        self.endeffector_marker_frame = "endeffector_marker_frame"
-
         # Create markers
         self.uv_marker = marker_util.make_UVMS_Dof_Marker(
             name='uv_marker',
@@ -93,7 +72,6 @@ class BasicControlsNode(Node):
 
         self.server.insert(self.uv_marker)
         self.server.setCallback(self.uv_marker.name, self.processFeedback)
-
 
         self.task_marker = marker_util.make_UVMS_Dof_Marker(
             name='task_marker',
@@ -118,26 +96,6 @@ class BasicControlsNode(Node):
         self.menu_handler.apply(self.server, self.uv_marker.name)
         self.server.applyChanges()
 
-        self.control_frequency = 500.0  # Hz
-        self.control_timer = self.create_timer(1.0 / self.control_frequency, self.marker_tf_timer_callback)
-        self.cloud_frequency = 100.0     # Hz
-        self.cloud_timer = self.create_timer(1.0 / self.cloud_frequency, self.cloud_timer_callback)
-
-    def marker_tf_timer_callback(self):
-        stamp_now = self.get_clock().now().to_msg()
-        t = marker_util.get_broadcast_tf(stamp_now, self.backend.current_target_vehicle_marker_pose, self.backend.base_frame, self.vehicle_marker_frame)
-        self.tf_broadcaster.sendTransform(t)
-
-    def cloud_timer_callback(self):
-        header = Header()
-        header.frame_id = self.vehicle_marker_frame
-        header.stamp = self.get_clock().now().to_msg()
-
-        rov_cloud_msg = pc2.create_cloud_xyz32(header, self.backend.workspace_pts)
-        self.taskspace_pc_publisher_.publish(rov_cloud_msg)
-
-        cloud_msg = pc2.create_cloud_xyz32(header, self.backend.rov_ellipsoid_cl_pts)
-        self.rov_pc_publisher_.publish(cloud_msg)
         
     def processFeedback(self, feedback):
         # For uv_marker

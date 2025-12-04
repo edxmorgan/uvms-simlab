@@ -3,8 +3,9 @@
 from rclpy.duration import Duration
 import rclpy
 from rclpy.node import Node
-from tf2_ros import TransformException, Buffer
-from interactive_utils import is_point_valid, get_relative_pose, generate_rov_ellipsoid, compute_bounding_sphere_radius, visualize_min_max_coords
+import tf2_ros
+from tf2_ros import TransformException
+import backend_utils
 import numpy as np
 from robot import Robot
 from rclpy.qos import QoSProfile, QoSHistoryPolicy, QoSDurabilityPolicy, QoSReliabilityPolicy
@@ -21,12 +22,18 @@ from planner_markers import PathPlanner
 from cartesian_ruckig import CartesianRuckig
 from frame_utils import PoseX
 from se3_ompl_planner import plan_se3_path
+from std_msgs.msg import Header
+import sensor_msgs_py.point_cloud2 as pc2
+from sensor_msgs.msg import PointCloud2
 
 class UVMSBackend:
-    def __init__(self, node: Node, tf_buffer: Buffer, urdf_string: str):
+    def __init__(self, node: Node, urdf_string: str, vehicle_target_frame: str):
         package_share_directory = ament_index_python.get_package_share_directory('simlab')
         self.node = node
-        self.tf_buffer = tf_buffer
+        self.vehicle_target_frame = vehicle_target_frame
+        self.tf_broadcaster = tf2_ros.TransformBroadcaster(self.node)
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self.node)
         # get some parameters
         self.robots_prefix = self.node.get_parameter('robots_prefix').value
         self.record = self.node.get_parameter('record_data').value
@@ -86,7 +93,7 @@ class UVMSBackend:
         self.workspace_hull = ConvexHull(self.workspace_pts)
 
         # ROV ellipsoid point cloud and hull
-        self.rov_ellipsoid_cl_pts = generate_rov_ellipsoid(a=0.3, b=0.3, c=0.2, num_points=10000)
+        self.rov_ellipsoid_cl_pts = backend_utils.generate_rov_ellipsoid(a=0.3, b=0.3, c=0.2, num_points=10000)
         self.vehicle_body_hull = ConvexHull(self.rov_ellipsoid_cl_pts)
 
         # stack clouds that represent the vehicle occupied volume
@@ -95,7 +102,7 @@ class UVMSBackend:
             np.asarray(self.workspace_pts, dtype=float)
         ])
 
-        planner_radius = compute_bounding_sphere_radius(all_pts, quantile=0.995, pad=0.03)
+        planner_radius = backend_utils.compute_bounding_sphere_radius(all_pts, quantile=0.995, pad=0.03)
         self.node.get_logger().info(f"Planner robot approximation sphere radius set to {planner_radius:.3f} m")
         self.fcl_world.set_planner_radius(planner_radius)
 
@@ -105,15 +112,46 @@ class UVMSBackend:
                 durability=QoSDurabilityPolicy.VOLATILE,
                 reliability=QoSReliabilityPolicy.RELIABLE,
             )
-        
+
         # publisher for FCL environment AABB
         self.env_aabb_pub = self.node.create_publisher(Marker, "fcl_environment_aabb", viz_qos)
+
+        pointcloud_qos = QoSProfile(
+            history=QoSHistoryPolicy.KEEP_LAST,
+            depth=1,
+            durability=QoSDurabilityPolicy.VOLATILE,
+            reliability=QoSReliabilityPolicy.RELIABLE,
+        )
+
+        self.taskspace_pc_publisher_ = self.node.create_publisher(PointCloud2,'workspace_pointcloud',pointcloud_qos)
+        self.rov_pc_publisher_ = self.node.create_publisher(PointCloud2, 'base_pointcloud', pointcloud_qos)        
 
         # Timer that will try to initialize bottom_z until it succeeds
         self.bottom_z_timer = self.node.create_timer(0.1, self.init_bottom_z_once)
         self.viz_timer = self.node.create_timer(1.0 / self.viz_frequency, self.viz_timer_callback)
         self.fcl_update_timer_handle = self.node.create_timer(1.0 / self.fcl_update_frequency, self.fcl_update_timer)
         self.control_timer = self.node.create_timer(1.0 / self.control_frequency, self.control_timer_callback)
+        self.control_frequency = 500.0  # Hz
+        self.vehicle_target_marker_tf_timer = self.node.create_timer(1.0 / self.control_frequency, self.vehicle_target_tf_timer_callback)
+        self.cloud_frequency = 100.0     # Hz
+        self.vehicle_target_cloud_timer = self.node.create_timer(1.0 / self.cloud_frequency, self.vehicle_target_cloud_timer_callback)
+
+    def vehicle_target_tf_timer_callback(self):
+        stamp_now = self.node.get_clock().now().to_msg()
+        t = backend_utils.get_broadcast_tf(stamp_now, self.current_target_vehicle_marker_pose, self.base_frame, self.vehicle_target_frame)
+        self.tf_broadcaster.sendTransform(t)
+
+    def vehicle_target_cloud_timer_callback(self):
+        header = Header()
+        header.frame_id = self.vehicle_target_frame
+        header.stamp = self.node.get_clock().now().to_msg()
+
+        rov_cloud_msg = pc2.create_cloud_xyz32(header, self.workspace_pts)
+        self.taskspace_pc_publisher_.publish(rov_cloud_msg)
+
+        cloud_msg = pc2.create_cloud_xyz32(header, self.rov_ellipsoid_cl_pts)
+        self.rov_pc_publisher_.publish(cloud_msg)
+
 
     def set_robot_selected(self, robot_k):
         for r in self.robots:
@@ -314,7 +352,7 @@ class UVMSBackend:
         stamp_now = self.node.get_clock().now().to_msg()
         min_coords = self.fcl_world.min_coords
         max_coords = self.fcl_world.max_coords
-        min_marker, max_marker = visualize_min_max_coords(min_coords, max_coords, self.bottom_z, self.world_frame)
+        min_marker, max_marker = backend_utils.visualize_min_max_coords(min_coords, max_coords, self.bottom_z, self.world_frame)
         min_marker.header.stamp = stamp_now
         max_marker.header.stamp = stamp_now
         self.env_aabb_pub.publish(min_marker)
@@ -348,8 +386,8 @@ class UVMSBackend:
                     task_pose.position.y,
                     task_pose.position.z])
         
-        if is_point_valid(self.workspace_hull, self.vehicle_body_hull, task_point):
-            relative_pose = get_relative_pose(self.arm_base_pose, task_pose)
+        if backend_utils.is_point_valid(self.workspace_hull, self.vehicle_body_hull, task_point):
+            relative_pose = backend_utils.get_relative_pose(self.arm_base_pose, task_pose)
 
             q_ik_sol = self.robot_selected.uvms_body_inverse_kinematics(
                 np.array([relative_pose.position.x, relative_pose.position.y, relative_pose.position.z]))
