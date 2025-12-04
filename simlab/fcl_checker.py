@@ -45,7 +45,7 @@ class FCLWorld:
         self._planner_geom = fcl.Sphere(self.vehicle_radius)
         self._planner_obj  = fcl.CollisionObject(self._planner_geom, fcl.Transform())
 
-    def _compute_bounds_from_fcl(self, z_min, pad_xy=0.5, pad_z=1e-4):
+    def _compute_env_bounds_from_fcl(self, z_min, pad_xy=0.5, pad_z=1e-4):
         """
         Compute planner bounds from FCL world's AABB, with a small padding.
         If fcl_world is None or does not have min_coords, fall back to a large box.

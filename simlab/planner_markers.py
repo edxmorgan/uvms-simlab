@@ -14,16 +14,15 @@ class PathPlanner:
     Minimal publisher for a SPHERE_LIST of waypoints and a single goal SPHERE.
     """
 
-    def __init__(self, node, ns="planner", base_id=9001):
+    def __init__(self, pub, ns="planner", base_id=9001):
         self.planned_result = None
-        self.node = node
         self.ns = ns
         self.base_id = int(base_id)
         self.colors = Colors()
         self._last_arr = None
         self._last_wp_count = 0
 
-        self.pub = node.planner_marker_publisher
+        self.pub = pub
 
     def clear(self, stamp, frame_id):
         m = Marker()

@@ -25,6 +25,7 @@ class Params:
     
     joint_min = np.array([1.00, 0.01, 0.01, 0.01])
     joint_max = np.array([5.50, 3.40, 3.40, 5.70])
+    joint_home = np.array([3.1, 0.7, 0.4, 2.1])
 
     joint_limits = list(zip(joint_min.tolist(), joint_max.tolist()))
     joint_limits_configurations = np.array(list(itertools.product(*joint_limits)))

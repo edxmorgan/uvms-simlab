@@ -82,10 +82,10 @@ def _valid_with_fcl(
     pw = np.array([x, y, z], float)
 
     if safety_margin is not None and safety_margin > 0.0:
-        d = rclpy_node.fcl_world.min_distance_xyz(pw)
+        d = rclpy_node.backend.fcl_world.min_distance_xyz(pw)
         return d >= safety_margin
     else:
-        in_collision = rclpy_node.fcl_world.planner_in_collision_at_xyz(pw)
+        in_collision = rclpy_node.backend.fcl_world.planner_in_collision_at_xyz(pw)
         return not in_collision
 
 def _get_path_length_objective(si: ob.SpaceInformation, threshold: float | None = None):
@@ -103,6 +103,7 @@ def plan_se3_path(
     goal_quat_wxyz,
     time_limit=0.75,
     safety_margin=0.0,
+    env_bounds=None,
     spacing_m=0.20,
     dense_interpolation=400,
     max_points=2000,
@@ -114,7 +115,7 @@ def plan_se3_path(
     space = ob.SE3StateSpace()
 
     # Bounds from FCL world AABB plus padding
-    x_min, x_max, y_min, y_max, z_min, z_max = rclpy_node.fcl_world._compute_bounds_from_fcl(rclpy_node.bottom_z)
+    x_min, x_max, y_min, y_max, z_min, z_max = env_bounds
 
     rclpy_node.get_logger().info(
         f"Planner bounds x[{x_min:.2f}, {x_max:.2f}], "
@@ -194,7 +195,7 @@ def plan_se3_path(
 
     if not ss.solve(time_limit):
         return {
-            "status":False,
+            "is_success":False,
             "message":"Planner did not find a solution"
         }
 
@@ -237,7 +238,7 @@ def plan_se3_path(
         "xyz": xyz_rs,
         "quat_wxyz": quat_rs,
         "count": int(xyz_rs.shape[0]),
-        "status": True,
+        "is_success": True,
         "path_length_cost": cost_val,
         "geom_length": geom_length,
         "message": (

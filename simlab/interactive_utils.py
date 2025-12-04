@@ -212,17 +212,17 @@ def get_relative_pose(marker_pose, endeffector_pose):
     T_rel = np.dot(np.linalg.inv(T_marker), T_ee)
     return homogeneous_to_pose(T_rel)
 
-def visualize_min_max_coords(node):
+def visualize_min_max_coords(min_coords, max_coords, bottom_z, world_frame):
     # Fallback if TF never came in
-    bottom_z = node.bottom_z if node.bottom_z is not None else 0.0
+    bottom_z = bottom_z if bottom_z is not None else 0.0
 
     pose_min = Pose()
-    pose_min.position.x, pose_min.position.y, _ = node.fcl_world.min_coords
+    pose_min.position.x, pose_min.position.y, _ = min_coords
     pose_min.position.z = bottom_z
     pose_min.orientation.w = 1.0
 
     pose_max = Pose()
-    pose_max.position.x, pose_max.position.y, _ = node.fcl_world.max_coords
+    pose_max.position.x, pose_max.position.y, _ = max_coords
     pose_max.position.z = 0.0
     pose_max.orientation.w = 1.0
 
@@ -239,8 +239,8 @@ def visualize_min_max_coords(node):
         initial_pose=pose_max,
     )
 
-    min_marker.header.frame_id = node.world_frame
-    max_marker.header.frame_id = node.world_frame
+    min_marker.header.frame_id = world_frame
+    max_marker.header.frame_id = world_frame
 
     min_marker.ns = "fcl_extents"
     max_marker.ns = "fcl_extents"
