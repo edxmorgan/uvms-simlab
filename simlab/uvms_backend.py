@@ -35,7 +35,6 @@ class UVMSBackend:
         self.world_frame = "world"
         self.world_bottom_frame = "world_bottom"
         self.bottom_z = None
-        self.robot_selected: Robot = None
         self.viz_frequency = 10.0       # Hz
         self.fcl_update_frequency = 50.0  # Hz
         self.control_frequency = 500.0  # Hz
@@ -44,7 +43,6 @@ class UVMSBackend:
         # Ruckig Cartesian trajectory generators, one per robot
         self.cartesian_dt = 1.0 / self.control_frequency
         self.max_cartesian_waypoints = 500
-
         # Simple conservative limits, tune these
         self.max_vel = np.array([0.25, 0.25, 0.20], dtype=float)
         self.max_acc = np.array([0.15, 0.15, 0.12], dtype=float)
@@ -79,6 +77,7 @@ class UVMSBackend:
             robot_k.planner = PathPlanner(self.planner_marker_publisher, ns=f"planner/{prefix}", base_id=k)
             self.robots.append(robot_k)
 
+        self.robot_selected = self.robots[0]
         self.setup_initial_robot_configuration()
 
         # Load workspace point cloud and hull

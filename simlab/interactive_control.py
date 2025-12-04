@@ -20,32 +20,15 @@ np.float = float  # Patch NumPy to satisfy tf_transformations' use of np.float
 import copy
 import rclpy
 from rclpy.node import Node
-from rclpy.duration import Duration
-import casadi as ca
-
-from visualization_msgs.msg import Marker, InteractiveMarkerControl, InteractiveMarkerFeedback
+from visualization_msgs.msg import InteractiveMarkerControl, InteractiveMarkerFeedback
 from interactive_markers.interactive_marker_server import InteractiveMarkerServer
 from interactive_markers.menu_handler import MenuHandler
 from rclpy.qos import QoSProfile, QoSHistoryPolicy, QoSDurabilityPolicy, QoSReliabilityPolicy
-from robot import Robot
 import tf2_ros
-
 from std_msgs.msg import Header
 import sensor_msgs_py.point_cloud2 as pc2
-
 from sensor_msgs.msg import PointCloud2
-
-
-from alpha_reach import Params as alpha
-from se3_ompl_planner import plan_se3_path
-
-from ruckig import Result
-
-from interactive_utils import *
-
-from frame_utils import PoseX
-
-
+import interactive_utils as marker_util
 from uvms_backend import UVMSBackend
 
 class BasicControlsNode(Node):
@@ -55,16 +38,12 @@ class BasicControlsNode(Node):
 
         # FCL for planning, env in world frame
         urdf_string = self.get_parameter('robot_description').get_parameter_value().string_value
-
-
         self.tf_broadcaster = tf2_ros.TransformBroadcaster(self)
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
-
-
+        
         self.backend = UVMSBackend(self, self.tf_buffer, urdf_string)
-        self.backend.robot_selected = self.backend.robots[0]
-
+ 
         pointcloud_qos = QoSProfile(
             history=QoSHistoryPolicy.KEEP_LAST,
             depth=1,
@@ -98,7 +77,7 @@ class BasicControlsNode(Node):
         self.endeffector_marker_frame = "endeffector_marker_frame"
 
         # Create markers
-        self.uv_marker = make_UVMS_Dof_Marker(
+        self.uv_marker = marker_util.make_UVMS_Dof_Marker(
             name='uv_marker',
             description='interactive marker for controlling vehicle',
             frame_id=self.backend.base_frame,
@@ -116,7 +95,7 @@ class BasicControlsNode(Node):
         self.server.setCallback(self.uv_marker.name, self.processFeedback)
 
 
-        self.task_marker = make_UVMS_Dof_Marker(
+        self.task_marker = marker_util.make_UVMS_Dof_Marker(
             name='task_marker',
             description='interactive marker for controlling endeffector',
             frame_id=self.vehicle_marker_frame,
@@ -134,7 +113,7 @@ class BasicControlsNode(Node):
         self.server.setCallback(self.task_marker.name, self.processFeedback)
 
         # Add menu control
-        menu_control = make_menu_control()
+        menu_control = marker_util.make_menu_control()
         self.uv_marker.controls.append(copy.deepcopy(menu_control))
         self.menu_handler.apply(self.server, self.uv_marker.name)
         self.server.applyChanges()
@@ -146,7 +125,7 @@ class BasicControlsNode(Node):
 
     def marker_tf_timer_callback(self):
         stamp_now = self.get_clock().now().to_msg()
-        t = get_broadcast_tf(stamp_now, self.backend.current_target_vehicle_marker_pose, self.backend.base_frame, self.vehicle_marker_frame)
+        t = marker_util.get_broadcast_tf(stamp_now, self.backend.current_target_vehicle_marker_pose, self.backend.base_frame, self.vehicle_marker_frame)
         self.tf_broadcaster.sendTransform(t)
 
     def cloud_timer_callback(self):
