@@ -19,12 +19,13 @@ from fcl_checker import FCLWorld
 from visualization_msgs.msg import Marker
 from typing import List
 from planner_markers import PathPlanner
-from cartesian_ruckig import CartesianRuckig
+from cartesian_ruckig import VehicleCartesianRuckig, EndeffectorCartesianRuckig
 from frame_utils import PoseX
 from se3_ompl_planner import plan_se3_path
 from std_msgs.msg import Header
 import sensor_msgs_py.point_cloud2 as pc2
 from sensor_msgs.msg import PointCloud2
+import time
 
 class UVMSBackend:
     def __init__(self, node: Node, urdf_string: str, vehicle_target_frame: str):
@@ -45,15 +46,21 @@ class UVMSBackend:
         self.viz_frequency = 10.0       # Hz
         self.fcl_update_frequency = 50.0  # Hz
         self.control_frequency = 500.0  # Hz
+        self.cloud_frequency = 100.0     # Hz
         # Define a threshold error at which we start yaw blending.
         self.pos_blend_threshold = 1.1
         # Ruckig Cartesian trajectory generators, one per robot
         self.cartesian_dt = 1.0 / self.control_frequency
+        self.forward_kinematics_freq = 500.0     # Hz
         self.max_cartesian_waypoints = 500
         # Simple conservative limits, tune these
-        self.max_vel = np.array([0.25, 0.25, 0.20], dtype=float)
+        self.max_vel = np.array([0.15, 0.15, 0.10], dtype=float)
         self.max_acc = np.array([0.15, 0.15, 0.12], dtype=float)
         self.max_jerk = np.array([0.5, 0.5, 0.4], dtype=float)
+
+        self.max_end_vel = np.array([0.2, 0.2, 0.2], dtype=float)
+        self.max_end_acc = np.array([0.2, 0.2, 0.2], dtype=float)
+        self.max_end_jerk = np.array([0.2, 0.2, 0.2], dtype=float)
 
         self.fcl_world = FCLWorld(urdf_string=urdf_string, world_frame=self.world_frame, vehicle_radius=0.4)
 
@@ -73,13 +80,18 @@ class UVMSBackend:
         self.robots:List[Robot] = []
         for k, (prefix, controller) in enumerate(zip(self.robots_prefix, self.controllers)):
             robot_k = Robot(self.node, k, 4, prefix, self.record, controller)
-            robot_k.cart_traj = CartesianRuckig(
+            robot_k.vehicle_cart_traj = VehicleCartesianRuckig(
                 self.node,
                 dofs=3,
                 control_dt=self.cartesian_dt,
                 max_waypoints=self.max_cartesian_waypoints,
             )
-
+            robot_k.endeffector_cart_traj = EndeffectorCartesianRuckig(
+                self.node,
+                dofs=3,
+                control_dt=self.cartesian_dt,
+                max_waypoints=self.max_cartesian_waypoints,
+            )
             # unique planner per robot
             robot_k.planner = PathPlanner(self.planner_marker_publisher, ns=f"planner/{prefix}", base_id=k)
             self.robots.append(robot_k)
@@ -124,21 +136,49 @@ class UVMSBackend:
         )
 
         self.taskspace_pc_publisher_ = self.node.create_publisher(PointCloud2,'workspace_pointcloud',pointcloud_qos)
-        self.rov_pc_publisher_ = self.node.create_publisher(PointCloud2, 'base_pointcloud', pointcloud_qos)        
+        self.rov_pc_publisher_ = self.node.create_publisher(PointCloud2, 'base_pointcloud', pointcloud_qos)
 
         # Timer that will try to initialize bottom_z until it succeeds
         self.bottom_z_timer = self.node.create_timer(0.1, self.init_bottom_z_once)
         self.viz_timer = self.node.create_timer(1.0 / self.viz_frequency, self.viz_timer_callback)
         self.fcl_update_timer_handle = self.node.create_timer(1.0 / self.fcl_update_frequency, self.fcl_update_timer)
         self.control_timer = self.node.create_timer(1.0 / self.control_frequency, self.control_timer_callback)
-        self.control_frequency = 500.0  # Hz
         self.vehicle_target_marker_tf_timer = self.node.create_timer(1.0 / self.control_frequency, self.vehicle_target_tf_timer_callback)
-        self.cloud_frequency = 100.0     # Hz
         self.vehicle_target_cloud_timer = self.node.create_timer(1.0 / self.cloud_frequency, self.vehicle_target_cloud_timer_callback)
+        self.fk_timer = self.node.create_timer(1.0 / self.forward_kinematics_freq, self.forward_kinematics_timer_callback)
+
+    def forward_kinematics_timer_callback(self):
+        state = self.robot_selected.get_state()
+        # Forward kinematics to get nominal end effector pose
+        joints_and_endeffector_poses = Robot.uvms_Forward_kinematics(
+            state['q'],
+            alpha.base_T0_new,
+            [0,0,0, 0,0,0],
+            alpha.tipOffset
+        )
+
+        self.current_task_pose = np.array(joints_and_endeffector_poses[-1].full(), dtype=float).ravel()
+        self.current_task_pose = PoseX.from_pose(
+            xyz=self.current_task_pose[0:3],
+            rot=self.current_task_pose[3:6],
+            rot_rep="euler_xyz",
+            frame="NWU").get_pose_as_Pose_msg()
+        # self.node.get_logger().info(f"Robot foward kinematics. {self.current_task_pose}")
+
+        task_pos_nwu, task_vel_nwu, task_acc_nwu, res = self.robot_selected.endeffector_cart_traj.update()
+        if task_pos_nwu is not None:
+            target_task = PoseX.from_pose(
+                xyz=task_pos_nwu[0:3],
+                rot=[0,0,0],
+                rot_rep="euler_xyz",
+                frame="NWU").get_pose_as_Pose_msg()
+
+            msg = self.solve_execute_inverse_kinematics_wrt_vehicle_frame(target_task)
+            # self.node.get_logger().info(f"task_pos_nwu msg. {msg}")
 
     def vehicle_target_tf_timer_callback(self):
         stamp_now = self.node.get_clock().now().to_msg()
-        t = backend_utils.get_broadcast_tf(stamp_now, self.current_target_vehicle_marker_pose, self.base_frame, self.vehicle_target_frame)
+        t = backend_utils.get_broadcast_tf(stamp_now, self.target_vehicle_pose, self.base_frame, self.vehicle_target_frame)
         self.tf_broadcaster.sendTransform(t)
 
     def vehicle_target_cloud_timer_callback(self):
@@ -186,7 +226,7 @@ class UVMSBackend:
                     # Get the velocity-based yaw.
                     adjusted_yaw = robot.orient_towards_velocity()
 
-                    pos_nwu, vel_nwu, acc_nwu, res = robot.cart_traj.update(robot.yaw_blend_factor)
+                    pos_nwu, vel_nwu, acc_nwu, res = robot.vehicle_cart_traj.update(robot.yaw_blend_factor)
 
                     if pos_nwu is not None:
                         target_nwu = np.asarray(pos_nwu, dtype=float)
@@ -276,16 +316,16 @@ class UVMSBackend:
         )
         start_xyz, start_quat_wxyz = pose_now.get_pose(frame="NWU", rot_rep="quat_wxyz")
 
-        gx = self.current_target_vehicle_marker_pose.position.x
-        gy = self.current_target_vehicle_marker_pose.position.y
-        gz = self.current_target_vehicle_marker_pose.position.z
+        gx = self.target_vehicle_pose.position.x
+        gy = self.target_vehicle_pose.position.y
+        gz = self.target_vehicle_pose.position.z
         goal_xyz = np.array([gx, gy, gz], float)
 
         goal_quat_wxyz = np.array([
-            self.current_target_vehicle_marker_pose.orientation.w,
-            self.current_target_vehicle_marker_pose.orientation.x,
-            self.current_target_vehicle_marker_pose.orientation.y,
-            self.current_target_vehicle_marker_pose.orientation.z,
+            self.target_vehicle_pose.orientation.w,
+            self.target_vehicle_pose.orientation.x,
+            self.target_vehicle_pose.orientation.y,
+            self.target_vehicle_pose.orientation.z,
         ], float)
 
 
@@ -327,7 +367,7 @@ class UVMSBackend:
                 )
 
                 # Start a smooth Cartesian trajectory in NWU
-                robot.cart_traj.start_from_path(
+                robot.vehicle_cart_traj.start_from_path(
                     current_position=start_xyz,
                     path_xyz=path_xyz,
                     max_vel=self.max_vel,
@@ -380,21 +420,23 @@ class UVMSBackend:
     def solve_whole_body_inverse_kinematics_wrt_world_frame(self, task_pose):
         pass
 
-    def solve_inverse_kinematics_wrt_vehicle_frame(self, task_pose):
-        msg = {'is_success':False,'result':None}
+    def is_valid_task(self, task_pose):
         task_point = np.array([task_pose.position.x,
                     task_pose.position.y,
                     task_pose.position.z])
-        
-        if backend_utils.is_point_valid(self.workspace_hull, self.vehicle_body_hull, task_point):
+        valid_task = backend_utils.is_point_valid(self.workspace_hull, self.vehicle_body_hull, task_point)
+        return valid_task
+    
+    def solve_execute_inverse_kinematics_wrt_vehicle_frame(self, task_pose):
+        msg = {'is_success':False,'result':None}
+        if self.is_valid_task(task_pose):
             relative_pose = backend_utils.get_relative_pose(self.arm_base_pose, task_pose)
 
             q_ik_sol = self.robot_selected.uvms_body_inverse_kinematics(
                 np.array([relative_pose.position.x, relative_pose.position.y, relative_pose.position.z]))
-            
+            [self.q0_des, self.q1_des, self.q2_des, _] = q_ik_sol
             msg['is_success'] = True
             msg['result'] = q_ik_sol
-
         return msg
     
 
@@ -427,72 +469,53 @@ class UVMSBackend:
         Initialize arm base pose, initial vehicle marker pose,
         desired joint configuration, and the last valid task space pose.
         """
-        # Arm base pose in world frame from alpha.base_T0_new
-        self.arm_base_pose = Pose()
-        self.arm_base_pose.position.x = float(alpha.base_T0_new[0])
-        self.arm_base_pose.position.y = float(alpha.base_T0_new[1])
-        self.arm_base_pose.position.z = float(alpha.base_T0_new[2])
-
-        base_rpy = alpha.base_T0_new[3:6]
-        base_rot = R.from_euler("xyz", base_rpy)
-        qx, qy, qz, qw = base_rot.as_quat()
-        self.arm_base_pose.orientation.x = float(qx)
-        self.arm_base_pose.orientation.y = float(qy)
-        self.arm_base_pose.orientation.z = float(qz)
-        self.arm_base_pose.orientation.w = float(qw)
-
-        # Vehicle marker starts at origin with identity orientation
-        self.current_target_vehicle_marker_pose = Pose()
-        self.current_target_vehicle_marker_pose.position.x = 0.0
-        self.current_target_vehicle_marker_pose.position.y = 0.0
-        self.current_target_vehicle_marker_pose.position.z = 0.0
-        self.current_target_vehicle_marker_pose.orientation.x = 0.0
-        self.current_target_vehicle_marker_pose.orientation.y = 0.0
-        self.current_target_vehicle_marker_pose.orientation.z = 0.0
-        self.current_target_vehicle_marker_pose.orientation.w = 1.0
-
-        # Extract roll, pitch, yaw from the current target vehicle orientation
-        desired_q_orientation = [
-            self.current_target_vehicle_marker_pose.orientation.x,
-            self.current_target_vehicle_marker_pose.orientation.y,
-            self.current_target_vehicle_marker_pose.orientation.z,
-            self.current_target_vehicle_marker_pose.orientation.w,
-        ]
-        roll, pitch, yaw = R.from_quat(desired_q_orientation).as_euler("xyz", degrees=False)
-
         # Initial desired joint configuration taken from robot 0
-        self.q0_des, self.q1_des, self.q2_des, self.q3_des = self.robots[0].arm.q_command
+        self.q0_des, self.q1_des, self.q2_des, self.q3_des = alpha.joint_home
+        self.arm_base_pose = PoseX.from_pose(
+            xyz=alpha.base_T0_new[0:3],
+            rot=alpha.base_T0_new[3:6],
+            rot_rep="euler_xyz",
+            frame="NWU").get_pose_as_Pose_msg()
+
+        state = self.robot_selected.get_state()
+        current_vehicle_world_pose = PoseX.from_pose(
+            xyz=state['pose'][0:3],
+            rot=state['pose'][3:6],
+            rot_rep="euler_xyz",
+            frame="NED")
+        
+        self.current_vehicle_pose = current_vehicle_world_pose.get_pose_as_Pose_msg(frame="NWU")
+
+        self.target_vehicle_pose = self.current_vehicle_pose
+        
+        p_initial_world, rot_initial_world = current_vehicle_world_pose.get_pose(
+            frame="NWU",
+            rot_rep="euler_xyz",
+        )
 
         # Initial vehicle pose in world frame [x, y, z, roll, pitch, yaw]
-        initial_world_pose = np.array(
-            [
-                self.current_target_vehicle_marker_pose.position.x,
-                self.current_target_vehicle_marker_pose.position.y,
-                self.current_target_vehicle_marker_pose.position.z,
-                roll,
-                pitch,
-                yaw,
-            ],
-            dtype=float,
-        )
+        initial_world_pose = p_initial_world.tolist() + rot_initial_world.tolist()
 
         # Forward kinematics to get nominal end effector pose
         joints_and_endeffector_poses = Robot.uvms_Forward_kinematics(
             alpha.joint_home,
             alpha.base_T0_new,
             initial_world_pose,
+            alpha.tipOffset
         )
 
         ee = np.array(joints_and_endeffector_poses[-1].full(), dtype=float).ravel()
 
         # Store last valid task pose as a geometry_msgs/Pose
-        self.current_target_task_pose = Pose()
-        self.current_target_task_pose.position.x = float(ee[0])
-        self.current_target_task_pose.position.y = float(ee[1])
-        self.current_target_task_pose.position.z = float(ee[2])
+        self.current_task_pose = Pose()
+        self.current_task_pose.position.x = float(ee[0])
+        self.current_task_pose.position.y = float(ee[1])
+        self.current_task_pose.position.z = float(ee[2])
 
         # ee[3:7] assumes [w, x, y, z]
-        self.current_target_task_pose.orientation.w = float(ee[3])
-        self.current_target_task_pose.orientation.x = float(ee[4])
-        self.current_target_task_pose.orientation.y = float(ee[5])
-        self.current_target_task_pose.orientation.z = float(ee[6])
+        self.current_task_pose.orientation.w = float(ee[3])
+        self.current_task_pose.orientation.x = float(ee[4])
+        self.current_task_pose.orientation.y = float(ee[5])
+        self.current_task_pose.orientation.z = float(ee[6])
+
+        self.target_task_pose = self.current_task_pose

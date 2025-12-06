@@ -63,7 +63,7 @@ class BasicControlsNode(Node):
             control_frame='uv',
             fixed=False,
             interaction_mode=InteractiveMarkerControl.MOVE_ROTATE_3D,
-            initial_pose=self.backend.current_target_vehicle_marker_pose,
+            initial_pose=self.backend.current_vehicle_pose,
             scale=1.0,
             arm_base_pose=self.backend.arm_base_pose,
             show_6dof=True,
@@ -80,7 +80,7 @@ class BasicControlsNode(Node):
             control_frame='task',
             fixed=False,
             interaction_mode=InteractiveMarkerControl.MOVE_ROTATE_3D,
-            initial_pose=self.backend.current_target_task_pose,
+            initial_pose=self.backend.current_task_pose,
             scale=0.2,
             arm_base_pose=None,
             show_6dof=True,
@@ -100,7 +100,7 @@ class BasicControlsNode(Node):
     def processFeedback(self, feedback):
         # For uv_marker
         if feedback.marker_name == "uv_marker":
-            if feedback.pose:
+            if feedback.event_type == InteractiveMarkerFeedback.POSE_UPDATE:
                 env_xyz_bounds = self.backend.fcl_world._compute_env_bounds_from_fcl(z_min=self.backend.bottom_z, pad_xy=0.0, pad_z=0.0)
                 x_min, x_max, y_min, y_max, z_min, z_max = env_xyz_bounds
                 pos = feedback.pose.position
@@ -116,10 +116,11 @@ class BasicControlsNode(Node):
                     self.server.setPose(feedback.marker_name, feedback.pose)
                     self.server.applyChanges()
 
-                self.backend.current_target_vehicle_marker_pose = feedback.pose
+                self.backend.target_vehicle_pose = feedback.pose
+
             if feedback.event_type == InteractiveMarkerFeedback.MENU_SELECT:
                 if feedback.menu_entry_id == self.execute_handle:
-                    if self.backend.robot_selected is None or self.backend.current_target_vehicle_marker_pose is None:
+                    if self.backend.robot_selected is None or self.backend.target_vehicle_pose is None:
                         self.get_logger().warn("Execute clicked but robot selection or planned pose is missing.")
                         return
                     planner_result = self.backend.plan_vehicle_trajectory()
@@ -129,37 +130,55 @@ class BasicControlsNode(Node):
                         selected_robot_k = self.menu_id_to_robot_index[feedback.menu_entry_id]
                         self.backend.set_robot_selected(selected_robot_k)
 
-            elif feedback.event_type == InteractiveMarkerFeedback.POSE_UPDATE:
-                pass
+        elif feedback.marker_name == "task_marker":
+            if feedback.event_type == InteractiveMarkerFeedback.POSE_UPDATE:
+                if self.backend.is_valid_task(feedback.pose):
+                    self.backend.target_task_pose = feedback.pose
+                    # self.backend.solve_execute_inverse_kinematics_wrt_vehicle_frame(feedback.pose)
+                    path_xyz = np.array(
+                        [
+                            [
+                                self.backend.current_task_pose.position.x,
+                                self.backend.current_task_pose.position.y,
+                                self.backend.current_task_pose.position.z,
+                            ],
+                            [
+                                self.backend.target_task_pose.position.x,
+                                self.backend.target_task_pose.position.y,
+                                self.backend.target_task_pose.position.z,
+                            ],
+                        ],
+                        dtype=float,
+                    )
+                    start_xyz = path_xyz[0,:]
+                    self.backend.robot_selected.endeffector_cart_traj.start_from_path(
+                        current_position=start_xyz,
+                        path_xyz=path_xyz,
+                        max_vel=self.backend.max_end_vel,
+                        max_acc=self.backend.max_end_acc,
+                        max_jerk=self.backend.max_end_jerk,
+                    )
+                    # self.get_logger().info(f"Endeffector trajectory computed")
+                else:
+                    # The task marker is at the boundary; compute the displacement since the last valid pose.
+                    dx = feedback.pose.position.x - self.backend.target_task_pose.position.x
+                    dy = feedback.pose.position.y - self.backend.target_task_pose.position.y
+                    dz = feedback.pose.position.z - self.backend.target_task_pose.position.z
 
-        elif feedback.marker_name == "task_marker" and feedback.event_type == InteractiveMarkerFeedback.POSE_UPDATE:            
-            ik_msg = self.backend.solve_inverse_kinematics_wrt_vehicle_frame(feedback.pose)
-            if ik_msg['is_success']:
-                self.backend.current_target_task_pose = feedback.pose
-                [self.backend.q0_des, self.backend.q1_des, self.backend.q2_des, _] = ik_msg['result']
-                
-                self.get_logger().debug(
-                    f"Task marker updated with IK: {self.backend.q0_des, self.backend.q1_des, self.backend.q2_des, self.backend.q3_des}"
-                )
+                    # Shift the uv_marker by this delta so that the task marker remains at the boundary.
+                    self.backend.target_vehicle_pose.position.x += dx
+                    self.backend.target_vehicle_pose.position.y += dy
+                    self.backend.target_vehicle_pose.position.z += dz
+
+                    # Update the uv_marker pose on the server.
+                    self.server.setPose("uv_marker", self.backend.target_vehicle_pose)
+                    self.server.applyChanges()
+
+                    # Reset the task marker back to the last valid pose (i.e. at the boundary).
+                    self.server.setPose("task_marker", self.backend.target_task_pose)
+                    self.server.applyChanges()
             else:
-                # The task marker is at the boundary; compute the displacement since the last valid pose.
-                dx = feedback.pose.position.x - self.backend.current_target_task_pose.position.x
-                dy = feedback.pose.position.y - self.backend.current_target_task_pose.position.y
-                dz = feedback.pose.position.z - self.backend.current_target_task_pose.position.z
-
-                # Shift the uv_marker by this delta so that the task marker remains at the boundary.
-                self.backend.current_target_vehicle_marker_pose.position.x += dx
-                self.backend.current_target_vehicle_marker_pose.position.y += dy
-                self.backend.current_target_vehicle_marker_pose.position.z += dz
-
-                # Update the uv_marker pose on the server.
-                self.server.setPose("uv_marker", self.backend.current_target_vehicle_marker_pose)
-                self.server.applyChanges()
-
-                # Reset the task marker back to the last valid pose (i.e. at the boundary).
-                self.server.setPose("task_marker", self.backend.current_target_task_pose)
-                self.server.applyChanges()
-
+                pass
 
 def main(args=None):
     rclpy.init(args=args)

@@ -4,6 +4,7 @@ import numpy as np
 from dataclasses import dataclass
 from typing import Literal, Tuple, Union
 from scipy.spatial.transform import Rotation as R
+from geometry_msgs.msg import Pose
 
 Frame = Literal["NED", "NWU"]
 RotRep = Literal["euler_xyz", "quat_wxyz", "quat_xyzw", "matrix"]
@@ -126,6 +127,27 @@ class PoseX:
         R_out = transform_rotation(self._R_world, src=self._frame, dst=frame)
         return p_out, from_rotation(R_out, rot_rep)
 
+    def get_pose_as_Pose_msg(
+        self,
+        frame: Frame = None,
+    ) -> Pose:
+        if frame is None:
+            frame = self._frame
+        # Convert internal to requested frame
+        p_out = transform_point(self._p_world, src=self._frame, dst=frame)
+        R_out = transform_rotation(self._R_world, src=self._frame, dst=frame)
+
+        self.pose_msg = Pose()
+        self.pose_msg.position.x = float(p_out[0])
+        self.pose_msg.position.y = float(p_out[1])
+        self.pose_msg.position.z = float(p_out[2])
+        q_wxyz = from_rotation(R_out, "quat_wxyz")
+        self.pose_msg.orientation.x = float(q_wxyz[1])
+        self.pose_msg.orientation.y = float(q_wxyz[2])
+        self.pose_msg.orientation.z = float(q_wxyz[3])
+        self.pose_msg.orientation.w = float(q_wxyz[0])
+        return self.pose_msg
+    
     def get_xyz(self, frame: Frame) -> np.ndarray:
         return transform_point(self._p_world, src=self._frame, dst=frame)
 

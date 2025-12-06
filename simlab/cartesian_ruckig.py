@@ -23,7 +23,7 @@ from ruckig import Ruckig, InputParameter, OutputParameter, Result
 import numpy as np
 from rclpy.node import Node
 
-class CartesianRuckig:
+class VehicleCartesianRuckig:
     def __init__(self, rclpy_node: Node, dofs: int, control_dt: float, max_waypoints: int):
         if dofs != 3:
             raise ValueError("CartesianRuckig is intended for 3 DoF position (x, y, z)")
@@ -100,3 +100,81 @@ class CartesianRuckig:
 
         return pos, vel, acc, res
 
+
+
+
+class EndeffectorCartesianRuckig:
+    def __init__(self, rclpy_node: Node, dofs: int, control_dt: float, max_waypoints: int):
+        if dofs != 3:
+            raise ValueError("CartesianRuckig is intended for 3 DoF position (x, y, z)")
+        self.rclpy_node = rclpy_node
+        self.otg = Ruckig(dofs, control_dt, max_waypoints)
+        self.inp = InputParameter(dofs)
+        self.out = OutputParameter(dofs, max_waypoints)
+        self.active = False
+
+
+    def start_from_path(
+        self,
+        current_position,
+        path_xyz,
+        max_vel,
+        max_acc,
+        max_jerk,
+    ):
+        path_xyz = np.asarray(path_xyz, dtype=float)
+        if path_xyz.ndim != 2 or path_xyz.shape[1] != 3:
+            raise ValueError("path_xyz must be an array of shape (N, 3)")
+
+        current_position = np.asarray(current_position, dtype=float)
+        if current_position.shape != (3,):
+            raise ValueError("current_position must be length 3")
+
+        max_vel = np.asarray(max_vel, dtype=float)
+        max_acc = np.asarray(max_acc, dtype=float)
+        max_jerk = np.asarray(max_jerk, dtype=float)
+
+        self.inp.current_position = current_position.tolist()
+        self.inp.current_velocity = [0.0, 0.0, 0.0]
+        self.inp.current_acceleration = [0.0, 0.0, 0.0]
+
+        # All inner waypoints as intermediate positions
+        if path_xyz.shape[0] > 2:
+            intermediate = [row.tolist() for row in path_xyz[1:-1]]
+        else:
+            intermediate = []
+
+        self.inp.intermediate_positions = intermediate
+        self.inp.target_position = path_xyz[-1].tolist()
+        self.inp.target_velocity = [0.0, 0.0, 0.0]
+        self.inp.target_acceleration = [0.0, 0.0, 0.0]
+
+        self.inp.max_velocity = max_vel.tolist()
+        self.inp.max_acceleration = max_acc.tolist()
+        self.inp.max_jerk = max_jerk.tolist()
+
+        self.active = True
+
+    def update(self):
+        """Advance one control step along the current trajectory."""
+        if not self.active:
+            return None, None, None, Result.Error
+
+        res = self.otg.update(self.inp, self.out)
+        pos = list(self.out.new_position)
+        vel = list(self.out.new_velocity)
+        acc = list(self.out.new_acceleration)
+
+        self.out.pass_to_input(self.inp)
+
+        if self.out.new_calculation:
+            self.rclpy_node.get_logger().info(
+                f"Ruckig new trajectory, calculation {self.out.calculation_duration:0.1f} µs, "
+                f"duration {self.out.trajectory.duration:0.4f} s"
+            )
+
+        if res == Result.Finished:
+            self.rclpy_node.get_logger().info("Ruckig trajectory finished")
+            self.active = False
+
+        return pos, vel, acc, res

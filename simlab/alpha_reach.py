@@ -40,6 +40,7 @@ class Params:
     gravity = 0.0
 
     base_T0_new = [0.190, 0.000, -0.120, 3.141592653589793, 0.000, 0.000] # underarm #transformation of uv body frame to manipulator base
+    tipOffset = [0.00, 0.00, 0.04, 0.00, 0.00, 0.00]
     sim_p = cs.vertcat(
             1.94000000e-01, 4.29000000e-01, 1.14999999e-01, 3.32999998e-01,
             -0.00000000e+00, -0.00000000e+00, -0.00000000e+00, -4.29000003e-02,

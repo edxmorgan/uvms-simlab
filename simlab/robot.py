@@ -37,7 +37,7 @@ from std_msgs.msg import Float64MultiArray
 from controller_msg import FullRobotMsg
 from controllers import LowLevelController
 from planner_markers import PathPlanner
-from cartesian_ruckig import CartesianRuckig
+from cartesian_ruckig import VehicleCartesianRuckig, EndeffectorCartesianRuckig
 from alpha_reach import Params as alpha_params
 class PS4Controller(Controller):
     def __init__(self, ros_node, prefix, **kwargs):
@@ -370,9 +370,9 @@ class Manipulator(Base):
 
         self.joints = [self.alpha_axis_e, self.alpha_axis_d, self.alpha_axis_c, self.alpha_axis_b]
 
-        self.q_command = [3.1, 0.7, 0.4, 2.1]
-        self.dq_command = [0.0, 0.0, 0.0, 0.0]
-        self.ddq_command = [0.0, 0.0, 0.0, 0.0]
+        self.q_command = alpha_params.joint_home.tolist()
+        self.dq_command = np.zeros((4,)).tolist()
+        self.ddq_command = np.zeros((4,)).tolist()
 
     def update_state(self, msg: DynamicJointState):
         self.q = self.get_interface_value(
@@ -428,7 +428,8 @@ class Robot(Base):
                   record=False,  
                   controller='pid'):
         self.planner: PathPlanner = None
-        self.cart_traj: CartesianRuckig = None
+        self.vehicle_cart_traj: VehicleCartesianRuckig = None
+        self.endeffector_cart_traj: EndeffectorCartesianRuckig = None
         self.menu_handle = None
         self.final_goal = None
         self.yaw_blend_factor = 0.0
@@ -603,8 +604,8 @@ class Robot(Base):
             self.node.get_logger().info(f"No joystick device found for robot {self.k_robot}.")
     
     @classmethod
-    def uvms_Forward_kinematics(cls, joint_qx, base_T0, world_pose):
-        return cls.fk_eval_cls(joint_qx, base_T0, world_pose)
+    def uvms_Forward_kinematics(cls, joint_qx, base_T0, world_pose, tipOffset):
+        return cls.fk_eval_cls(joint_qx, base_T0, world_pose, tipOffset)
 
     @classmethod
     def uvms_body_inverse_kinematics(cls, target_position):
@@ -627,7 +628,7 @@ class Robot(Base):
 
         err_wp = (X_wp_des - X_curr)
         err_wp_trans = np.abs(err_wp[:3])
-        err_wp__rotation = np.abs(err_wp[3:])
+        err_wp_rotation = np.abs(err_wp[3:])
 
         err_goal = (X_goal_des - X_curr)
         err_goal_trans = np.abs(err_goal[:3])
@@ -638,7 +639,7 @@ class Robot(Base):
         q_des  = np.asarray(self.arm.q_command, dtype=float).tolist()
 
         err_joints = [np.abs((Xd - Xc)) for Xd, Xc in zip(q_des, q_curr)]
-        return err_wp_trans, err_wp__rotation, err_joints , err_goal_trans, err_goal_rotation
+        return err_wp_trans, err_wp_rotation, err_joints , err_goal_trans, err_goal_rotation
 
     def start_joystick(self, device_interface):
         # Shared variables updated by the PS4 controller callbacks.
