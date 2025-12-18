@@ -33,7 +33,7 @@ import threading
 import glob
 from typing import Sequence, Dict
 from control_msgs.msg import DynamicInterfaceGroupValues
-from std_msgs.msg import Float64MultiArray
+from std_msgs.msg import Float64MultiArray, String
 from controller_msg import FullRobotMsg
 from controllers import LowLevelController
 from planner_markers import PathPlanner
@@ -433,7 +433,7 @@ class Robot(Base):
         self.menu_handle = None
         self.final_goal = None
         self.yaw_blend_factor = 0.0
-        self.subscription = node.create_subscription(
+        self.dynamics_states_sub = node.create_subscription(
                 DynamicJointState,
                 'dynamic_joint_states',
                 self.listener_callback,
@@ -451,11 +451,12 @@ class Robot(Base):
             self._mocap_pose_cb,
             10
         )
+        
 
 
         self.k_robot = k_robot
         self.robot_name = f'uvms {prefix}: {k_robot}'
-        self.subscription  # prevent unused variable warning
+        self.dynamics_states_sub  # prevent unused variable warning
     
         package_share_directory = ament_index_python.get_package_share_directory(
                 'simlab')
@@ -463,6 +464,8 @@ class Robot(Base):
         ik_path = os.path.join(package_share_directory, 'manipulator/ik_eval.casadi')
 
         vehicle_J_path = os.path.join(package_share_directory, 'vehicle/J_uv.casadi')
+
+        whole_body_ik_path = os.path.join(package_share_directory, 'whole_body/whole_body_ik.casadi')
 
         self.fk_eval = ca.Function.load(fk_path) #  forward kinematics
         # also set a class attribute fk_eval so it can be shared
@@ -475,6 +478,12 @@ class Robot(Base):
             Robot.ik_eval_cls = self.ik_eval
 
         self.vehicle_J = ca.Function.load(vehicle_J_path)
+
+        self.whole_body_ik_eval = ca.Function.load(whole_body_ik_path)
+        # also set a class attribute whole_body_ik_eval so it can be shared
+        if not hasattr(Robot, "wb_ik_eval_cls"):
+            Robot.wb_ik_eval_cls = self.whole_body_ik_eval
+
         self.node = node
         self.sensors = [
             Axis_Interface_names.imu_roll,
@@ -578,7 +587,16 @@ class Robot(Base):
             Float64MultiArray,
             f"manipulation_effort_controller_{prefix}/commands",
             qos_profile
-        )        
+        )
+
+        self.overlay_text_publisher = self.node.create_publisher(
+            String,
+            "chatter",
+            qos_profile
+        )
+
+        
+        self.overlay_text_timer = self.node.create_timer(1.0 / 30, self.publish_overlay_text_callback)
 
         self.traj_path_poses = []
         self.max_traj_pose_count = 2000  # cap RViz message size
@@ -608,8 +626,13 @@ class Robot(Base):
         return cls.fk_eval_cls(joint_qx, base_T0, world_pose, tipOffset)
 
     @classmethod
-    def uvms_body_inverse_kinematics(cls, target_position):
+    def manipulator_inverse_kinematics(cls, target_position):
         return cls.ik_eval_cls(target_position).full().flatten().tolist()
+
+    @classmethod
+    def uvms_body_inverse_kinematics(cls, target_pose):
+        return cls.wb_ik_eval_cls(target_pose, alpha_params.base_T0_new, alpha_params.tipOffset,
+                                   alpha_params.joint_min, alpha_params.joint_max).full().flatten().tolist()
     
     def _mocap_pose_cb(self, msg: PoseStamped):
         p = msg.pose.position
@@ -929,6 +952,11 @@ class Robot(Base):
             """Write a single row of data to the CSV file."""
             self.csv_writer.writerow(row_data)
             self.csv_file.flush()
+
+    def publish_overlay_text_callback(self) -> None:
+        str_msg = String()
+        str_msg.data = f"© {datetime.now().year} Louisiana State University. Research use."
+        self.overlay_text_publisher.publish(str_msg)
 
     def publish_vehicle_and_arm(
         self,

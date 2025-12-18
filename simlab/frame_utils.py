@@ -53,11 +53,10 @@ def to_rotation(obj: Union[R, Tuple, np.ndarray], rep: RotRep) -> R:
         return R.from_euler("xyz", arr, degrees=False)
     if rep == "quat_wxyz":
         q = np.asarray(obj, dtype=float).reshape(4)
-        q_xyzw = np.array([q[1], q[2], q[3], q[0]], dtype=float)
-        return R.from_quat(q_xyzw)
+        return R.from_quat(q, scalar_first=True)
     if rep == "quat_xyzw":
         q = np.asarray(obj, dtype=float).reshape(4)
-        return R.from_quat(q)
+        return R.from_quat(q, scalar_first=False)
     if rep == "matrix":
         M = np.asarray(obj, dtype=float).reshape(3, 3)
         return R.from_matrix(M)
@@ -68,10 +67,9 @@ def from_rotation(rot: R, rep: RotRep) -> np.ndarray:
     if rep == "euler_xyz":
         return rot.as_euler("xyz", degrees=False)
     if rep == "quat_wxyz":
-        q_xyzw = rot.as_quat()
-        return np.array([q_xyzw[3], q_xyzw[0], q_xyzw[1], q_xyzw[2]], dtype=float)
+        return rot.as_quat(scalar_first=True)
     if rep == "quat_xyzw":
-        return rot.as_quat()
+        return rot.as_quat(scalar_first=False)
     if rep == "matrix":
         return rot.as_matrix()
     raise ValueError(f"Unknown rep {rep}")

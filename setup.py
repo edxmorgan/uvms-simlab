@@ -19,6 +19,10 @@ setup(
             'share/' + package_name + '/vehicle',
             glob('resource/vehicle/*')
         ),
+        (
+            'share/' + package_name + '/whole_body',
+            glob('resource/whole_body/*')
+        ),
         ('lib/' + package_name, [package_name+'/robot.py']),
         ('lib/' + package_name, [package_name+'/alpha_reach.py']),
         ('lib/' + package_name, [package_name+'/controller_msg.py']),

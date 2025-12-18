@@ -115,7 +115,7 @@ def make_UVMS_Dof_Marker(name, description, frame_id, control_frame, fixed,
     int_marker.name = name
     int_marker.description = description
     marker_type = Marker.CUBE
-    if control_frame == 'task':
+    if 'task' in control_frame:
         marker_type = Marker.SPHERE
     makeBoxControl(int_marker, fixed, interaction_mode, marker_type,
                         int_marker.scale, show_6dof, Pose(), ignore_dof)
@@ -130,21 +130,3 @@ def make_menu_control():
     menu_control.description = "target"
     menu_control.always_visible = True
     return menu_control
-
-# def pose_to_homogeneous(pose):
-#     """Convert a geometry_msgs/Pose into a 4x4 homogeneous transformation matrix."""
-#     quat = [pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w]
-#     trans = [pose.position.x, pose.position.y, pose.position.z]
-#     mat = quaternion_matrix(quat)
-#     mat[0:3, 3] = trans
-#     return mat
-
-# def homogeneous_to_pose(mat):
-#     """Convert a 4x4 homogeneous transformation matrix into a geometry_msgs/Pose."""
-#     pose = Pose()
-#     pose.position.x = mat[0, 3]
-#     pose.position.y = mat[1, 3]
-#     pose.position.z = mat[2, 3]
-#     quat = quaternion_from_matrix(mat)
-#     pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w = quat
-#     return pose

@@ -25,13 +25,14 @@ from se3_ompl_planner import plan_se3_path
 from std_msgs.msg import Header
 import sensor_msgs_py.point_cloud2 as pc2
 from sensor_msgs.msg import PointCloud2
-import time
+import geometry_msgs
 
 class UVMSBackend:
-    def __init__(self, node: Node, urdf_string: str, vehicle_target_frame: str):
+    def __init__(self, node: Node, urdf_string: str, vehicle_target_frame: str, task_target_frame: str):
         package_share_directory = ament_index_python.get_package_share_directory('simlab')
         self.node = node
         self.vehicle_target_frame = vehicle_target_frame
+        self.task_target_frame = task_target_frame
         self.tf_broadcaster = tf2_ros.TransformBroadcaster(self.node)
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self.node)
@@ -178,8 +179,8 @@ class UVMSBackend:
 
     def vehicle_target_tf_timer_callback(self):
         stamp_now = self.node.get_clock().now().to_msg()
-        t = backend_utils.get_broadcast_tf(stamp_now, self.target_vehicle_pose, self.base_frame, self.vehicle_target_frame)
-        self.tf_broadcaster.sendTransform(t)
+        vehicle_target_t = backend_utils.get_broadcast_tf(stamp_now, self.target_vehicle_pose, self.base_frame, self.vehicle_target_frame)
+        self.tf_broadcaster.sendTransform(vehicle_target_t)
 
     def vehicle_target_cloud_timer_callback(self):
         header = Header()
@@ -235,6 +236,20 @@ class UVMSBackend:
                         dists = np.linalg.norm(path_xyz - target_nwu, axis=1)
                         idx = int(np.argmin(dists))
                         target_quat = path_quat[idx]
+
+                        q_arrow = robot.planner.quat_wxyz_from_x_to_vec_scipy(vel_nwu)
+
+                        robot.planner.update_target_viz(
+                            stamp=self.node.get_clock().now().to_msg(),
+                            frame_id=self.world_frame,
+                            xyz=target_nwu,
+                            quat_wxyz=q_arrow,
+                            as_arrow=True,
+                            size=0.10,
+                            rate_hz=30.0,
+                            ttl_sec=0.0,
+                        )
+
 
                         # Convert target pose from NWU to NED
                         target_pose = PoseX.from_pose(
@@ -417,28 +432,98 @@ class UVMSBackend:
     def fcl_update_timer(self):
         self.fcl_world.update_from_tf(self.tf_buffer, rclpy.time.Time())
 
-    def solve_whole_body_inverse_kinematics_wrt_world_frame(self, task_pose):
-        pass
+    def solve_whole_body_inverse_kinematics_wrt_world_frame(self, task_pose: Pose):
+        # self.node.get_logger().info(f"\n\n\n")
+        # self.node.get_logger().info(f"task_pose quat_wxyz {task_pose}")
 
-    def is_valid_task(self, task_pose):
+
+        # Convert requested task pose to NWU Euler
+        task_pos_world, task_rot_world = PoseX.from_pose(
+            xyz=[
+                task_pose.position.x,
+                task_pose.position.y,
+                task_pose.position.z,
+            ],
+            rot=[
+                task_pose.orientation.w,
+                task_pose.orientation.x,
+                task_pose.orientation.y,
+                task_pose.orientation.z,
+            ],
+            rot_rep="quat_wxyz",
+            frame="NWU",
+        ).get_pose(frame="NWU", rot_rep="euler_xyz")
+
+        # self.node.get_logger().info(f"task_pose rpy {task_pos_world, task_rot_world}")
+
+        ik_target = np.array(
+            task_pos_world.tolist() + task_rot_world.tolist(),
+            dtype=float,
+        )
+
+        # Solve whole body IK
+        body_sol = self.robot_selected.uvms_body_inverse_kinematics(ik_target)
+
+        # self.node.get_logger().info(f"Body IK  solution {body_sol}")
+
+        [self.q0_des, self.q1_des, self.q2_des, self.q3_des] = body_sol[0:4]
+        
+        veh_xyz = body_sol[4:7]      # x, y, z
+        veh_rpy = body_sol[7:10]     # roll, pitch, yaw
+
+        self.target_vehicle_pose = PoseX.from_pose(
+            xyz=veh_xyz,
+            rot=veh_rpy,
+            rot_rep="euler_xyz",
+            frame="NWU",
+        ).get_pose_as_Pose_msg()
+
+
+
+    def is_valid_task(self, task_pose: Pose):
         task_point = np.array([task_pose.position.x,
                     task_pose.position.y,
                     task_pose.position.z])
         valid_task = backend_utils.is_point_valid(self.workspace_hull, self.vehicle_body_hull, task_point)
         return valid_task
     
-    def solve_execute_inverse_kinematics_wrt_vehicle_frame(self, task_pose):
+    def solve_execute_inverse_kinematics_wrt_vehicle_frame(self, task_pose: Pose):
         msg = {'is_success':False,'result':None}
         if self.is_valid_task(task_pose):
             relative_pose = backend_utils.get_relative_pose(self.arm_base_pose, task_pose)
 
-            q_ik_sol = self.robot_selected.uvms_body_inverse_kinematics(
+            q_ik_sol = self.robot_selected.manipulator_inverse_kinematics(
                 np.array([relative_pose.position.x, relative_pose.position.y, relative_pose.position.z]))
             [self.q0_des, self.q1_des, self.q2_des, _] = q_ik_sol
             msg['is_success'] = True
             msg['result'] = q_ik_sol
         return msg
-    
+
+    def plan_task_trajectory_wrt_vehicle(self):
+        path_xyz = np.array(
+            [
+                [
+                    self.current_task_pose.position.x,
+                    self.current_task_pose.position.y,
+                    self.current_task_pose.position.z,
+                ],
+                [
+                    self.target_task_pose_wrt_vehicle.position.x,
+                    self.target_task_pose_wrt_vehicle.position.y,
+                    self.target_task_pose_wrt_vehicle.position.z,
+                ],
+            ],
+            dtype=float,
+        )
+        start_xyz = path_xyz[0,:]
+        self.robot_selected.endeffector_cart_traj.start_from_path(
+            current_position=start_xyz,
+            path_xyz=path_xyz,
+            max_vel=self.max_end_vel,
+            max_acc=self.max_end_acc,
+            max_jerk=self.max_end_jerk,
+        )
+        self.node.get_logger().info(f"Endeffector trajectory computed")
 
     def init_bottom_z_once(self):
         """Timer callback, tries to read world_bottom z once and then cancels itself."""
@@ -518,4 +603,4 @@ class UVMSBackend:
         self.current_task_pose.orientation.y = float(ee[5])
         self.current_task_pose.orientation.z = float(ee[6])
 
-        self.target_task_pose = self.current_task_pose
+        self.target_task_pose_wrt_vehicle = self.current_task_pose
