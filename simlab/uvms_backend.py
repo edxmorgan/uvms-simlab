@@ -107,7 +107,7 @@ class UVMSBackendCore:
         self.robots_prefix = self.node.get_parameter('robots_prefix').value
         self.controllers = self.node.get_parameter('controllers').value
         for k, (prefix, controller) in enumerate(zip(self.robots_prefix, self.controllers)):
-            robot_k = Robot(self.node, k, 4, prefix, controller)
+            robot_k = Robot(self.node, self.tf_buffer, k, 4, prefix, controller)
             robot_k.vehicle_cart_traj = VehicleCartesianRuckig(
                 self.node,
                 dofs=3,
@@ -115,6 +115,7 @@ class UVMSBackendCore:
                 max_waypoints=self.max_cartesian_waypoints,
             )
             robot_k.planner = PathPlanner(self.planner_marker_publisher, ns=f"planner/{prefix}", base_id=k)
+
             self.robots.append(robot_k)
 
         self.robot_selected = self.robots[0]
@@ -184,7 +185,7 @@ class UVMSBackendCore:
         self.rov_pc_publisher_.publish(cloud_msg)
 
     def is_valid_arm_base_task(self, target_arm_base_endeffector_pose: Pose) -> bool:
-        pose_v = self.try_transform_pose(
+        pose_v = self.robot_selected.try_transform_pose(
             target_arm_base_endeffector_pose,
             target_frame=self.vehicle_target_frame,
             source_frame=self.arm_base_target_frame, 
@@ -216,7 +217,7 @@ class UVMSBackendCore:
             )
 
     def _get_robot_pose_now_world(self) -> Pose:
-        return self.robot_selected._pose_from_state_in_frame(self.tf_buffer, self.world_frame)
+        return self.robot_selected._pose_from_state_in_frame(self.world_frame)
 
     def _pose_to_xyz_quat_wxyz(self, pose: Pose):
         xyz = np.array([pose.position.x, pose.position.y, pose.position.z], dtype=float)

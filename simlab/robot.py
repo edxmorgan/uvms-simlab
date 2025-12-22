@@ -41,6 +41,8 @@ from alpha_reach import Params as alpha_params
 from frame_utils import PoseX
 from tf2_ros import TransformException, Buffer
 from tf2_geometry_msgs import do_transform_pose
+from typing import Optional
+from geometry_msgs.msg import Pose
 
 class PS4Controller(Controller):
     def __init__(self, ros_node: Node, prefix, **kwargs):
@@ -382,6 +384,7 @@ class Manipulator(Base):
 
 class Robot(Base):
     def __init__(self, node: Node,
+                 tf_buffer: Buffer,
                   k_robot, 
                   n_joint, 
                   prefix,
@@ -392,6 +395,7 @@ class Robot(Base):
         self.menu_handle = None
         self.final_goal = None
         self.yaw_blend_factor = 0.0
+        self.tf_buffer = tf_buffer
         self.dynamics_states_sub = node.create_subscription(
                 DynamicJointState,
                 'dynamic_joint_states',
@@ -506,8 +510,8 @@ class Robot(Base):
             self.has_joystick_interface = True
         else:
             self.node.get_logger().info(f"No joystick device found for robot {self.k_robot}.")
-        self.robot_path_pub_timer = self.node.create_timer(1.0 / 100.0, self.publish_robot_path_callback)
-        self.control_frequency = 500.0  # Hz
+        self.robot_path_pub_timer = self.node.create_timer(1.0 / 60.0, self.publish_robot_path_callback)
+        self.control_frequency = 60.0  # Hz
         self.control_timer = self.node.create_timer(1.0 / self.control_frequency, self.control_timer_callback)
         # Define a threshold error at which we start yaw blending.
         self.pos_blend_threshold = 1.1
@@ -536,7 +540,7 @@ class Robot(Base):
         st = self.get_state()
         goal_xyz, goal_quat_xyz = self.final_goal
         X_goal_des = list(goal_xyz) + list(goal_quat_xyz)
-        # vehicle part
+        # vehicle part. fix this. map and world conflict
         X_curr = np.asarray(st["pose"], dtype=float)
         X_wp_des  = np.asarray(self.pose_command, dtype=float)
 
@@ -653,27 +657,52 @@ class Robot(Base):
         xq['prefix'] = self.prefix
         xq['mocap'] = self.mocap_latest
         return xq
-        
-    def _pose_from_state_in_frame(self, tf_buffer: Buffer, dst_frame: str) -> Pose | None:
-        # Build Pose in source frame
+
+    def try_transform_pose(
+        self,
+        pose_in_source: Pose,
+        target_frame: str,
+        source_frame: str,
+        *,
+        warn_context: str = "",
+    ) -> Optional[Pose]:
+        try:
+            tf = self.tf_buffer.lookup_transform(
+                target_frame,
+                source_frame,
+                rclpy.time.Time(),
+            )
+        except TransformException as ex:
+            msg = f"TF not ready: {target_frame} <- {source_frame}, {ex}"
+            if warn_context:
+                msg = f"{warn_context}, {msg}"
+            self.node.get_logger().warn(msg)
+            return None
+
+        return do_transform_pose(pose_in_source, tf)
+    
+    def _pose_from_state_in_frame(self, dst_frame: str) -> Optional[Pose]:
+        """
+        Returns the robot base pose expressed in dst_frame, or None if TF is unavailable.
+        Source pose is constructed from the robot NED state, expressed in self.map_frame.
+        """
+        # Build Pose in the source frame that TF actually knows about: self.map_frame
+        # PoseX: NED (internal) -> NWU (ROS-ish), and we treat that as being in map_frame.
         pose_src = PoseX.from_pose(
             xyz=np.array(self.ned_pose[0:3], float),
             rot=np.array(self.ned_pose[3:6], float),
             rot_rep="euler_xyz",
             frame="NED",
-        ).get_pose_as_Pose_msg(frame="NWU")  # returns geometry_msgs/Pose
+        ).get_pose_as_Pose_msg(frame="NWU")
 
-        try:
-            tf = tf_buffer.lookup_transform(
-                target_frame=dst_frame,
-                source_frame=self.map_frame,
-                time=rclpy.time.Time(),
-            )
-            pose_dst = do_transform_pose(pose_src, tf)  # Pose in dst_frame
-            return pose_dst
-        except TransformException as ex:
-            self.node.get_logger().warn(f"TF failed {dst_frame} <- {self.map_frame}: {ex}")
-            return None
+        # Use shared helper for TF lookup + transform + logging
+        pose_dst = self.try_transform_pose(
+            pose_in_source=pose_src,
+            target_frame=dst_frame,
+            source_frame=self.map_frame,
+            warn_context=f"_pose_from_state_in_frame({self.prefix})",
+        )
+        return pose_dst
 
     def to_ned_velocity(self, body_vel, pose):
         velocity_ned = copy.copy(body_vel)
@@ -777,15 +806,13 @@ class Robot(Base):
         self.update_state(msg)
 
     def control_timer_callback(self):
-        k_planner = self.planner
-
         state = self.get_state()
         if state['status'] == 'active':
-            if self.final_goal is not None and k_planner.planned_result and k_planner.planned_result['is_success']:
+            if self.final_goal is not None and self.planner.planned_result and self.planner.planned_result['is_success']:
                 self.node.get_logger().debug(f"Control timer callback {self.prefix} active.")
                 # Convert once to NumPy arrays
-                path_xyz = np.asarray(k_planner.planned_result["xyz"], dtype=float)
-                path_quat = np.asarray(k_planner.planned_result["quat_wxyz"], dtype=float)
+                path_xyz = np.asarray(self.planner.planned_result["xyz"], dtype=float)
+                path_quat = np.asarray(self.planner.planned_result["quat_wxyz"], dtype=float)
 
                 # Compute current manifold errors
                 wp_err_trans, wp_err_rot, wp_err_joint, goal_err_trans, goal_err_rot = self.compute_errors()
@@ -826,29 +853,45 @@ class Robot(Base):
 
 
                     # Convert target pose from NWU to NED
-                    target_pose = PoseX.from_pose(
+                    world_target_pose_NWU = PoseX.from_pose(
                         xyz=target_nwu,
                         rot=target_quat,
                         rot_rep="quat_wxyz",
                         frame="NWU",
-                    )
-                    p_cmd_ned, rpy_cmd_ned = target_pose.get_pose(
-                        frame="NED",
-                        rot_rep="euler_xyz",
+                    ).get_pose_as_Pose_msg(frame="NWU")
+
+                    # Use shared helper for TF lookup + transform + logging
+                    map_target_pose_NWU = self.try_transform_pose(
+                        pose_in_source=world_target_pose_NWU,
+                        target_frame=self.map_frame,
+                        source_frame="world",
+                        warn_context=f"_pose_from_world_to_map_frame({self.prefix})",
                     )
 
+                    p_cmd_ned, rpy_cmd_ned = PoseX.from_pose(
+                                xyz=[np.array(map_target_pose_NWU.position.x, float),
+                                     np.array(map_target_pose_NWU.position.y, float),
+                                     np.array(map_target_pose_NWU.position.z, float)],
+                                rot=[np.array(map_target_pose_NWU.orientation.w, float),
+                                     np.array(map_target_pose_NWU.orientation.x, float),
+                                     np.array(map_target_pose_NWU.orientation.y, float),
+                                     np.array(map_target_pose_NWU.orientation.z, float)],
+                                rot_rep="quat_wxyz",
+                                frame="NWU",
+                            ).get_pose(frame="NED",rot_rep="euler_xyz")
 
-                    # # Blend the yaw values: more weight to target_yaw as the position error decreases.
+
+                    # Blend the yaw values: more weight to target_yaw as the position error decreases.
                     # rpy_cmd_ned[2] = (1 - self.yaw_blend_factor) * adjusted_yaw + self.yaw_blend_factor * rpy_cmd_ned[2]
 
-                    # self.pose_command = [
-                    #     float(p_cmd_ned[0]),
-                    #     float(p_cmd_ned[1]),
-                    #     float(p_cmd_ned[2]),
-                    #     float(rpy_cmd_ned[0]),
-                    #     float(rpy_cmd_ned[1]),
-                    #     float(rpy_cmd_ned[2]),
-                    # ]
+                    self.pose_command = [
+                        float(p_cmd_ned[0]),
+                        float(p_cmd_ned[1]),
+                        float(p_cmd_ned[2]),
+                        float(rpy_cmd_ned[0]),
+                        float(rpy_cmd_ned[1]),
+                        float(rpy_cmd_ned[2]),
+                    ]
 
 
         #         self.arm.q_command = [self.q0_des, self.q1_des, self.q2_des, self.q3_des]                        
