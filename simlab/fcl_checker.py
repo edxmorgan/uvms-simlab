@@ -19,7 +19,8 @@ class FCLWorld:
         self.vehicle_radius = float(vehicle_radius)
 
         # parse URDF
-        robot_mesh_infos, env_mesh_infos = collect_env_meshes(urdf_string)
+        robot_mesh_infos, env_mesh_infos, floor_depth = collect_env_meshes(urdf_string)
+        self.floor_depth = floor_depth
 
         # merge meshes into one Trimesh in world frame
         env_mesh = conc_env_trimesh(env_mesh_infos)
@@ -44,6 +45,8 @@ class FCLWorld:
         # planner sphere helper, optional
         self._planner_geom = fcl.Sphere(self.vehicle_radius)
         self._planner_obj  = fcl.CollisionObject(self._planner_geom, fcl.Transform())
+
+        self.env_xyz_bounds = self._compute_env_bounds_from_fcl(z_min=self.floor_depth, pad_xy=0.0, pad_z=0.0)
 
     def _compute_env_bounds_from_fcl(self, z_min, pad_xy=0.5, pad_z=1e-4):
         """
@@ -163,12 +166,39 @@ class FCLWorld:
         return resp
 
     # --------------- optional planner sphere helpers ---------------
-
     def set_planner_radius(self, r: float):
         self.vehicle_radius = float(r)
         self._planner_geom = fcl.Sphere(self.vehicle_radius)
         self._planner_obj  = fcl.CollisionObject(self._planner_geom, fcl.Transform())
 
+    def enforce_bounds(self, xyz, *, for_sphere: bool = True):
+        x_min, x_max, y_min, y_max, z_min, z_max = self.env_xyz_bounds
+
+        r = float(self.vehicle_radius) if for_sphere else 0.0
+
+        # shrink bounds so the sphere stays fully inside
+        x_min_c = x_min + r
+        x_max_c = x_max - r
+        y_min_c = y_min + r
+        y_max_c = y_max - r
+        z_min_c = z_min + r
+        z_max_c = z_max
+
+        # handle degenerate case, sphere too big for the box
+        if x_min_c > x_max_c or y_min_c > y_max_c or z_min_c > z_max_c:
+            # safest behavior: clamp to the box center and let collision checker handle it
+            cx = 0.5 * (x_min + x_max)
+            cy = 0.5 * (y_min + y_max)
+            cz = 0.5 * (z_min + z_max)
+            return np.array([cx, cy, cz], dtype=float)
+
+        mins = np.array([x_min_c, y_min_c, z_min_c], dtype=float)
+        maxs = np.array([x_max_c, y_max_c, z_max_c], dtype=float)
+
+        xyz = np.array([float(x) for x in xyz], dtype=float)
+        return np.clip(xyz, mins, maxs)
+
+    
     def planner_in_collision_at_xyz(self, xyz) -> bool:
         self._planner_obj.setTransform(fcl.Transform([1.0, 0.0, 0.0, 0.0], [float(x) for x in xyz]))
         req = fcl.CollisionRequest(num_max_contacts=1, enable_contact=False)

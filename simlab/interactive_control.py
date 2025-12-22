@@ -14,34 +14,42 @@
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 #!/usr/bin/env python3
-import numpy as np
-np.float = float  # Patch NumPy to satisfy tf_transformations' use of np.float
-
 import copy
 import rclpy
 from rclpy.node import Node
+from uvms_backend import UVMSBackendCore
 from visualization_msgs.msg import InteractiveMarkerControl, InteractiveMarkerFeedback
 from interactive_markers.interactive_marker_server import InteractiveMarkerServer
 from interactive_markers.menu_handler import MenuHandler
 import interactive_utils as marker_util
-from uvms_backend import UVMSBackend
-import rclpy.time
-from geometry_msgs.msg import PoseStamped
-from tf2_ros import TransformException
-from tf2_geometry_msgs import do_transform_pose
+from geometry_msgs.msg import Pose
+import numpy as np
+from alpha_reach import Params as alpha
+from frame_utils import PoseX
 
-
-class BasicControlsNode(Node):
+class InteractiveControlsNode(Node):
     def __init__(self):
         super().__init__('uvms_interactive_controls',
                          automatically_declare_parameters_from_overrides=True)
-
-        # FCL for planning, env in world frame
         urdf_string = self.get_parameter('robot_description').get_parameter_value().string_value
-        self.vehicle_marker_frame = "vehicle_marker_frame"
-        self.task_target_frame = "task_marker_frame"
-        self.backend = UVMSBackend(self, urdf_string, self.vehicle_marker_frame, self.task_target_frame)
- 
+        self.world_frame = "world"
+        self.vehicle_target_frame = "vehicle_marker_frame"
+        self.arm_base_target_frame = "arm_base_marker_frame"
+        self.world_endeffector_target_frame = "world_endeffector_marker_frame"
+
+        # Arm base pose wrt vehicle center
+        self.arm_base_wrt_vehicle_center_Pose = PoseX.from_pose(
+                xyz=alpha.base_T0_new[0:3],
+                rot=alpha.base_T0_new[3:6],
+                rot_rep="euler_xyz",
+                frame="NWU").get_pose_as_Pose_msg()
+        
+        self.uvms_backend: UVMSBackendCore = UVMSBackendCore(self, urdf_string,
+                                                              self.arm_base_wrt_vehicle_center_Pose,
+                                                              self.vehicle_target_frame, self.arm_base_target_frame, 
+                                                              self.world_frame,
+                                                              self.world_endeffector_target_frame, alpha)
+
         # Create marker server, menu handler
         self.server = InteractiveMarkerServer(self, "uvms_interactive_controls")
 
@@ -52,11 +60,11 @@ class BasicControlsNode(Node):
         robot_select_menu_handle = self.menu_handler.insert("Robots")
 
         # add a menu item for this robot and remember which handle maps to which index
-        for robot in self.backend.robots:
+        for robot in self.uvms_backend.robots:
             h = self.menu_handler.insert(f"Use {robot.prefix}", parent=robot_select_menu_handle, callback=self.switch_robot_in_use)
             self.menu_id_to_robot_index[h] = robot.k_robot
             self.menu_handler.setCheckState(h, MenuHandler.UNCHECKED)
-            if self.backend.robot_selected.k_robot == robot.k_robot:
+            if self.uvms_backend.robot_selected.k_robot == robot.k_robot:
                 self.menu_handler.setCheckState(h, MenuHandler.CHECKED)
 
         self.control_handle = self.menu_handler.insert('Control space')
@@ -71,62 +79,41 @@ class BasicControlsNode(Node):
         place_handle = self.menu_handler.insert("Mark place target", parent=task_handle)
         run_pick_place = self.menu_handler.insert("Run pick & place", parent=task_handle)
         # phases: MOVE_TO_PICK_APPROACH ->LOWER_AND_GRASP -> RETRACT -> MOVE_TO_PLACE_APPROACH -> LOWER_AND_RELEASE -> RETRACT.
-
+        
         # Create markers
         self.uv_marker = marker_util.make_UVMS_Dof_Marker(
             name='uv_marker',
             description='interactive marker for controlling vehicle',
-            frame_id=self.backend.base_frame,
+            frame_id=self.uvms_backend.world_frame,
             control_frame='uv',
             fixed=False,
             interaction_mode=InteractiveMarkerControl.MOVE_ROTATE_3D,
-            initial_pose=self.backend.current_vehicle_pose,
+            initial_pose=Pose(),
             scale=1.0,
-            arm_base_pose=self.backend.arm_base_pose,
+            arm_base_pose=self.arm_base_wrt_vehicle_center_Pose,
             show_6dof=True,
             ignore_dof=['roll','pitch']
         )
 
-        self.vehicle_task_marker = marker_util.make_UVMS_Dof_Marker(
-            name='vehicle_task_marker',
-            description='interactive marker for controlling endeffector',
-            frame_id=self.vehicle_marker_frame,
-            control_frame='vehicle_task',
+        self.arm_base_task_marker = marker_util.make_UVMS_Dof_Marker(
+            name='arm_base_task_marker',
+            description='interactive marker for controlling endeffector wrt arm base mounted on vehicle',
+            frame_id=self.arm_base_target_frame,
+            control_frame='arm_base_task',
             fixed=False,
             interaction_mode=InteractiveMarkerControl.MOVE_ROTATE_3D,
-            initial_pose=self.backend.current_task_pose,
+            initial_pose=Pose(), #change to appropriate initial pose
             scale=0.2,
-            arm_base_pose=None,
             show_6dof=True,
             ignore_dof=[]
         )
+        # Create menu control
+        self.menu_control = marker_util.make_menu_control()
+        # Start in joint control
+        self._apply_joint_control_mode()
 
-        self.world_task_marker = marker_util.make_UVMS_Dof_Marker(
-            name='world_task_marker',
-            description='interactive marker for controlling endeffector',
-            frame_id=self.backend.base_frame,
-            control_frame='map_task',
-            fixed=False,
-            interaction_mode=InteractiveMarkerControl.MOVE_ROTATE_3D,
-            initial_pose=self.backend.current_task_pose,
-            scale=0.2,
-            arm_base_pose=None,
-            show_6dof=True,
-            ignore_dof=[]
-        )
-
-        self.server.insert(self.uv_marker)
-        self.server.setCallback(self.uv_marker.name, self.processFeedback)
-
-        self.server.insert(self.vehicle_task_marker)
-        self.server.setCallback(self.vehicle_task_marker.name, self.processFeedback)
-
-        menu_control = marker_util.make_menu_control()
-        self.uv_marker.controls.append(copy.deepcopy(menu_control))
-
-        self.menu_handler.apply(self.server, self.uv_marker.name)
-        self.menu_handler.apply(self.server, self.vehicle_task_marker.name)
-        self.server.applyChanges()
+    def plan_execute(self, feedback: InteractiveMarkerFeedback):
+        self.uvms_backend.plan_vehicle_trajectory()
 
     def switch_robot_in_use(self, feedback: InteractiveMarkerFeedback):
         if feedback.menu_entry_id in self.menu_id_to_robot_index:
@@ -143,137 +130,107 @@ class BasicControlsNode(Node):
             self.menu_handler.apply(self.server, feedback.marker_name)
             self.server.applyChanges()
 
-            self.backend.set_robot_selected(selected_robot_k)
+            self.uvms_backend.set_robot_selected(selected_robot_k)
+
+    def _clear_markers(self) -> None:
+        # erase by name, not by object
+        try:
+            self.server.erase(self.uv_marker.name)
+        except Exception:
+            pass
+        try:
+            self.server.erase(self.arm_base_task_marker.name)
+        except Exception:
+            pass
+        self.server.applyChanges()
+
+    def _apply_joint_control_mode(self) -> None:
+        self._clear_markers()
+
+        # uv marker (vehicle)
+        self.server.insert(self.uv_marker)
+        self.server.setCallback(self.uv_marker.name, self.vehicle_marker_processFeedback)
+
+        # endeffector marker (arm base frame)
+        self.server.insert(self.arm_base_task_marker)
+        self.server.setCallback(self.arm_base_task_marker.name, self.arm_base_task_marker_processFeedback)
+
+        # attach menu control to the marker before applyChanges
+        self.uv_marker.controls.append(copy.deepcopy(self.menu_control))
+        self.server.insert(self.uv_marker)  # re-insert so server sees updated controls
+
+        self.menu_handler.apply(self.server, self.uv_marker.name)
+        self.menu_handler.apply(self.server, self.arm_base_task_marker.name)
+        self.server.applyChanges()
+
+    def _apply_task_control_mode(self) -> None:
+        self._clear_markers()
+
+        self.server.insert(self.arm_base_task_marker)
+        self.server.setCallback(self.arm_base_task_marker.name, self.world_task_marker_processFeedback)
+
+        self.arm_base_task_marker.controls.append(copy.deepcopy(self.menu_control))
+        self.server.insert(self.arm_base_task_marker)  # re-insert to update controls
+
+        self.menu_handler.apply(self.server, self.arm_base_task_marker.name)
+        self.server.applyChanges()
 
     def switch_control_Type(self, feedback: InteractiveMarkerFeedback):
         if feedback.menu_entry_id == self.task_space_handle:
-            # Switch to task space control
-            self.current_space = "task"
-
-            # Take the current end effector pose in vehicle_marker_frame
-            pose_in_vehicle = copy.deepcopy(self.vehicle_task_marker.pose)
-
-            try:
-                # Transform vehicle_task pose into base_frame
-                transform = self.backend.tf_buffer.lookup_transform(
-                    self.backend.base_frame,         # target frame
-                    self.vehicle_marker_frame,       # source frame
-                    rclpy.time.Time())              # latest available
-                pose_in_base = do_transform_pose(pose_in_vehicle, transform)
-                self.world_task_marker.pose = pose_in_base
-            except TransformException as ex:
-                self.get_logger().warn(
-                    f"Could not transform vehicle_task pose to base frame, {ex}"
-                )
-                return
-
-            # Show task marker, hide uv marker
-            self.backend.solve_whole_body_inverse_kinematics_wrt_world_frame(self.world_task_marker.pose)
-            self.server.insert(self.world_task_marker)
-            self.server.setCallback(self.world_task_marker.name, self.processFeedback)
-
-            self.server.erase(self.uv_marker.name)
-            self.server.erase(self.vehicle_task_marker.name)
-
             self.menu_handler.setCheckState(self.task_space_handle, MenuHandler.CHECKED)
             self.menu_handler.setCheckState(self.joint_space_handle, MenuHandler.UNCHECKED)
-
-            self.menu_handler.apply(self.server, self.world_task_marker.name)
-            self.server.applyChanges()
-            self.get_logger().info("Switched control to task space")
+            self._apply_task_control_mode()
+            self.get_logger().info("Switched to TASK space control.")
 
         elif feedback.menu_entry_id == self.joint_space_handle:
-            # Switch to joint or vehicle space control
-            self.current_space = "joint"
-            
-            self.server.insert(self.uv_marker)
-            self.server.setCallback(self.uv_marker.name, self.processFeedback)
-
-            self.server.insert(self.vehicle_task_marker)
-            self.server.setCallback(self.vehicle_task_marker.name, self.processFeedback)
-
-            self.server.erase(self.world_task_marker.name)
-
-            self.menu_handler.setCheckState(self.task_space_handle, MenuHandler.UNCHECKED)
             self.menu_handler.setCheckState(self.joint_space_handle, MenuHandler.CHECKED)
+            self.menu_handler.setCheckState(self.task_space_handle, MenuHandler.UNCHECKED)
+            self._apply_joint_control_mode()
+            self.get_logger().info("Switched to JOINT space control.")
 
-            self.menu_handler.apply(self.server, self.uv_marker.name)
-            self.menu_handler.apply(self.server, self.vehicle_task_marker.name)
-            self.server.applyChanges()
-            self.get_logger().info("Switched control to joint space")
+        self.menu_handler.apply(self.server, feedback.marker_name)
+        self.server.applyChanges()
+    
+    def vehicle_marker_processFeedback(self, feedback: InteractiveMarkerFeedback):
+        pos = feedback.pose.position
+        clipped_xyz = self.uvms_backend.fcl_world.enforce_bounds([pos.x, pos.y, pos.z])
+        pos.x = clipped_xyz[0]
+        pos.y = clipped_xyz[1]
+        pos.z = clipped_xyz[2]
 
-    def plan_execute(self, feedback: InteractiveMarkerFeedback):
-        if self.backend.robot_selected is None or self.backend.target_vehicle_pose is None:
-            self.get_logger().warn("Execute clicked but robot selection or planned pose is missing.")
+        self.server.setPose(feedback.marker_name, feedback.pose)
+        self.server.applyChanges()
+        self.get_logger().debug("Clipped uv_marker position to stay within environment bounds.")
+
+        self.uvms_backend.target_vehicle_pose = feedback.pose
+
+    def arm_base_task_marker_processFeedback(self, feedback: InteractiveMarkerFeedback):
+        # If valid, accept and store in arm_base_frame coordinates
+        if self.uvms_backend.is_valid_arm_base_task(feedback.pose):
+            self.uvms_backend.target_arm_base_endeffector_pose = feedback.pose
+            self.get_logger().debug("Updated arm base task marker pose.")
             return
-        self.backend.plan_vehicle_trajectory()
 
+        # Reset the task marker back to the last valid pose (boundary)
+        self.server.setPose(self.arm_base_task_marker.name, self.uvms_backend.target_arm_base_endeffector_pose)
+        self.server.applyChanges()
 
-    def processFeedback(self, feedback: InteractiveMarkerFeedback):
-        env_xyz_bounds = self.backend.fcl_world._compute_env_bounds_from_fcl(z_min=self.backend.bottom_z, pad_xy=0.0, pad_z=0.0)
-        x_min, x_max, y_min, y_max, z_min, z_max = env_xyz_bounds
-        mins = np.array([x_min, y_min, z_min], dtype=float)
-        maxs = np.array([x_max, y_max, z_max], dtype=float)
-        # For uv_marker
-        if feedback.marker_name == self.uv_marker.name:
-            if feedback.event_type == InteractiveMarkerFeedback.POSE_UPDATE:
-                pos = feedback.pose.position
-
-                xyz = np.array([pos.x, pos.y, pos.z], dtype=float)
-                clipped_xyz = np.clip(xyz, mins, maxs)
-
-                if not np.array_equal(xyz, clipped_xyz):
-                    pos.x, pos.y, pos.z = clipped_xyz.tolist()
-                    self.server.setPose(feedback.marker_name, feedback.pose)
-                    self.server.applyChanges()
-
-                self.backend.target_vehicle_pose = feedback.pose
-
-
-        elif feedback.marker_name == self.vehicle_task_marker.name:
-            if feedback.event_type == InteractiveMarkerFeedback.POSE_UPDATE:
-                if self.backend.is_valid_task(feedback.pose):
-                    self.backend.target_task_pose_wrt_vehicle = feedback.pose
-                    # self.backend.solve_execute_inverse_kinematics_wrt_vehicle_frame(feedback.pose)
-                    self.backend.plan_task_trajectory_wrt_vehicle()
-                else:
-                    # The task marker is at the boundary; compute the displacement since the last valid pose.
-                    dx = feedback.pose.position.x - self.backend.target_task_pose_wrt_vehicle.position.x
-                    dy = feedback.pose.position.y - self.backend.target_task_pose_wrt_vehicle.position.y
-                    dz = feedback.pose.position.z - self.backend.target_task_pose_wrt_vehicle.position.z
-
-                    # Shift the uv_marker by this delta so that the task marker remains at the boundary.
-                    self.backend.target_vehicle_pose.position.x += dx
-                    self.backend.target_vehicle_pose.position.y += dy
-                    self.backend.target_vehicle_pose.position.z += dz
-
-                    # Update the uv_marker pose on the server.
-                    self.server.setPose(self.uv_marker.name, self.backend.target_vehicle_pose)
-                    self.server.applyChanges()
-
-                    # Reset the task marker back to the last valid pose (i.e. at the boundary).
-                    self.server.setPose(self.vehicle_task_marker.name, self.backend.target_task_pose_wrt_vehicle)
-                    self.server.applyChanges()
-
-        elif feedback.marker_name == self.world_task_marker.name:
-            if feedback.event_type == InteractiveMarkerFeedback.POSE_UPDATE:
-                pos = feedback.pose.position
-                xyz = np.array([pos.x, pos.y, pos.z], dtype=float)
-
-                clipped_xyz = np.clip(xyz, mins, maxs)
-
-                if not np.array_equal(xyz, clipped_xyz):
-                    pos.x, pos.y, pos.z = clipped_xyz.tolist()
-                    self.server.setPose(feedback.marker_name, feedback.pose)
-                    self.server.applyChanges()
-
-
-            self.backend.solve_whole_body_inverse_kinematics_wrt_world_frame(feedback.pose)
+    def world_task_marker_processFeedback(self, feedback: InteractiveMarkerFeedback):
+        task_pose_world_new = self.uvms_backend.try_transform_pose(
+            feedback.pose,
+            target_frame=self.uvms_backend.world_frame,
+            source_frame=self.uvms_backend.arm_base_target_frame,
+            warn_context="world_task_marker_processFeedback,new_pose",
+        )
+        if task_pose_world_new is None:
+            return
+        self.uvms_backend.target_world_endeffector_pose = task_pose_world_new
+        self.get_logger().info(f"Updated world task marker pose. TODO: implement handling.")
 
 
 def main(args=None):
     rclpy.init(args=args)
-    node = BasicControlsNode()
+    node = InteractiveControlsNode()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:

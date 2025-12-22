@@ -61,7 +61,6 @@ class KeyMappingNeutralPublisher(Node):
         self.no_robot = self.get_parameter('no_robot').value
         self.no_efforts = self.get_parameter('no_efforts').value
         self.robots_prefix = self.get_parameter('robots_prefix').value
-        self.record = self.get_parameter('record_data').value
         self.controllers = self.get_parameter('controllers').value
 
         self.get_logger().info(f"Robot prefixes found: {self.robots_prefix}")
@@ -70,7 +69,7 @@ class KeyMappingNeutralPublisher(Node):
 
         self.robots = []
         for k, (prefix, controller) in enumerate(list(zip(self.robots_prefix, self.controllers))):
-            robot_k = Robot(self, k, 4, prefix, self.record, controller)
+            robot_k = Robot(self, k, 4, prefix, controller)
             self.robots.append(robot_k)  
 
         # Define the base neutral command message.

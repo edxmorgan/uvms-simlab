@@ -44,7 +44,6 @@ class PS4TeleopNode(Node):
         self.no_robot = self.get_parameter('no_robot').value
         self.no_efforts = self.get_parameter('no_efforts').value
         self.robots_prefix = self.get_parameter('robots_prefix').value
-        self.record = self.get_parameter('record_data').value
         self.controllers = self.get_parameter('controllers').value
 
         self.get_logger().info(f"Robot prefixes found: {self.robots_prefix}")
@@ -54,7 +53,7 @@ class PS4TeleopNode(Node):
         self.robots:List[Robot] = []
         
         for k, (prefix, controller) in enumerate(list(zip(self.robots_prefix, self.controllers))):
-            robot_k = Robot(self, k, 4, prefix, self.record, controller)
+            robot_k = Robot(self, k, 4, prefix, controller)
             self.robots.append(robot_k)
 
         # Create a timer callback to publish commands at 1000 Hz.
@@ -63,7 +62,6 @@ class PS4TeleopNode(Node):
 
     def timer_callback(self):
         for robot in self.robots:
-            robot.publish_robot_path()
             [surge, sway, heave, roll, pitch, yaw] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
             [e_joint, d_joint, c_joint, b_joint, a_joint] = [0.0, 0.0, 0.0, 0.0, 0.0]
 
@@ -86,14 +84,6 @@ class PS4TeleopNode(Node):
             arm_effort_5 = [e_joint, d_joint, c_joint, b_joint, a_joint]
             # self.get_logger().info(f"ROV Command: {wrench_body_6}, Arm Command: {arm_effort_5}")
             robot.publish_commands(wrench_body_6, arm_effort_5)
-            robot.write_data_to_file()
-            robot.publish_robot_path()
-            
-    def destroy_node(self):
-        for robot in self.robots:
-            if robot.record:
-                robot.close_csv()
-        super().destroy_node()
 
 def main(args=None):
     rclpy.init(args=args)

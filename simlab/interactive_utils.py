@@ -107,7 +107,7 @@ def makeBoxControl(msg, fixed, interaction_mode, marker_type,
 
 def make_UVMS_Dof_Marker(name, description, frame_id, control_frame, fixed,
                         interaction_mode, initial_pose, scale,
-                        arm_base_pose, show_6dof=False, ignore_dof=[]):
+                        arm_base_pose=None, show_6dof=False, ignore_dof=[]):
     int_marker = InteractiveMarker()
     int_marker.header.frame_id = frame_id
     int_marker.pose = initial_pose

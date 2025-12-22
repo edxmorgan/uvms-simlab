@@ -75,17 +75,15 @@ def _valid_with_fcl(
     # OMPL uses w x y z, scipy uses x y z w
     quat = [q.x, q.y, q.z, q.w]
     roll, pitch, yaw = R.from_quat(quat).as_euler("xyz", degrees=False)
-
     if abs(roll) > max_abs_roll or abs(pitch) > max_abs_pitch:
         return False
-
     pw = np.array([x, y, z], float)
 
     if safety_margin is not None and safety_margin > 0.0:
-        d = rclpy_node.backend.fcl_world.min_distance_xyz(pw)
+        d = rclpy_node.uvms_backend.fcl_world.min_distance_xyz(pw)
         return d >= safety_margin
     else:
-        in_collision = rclpy_node.backend.fcl_world.planner_in_collision_at_xyz(pw)
+        in_collision = rclpy_node.uvms_backend.fcl_world.planner_in_collision_at_xyz(pw)
         return not in_collision
 
 def _get_path_length_objective(si: ob.SpaceInformation, threshold: float | None = None):
@@ -107,8 +105,8 @@ def plan_se3_path(
     spacing_m=0.20,
     dense_interpolation=400,
     max_points=2000,
-    max_abs_roll=np.deg2rad(10.0),   # 10 degrees
-    max_abs_pitch=np.deg2rad(10.0),  # 10 degrees
+    max_abs_roll=np.deg2rad(11.0),   # 11 degrees
+    max_abs_pitch=np.deg2rad(11.0),  # 11 degrees
     planner_type: str = "BITstar",   # "BITstar" or "RRTstar"
     path_length_threshold: float | None = None,  # optional optimality threshold
 ):
@@ -166,9 +164,8 @@ def plan_se3_path(
     space.enforceBounds(s)
     space.enforceBounds(g)
 
-    ss.setStartAndGoalStates(start, goal)
-
     si = ss.getSpaceInformation()
+    ss.setStartAndGoalStates(start, goal)
 
     if not si.satisfiesBounds(s):
         raise RuntimeError("Start violates bounds after enforceBounds")

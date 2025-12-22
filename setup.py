@@ -66,6 +66,7 @@ setup(
             'motive_publisher = simlab.sim_motive:main',
             'collision_contact_node = simlab.collision_contact:main',
             'voxelviz_node = simlab.voxel_viz:main',
+            'bag_recorder_node = simlab.bag_recorder:main',
         ],
     },
 )

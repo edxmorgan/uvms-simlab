@@ -29,14 +29,13 @@ class Dof_Control_Node(Node):
         self.no_robot = self.get_parameter('no_robot').value
         self.no_efforts = self.get_parameter('no_efforts').value
         self.robots_prefix = self.get_parameter('robots_prefix').value
-        self.record = self.get_parameter('record_data').value
         self.controllers = self.get_parameter('controllers').value
 
         self.get_logger().info(f"Robot prefixes found: {self.robots_prefix}")
         self.total_no_efforts = self.no_robot * self.no_efforts
         self.get_logger().info(f"Total number of commands: {self.total_no_efforts}")
 
-        self.robots = [Robot(self, k, 4, prefix, self.record) for k, prefix in enumerate(self.robots_prefix)]
+        self.robots = [Robot(self, k, 4, prefix) for k, prefix in enumerate(self.robots_prefix)]
 
         # Create a timer callback to publish commands at 1000 Hz.
         frequency = 1000  # Hz
@@ -56,13 +55,9 @@ class Dof_Control_Node(Node):
 
         #     ref = ref1
         #     command_msg.pose.data.extend(ref)
-        #     robot.write_data_to_file(ref)
         # # Publish the command
         # # self.get_logger().info(f'{command_msg.pose.data}')
         # self.uvms_publisher_.publish(command_msg)
-
-    def destroy_node(self):
-        super().destroy_node()
 
 
 ###############################################################################

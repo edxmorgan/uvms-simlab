@@ -19,13 +19,12 @@ from control_msgs.msg import DynamicJointState
 from scipy.spatial.transform import Rotation as R
 import ament_index_python
 import os
+import rclpy
 import casadi as ca
 from nav_msgs.msg import Path
 from rclpy.node import Node
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, Pose
 from rclpy.qos import QoSProfile, QoSHistoryPolicy
-import csv
-from datetime import datetime
 import copy
 from std_msgs.msg import Float32
 from pyPS4Controller.controller import Controller
@@ -33,16 +32,20 @@ import threading
 import glob
 from typing import Sequence, Dict
 from control_msgs.msg import DynamicInterfaceGroupValues
-from std_msgs.msg import Float64MultiArray, String
+from std_msgs.msg import Float64MultiArray
 from controller_msg import FullRobotMsg
 from controllers import LowLevelController
 from planner_markers import PathPlanner
 from cartesian_ruckig import VehicleCartesianRuckig, EndeffectorCartesianRuckig
-from alpha_reach import Params as alpha_params
+from alpha_reach import Params as alpha_params 
+from frame_utils import PoseX
+from tf2_ros import TransformException, Buffer
+from tf2_geometry_msgs import do_transform_pose
+
 class PS4Controller(Controller):
-    def __init__(self, ros_node, prefix, **kwargs):
+    def __init__(self, ros_node: Node, prefix, **kwargs):
         super().__init__(**kwargs)
-        self.ros_node = ros_node
+        self.ros_node: Node = ros_node
         
         # mode flag: False = joint control, True = light & mount control
         self.options_mode = False
@@ -117,10 +120,15 @@ class PS4Controller(Controller):
         with self.ros_node.controller_lock:
             self.ros_node.rov_surge = -scaled
 
+    # def on_L3_down(self, value):
+    #     scaled = self.max_torque * (value / 32767.0)
+    #     with self.ros_node.controller_lock:
+    #         self.ros_node.rov_surge = -scaled
+
     def on_L3_down(self, value):
         scaled = self.max_torque * (value / 32767.0)
         with self.ros_node.controller_lock:
-            self.ros_node.rov_surge = -scaled
+            self.ros_node.rov_surge = scaled
 
     def on_L3_right(self, value):
         scaled = self.max_torque * (value / 32767.0)
@@ -322,37 +330,6 @@ class Axis_Interface_names:
 
     sim_time = 'sim_time'
     sim_period = 'sim_period'
-
-    imu_roll = "imu_roll"
-    imu_pitch = "imu_pitch"
-    imu_yaw = "imu_yaw"
-
-    imu_roll_unwrap = "imu_roll_unwrap"
-    imu_pitch_unwrap = "imu_pitch_unwrap"
-    imu_yaw_unwrap = "imu_yaw_unwrap"
-
-    imu_q_w = "imu_orientation_w"
-    imu_q_x = "imu_orientation_x"
-    imu_q_y = "imu_orientation_y"
-    imu_q_z = "imu_orientation_z"
-
-    imu_wx = "imu_angular_vel_x"
-    imu_wy = "imu_angular_vel_y"
-    imu_wz = "imu_angular_vel_z"
-
-    imu_ax = "imu_linear_acceleration_x"
-    imu_ay = "imu_linear_acceleration_y"
-    imu_az = "imu_linear_acceleration_z"
-
-    depth_pressure2 = "depth_from_pressure2"
-
-    dvl_roll = "dvl_gyro_roll"
-    dvl_pitch = "dvl_gyro_pitch"
-    dvl_yaw = "dvl_gyro_yaw"
-
-    dvl_speed_x = "dvl_speed_x"
-    dvl_speed_y = "dvl_speed_y"
-    dvl_speed_z = "dvl_speed_z"
     
 class Manipulator(Base):
     def __init__(self, node: Node, n_joint, prefix):
@@ -380,33 +357,16 @@ class Manipulator(Base):
             self.joints,
             [Axis_Interface_names.manipulator_position] * 4
         )
-        self.filtered_q = self.get_interface_value(
-            msg,
-            self.joints,
-            [Axis_Interface_names.manipulator_filtered_position] * 4
-        )
         self.dq = self.get_interface_value(
             msg,
             self.joints,
             [Axis_Interface_names.manipulator_velocity] * 4
-        )
-        self.filtered_dq = self.get_interface_value(
-            msg,
-            self.joints,
-            [Axis_Interface_names.manipulator_filtered_velocity] * 4
-        )
-        self.estimated_ddq = self.get_interface_value(
-            msg,
-            self.joints,
-            [Axis_Interface_names.manipulator_estimation_acceleration] * 4
         )
         self.effort = self.get_interface_value(
             msg,
             self.joints,
             [Axis_Interface_names.manipulator_effort] * 4
         )
-
-
         self.sim_period = self.get_interface_value(
             msg,
             [self.alpha_axis_e],
@@ -425,7 +385,6 @@ class Robot(Base):
                   k_robot, 
                   n_joint, 
                   prefix,
-                  record=False,  
                   controller='pid'):
         self.planner: PathPlanner = None
         self.vehicle_cart_traj: VehicleCartesianRuckig = None
@@ -452,8 +411,6 @@ class Robot(Base):
             10
         )
         
-
-
         self.k_robot = k_robot
         self.robot_name = f'uvms {prefix}: {k_robot}'
         self.dynamics_states_sub  # prevent unused variable warning
@@ -485,65 +442,16 @@ class Robot(Base):
             Robot.wb_ik_eval_cls = self.whole_body_ik_eval
 
         self.node = node
-        self.sensors = [
-            Axis_Interface_names.imu_roll,
-            Axis_Interface_names.imu_pitch,
-            Axis_Interface_names.imu_yaw,
-            Axis_Interface_names.imu_roll_unwrap,
-            Axis_Interface_names.imu_pitch_unwrap,
-            Axis_Interface_names.imu_yaw_unwrap,
-            Axis_Interface_names.imu_q_w,
-            Axis_Interface_names.imu_q_x,
-            Axis_Interface_names.imu_q_y,
-            Axis_Interface_names.imu_q_z,
-            Axis_Interface_names.imu_wx,
-            Axis_Interface_names.imu_wy,
-            Axis_Interface_names.imu_wz,
-            Axis_Interface_names.imu_ax,
-            Axis_Interface_names.imu_ay,
-            Axis_Interface_names.imu_az,
-            Axis_Interface_names.depth_pressure2,
-            Axis_Interface_names.dvl_roll,
-            Axis_Interface_names.dvl_pitch,
-            Axis_Interface_names.dvl_yaw,
-            Axis_Interface_names.dvl_speed_x,
-            Axis_Interface_names.dvl_speed_y,
-            Axis_Interface_names.dvl_speed_z
-            ]
-        self.prediction_interfaces = [
-            "position.x", "position.y", "position.z", "roll", "pitch", "yaw",
-            "orientation.w", "orientation.x", "orientation.y", "orientation.z", 
-            "velocity.x", "velocity.y", "velocity.z", 
-            "angular_velocity.x", "angular_velocity.y", "angular_velocity.z",
-        ]
-
-        self.state_estimate_interfaces = [
-            "position_estimate.x", "position_estimate.y", "position_estimate.z",
-            "roll_estimate", "pitch_estimate", "yaw_estimate",
-            "orientation_estimate.w", "orientation_estimate.x", "orientation_estimate.y", "orientation_estimate.z",
-            "velocity_estimate.x", "velocity_estimate.y", "velocity_estimate.z",
-            "angular_velocity_estimate.x", "angular_velocity_estimate.y", "angular_velocity_estimate.z",
-            "linear_acceleration.x", "linear_acceleration.y", "linear_acceleration.z",
-            "angular_acceleration.x", "angular_acceleration.y", "angular_acceleration.z",
-            "P_x_x", "P_y_y", "P_z_z", "P_roll_roll", "P_pitch_pitch", "P_yaw_yaw",
-            "P_u_u", "P_v_v", "P_w_w", "P_p_p", "P_q_q", "P_r_r",
-        ]
-
-        self.payload_state_interfaces = ["payload.mass", "payload.Ixx", "payload.Iyy", "payload.Izz"]
 
         self.n_joint = n_joint
         self.floating_base_IOs = f'{prefix}IOs'
         self.arm_IOs = f'{prefix}_arm_IOs'
+        self.map_frame = f"{prefix}map" 
         self.arm = Manipulator(node, n_joint, prefix)
         self.ned_pose = [0] * 6
         self.body_vel = [0] * 6
         self.ned_vel = [0] * 6
-        self.sensor_reading = [0] * len(self.sensors)
-        self.prediction_readings = [0] * len(self.prediction_interfaces)
-        self.state_estimate_readings = [0] * len(self.state_estimate_interfaces)
-        self.payload_state_readings = [0] * len(self.payload_state_interfaces)
         self.body_forces = [0] * 6
-        self.gt_measurements = [0] * 6
         self.prefix = prefix
         self.status = 'inactive'
         self.sim_time = 0.0
@@ -554,14 +462,6 @@ class Robot(Base):
         self.body_vel_command = [0.0]*6
         self.body_acc_command = [0.0]*6
         self.ll_controllers = LowLevelController(self.n_joint)
-
- 
-        self.uvms_ll = [-1000, -1000, 0.0, -np.pi/6, -np.pi/6, -1000, 1, 0.01, 0.01, 0.01]
-        self.uvms_ul = [ 1000, 1000, 1000, np.pi/6, np.pi/6, 1000, 5.50, 3.40, 3.40, 5.70]
-        self.k0 = [1,1,1 , 1,1,1, 1,1,1,1]
-        self.base_pose = [0.190, 0.000, -0.120, np.pi, 0.000, 0.000] #floating base mount
-        self.world_pose = [0.0, 0.0, 0, 0, 0, 0]
-        self.vec_g = [0, 0, 9.81]
 
         qos_profile = QoSProfile(
             history=QoSHistoryPolicy.KEEP_LAST,
@@ -589,26 +489,12 @@ class Robot(Base):
             qos_profile
         )
 
-        self.overlay_text_publisher = self.node.create_publisher(
-            String,
-            "chatter",
-            qos_profile
-        )
-
-        
-        self.overlay_text_timer = self.node.create_timer(1.0 / 30, self.publish_overlay_text_callback)
-
         self.traj_path_poses = []
         self.max_traj_pose_count = 2000  # cap RViz message size
         self.path_publish_period = 0.1  # seconds between stored poses
         self._last_path_pub_time = None
 
-        self.record = record
-
-        self.initiaize_data_writer()
-
         self.node_name = node.get_name()
-        # if self.node_name in ['joystick_controller','']:
         # Search for joystick device in /dev/input
         device_interface = f"/dev/input/js{self.k_robot}"
         self.has_joystick_interface = False
@@ -620,7 +506,12 @@ class Robot(Base):
             self.has_joystick_interface = True
         else:
             self.node.get_logger().info(f"No joystick device found for robot {self.k_robot}.")
-    
+        self.robot_path_pub_timer = self.node.create_timer(1.0 / 100.0, self.publish_robot_path_callback)
+        self.control_frequency = 500.0  # Hz
+        self.control_timer = self.node.create_timer(1.0 / self.control_frequency, self.control_timer_callback)
+        # Define a threshold error at which we start yaw blending.
+        self.pos_blend_threshold = 1.1
+
     @classmethod
     def uvms_Forward_kinematics(cls, joint_qx, base_T0, world_pose, tipOffset):
         return cls.fk_eval_cls(joint_qx, base_T0, world_pose, tipOffset)
@@ -729,29 +620,6 @@ class Robot(Base):
         )
 
         self.ned_vel = self.to_ned_velocity(self.body_vel, self.ned_pose)
-        
-        self.sensor_reading = self.get_interface_value(
-            msg,
-            [self.floating_base_IOs] * len(self.sensors),
-            self.sensors
-        )
-
-        self.prediction_readings = self.get_interface_value(
-            msg,
-            [self.floating_base_IOs] * len(self.prediction_interfaces),
-            self.prediction_interfaces
-        )
-        self.state_estimate_readings = self.get_interface_value(
-            msg,
-            [self.floating_base_IOs] * len(self.state_estimate_interfaces),
-            self.state_estimate_interfaces
-        )
-
-        self.payload_state_readings = self.get_interface_value(
-            msg,
-            [self.arm_IOs] * len(self.payload_state_interfaces),
-            self.payload_state_interfaces
-        )
 
         self.body_forces = self.get_interface_value(
             msg,
@@ -783,10 +651,29 @@ class Robot(Base):
         xq['status'] = self.status
         xq['sim_time'] = self.sim_time
         xq['prefix'] = self.prefix
-        xq['raw_sensor_readings'] = self.sensor_reading
         xq['mocap'] = self.mocap_latest
-        # self.node.get_logger().info(f"body forces {xq['raw_sensor_readings']}")
         return xq
+        
+    def _pose_from_state_in_frame(self, tf_buffer: Buffer, dst_frame: str) -> Pose | None:
+        # Build Pose in source frame
+        pose_src = PoseX.from_pose(
+            xyz=np.array(self.ned_pose[0:3], float),
+            rot=np.array(self.ned_pose[3:6], float),
+            rot_rep="euler_xyz",
+            frame="NED",
+        ).get_pose_as_Pose_msg(frame="NWU")  # returns geometry_msgs/Pose
+
+        try:
+            tf = tf_buffer.lookup_transform(
+                target_frame=dst_frame,
+                source_frame=self.map_frame,
+                time=rclpy.time.Time(),
+            )
+            pose_dst = do_transform_pose(pose_src, tf)  # Pose in dst_frame
+            return pose_dst
+        except TransformException as ex:
+            self.node.get_logger().warn(f"TF failed {dst_frame} <- {self.map_frame}: {ex}")
+            return None
 
     def to_ned_velocity(self, body_vel, pose):
         velocity_ned = copy.copy(body_vel)
@@ -794,7 +681,7 @@ class Robot(Base):
         velocity_ned[:6] = J_UV_REF.full()@body_vel[:6]
         return velocity_ned
 
-    def publish_robot_path(self):
+    def publish_robot_path_callback(self):
         # Publish the robot trajectory path to RViz
         now_msg = self.node.get_clock().now().to_msg()
         stamp_time = now_msg.sec + now_msg.nanosec * 1e-9
@@ -807,7 +694,7 @@ class Robot(Base):
 
         tra_path_msg = Path()
         tra_path_msg.header.stamp = now_msg
-        tra_path_msg.header.frame_id = f"{self.prefix}map" 
+        tra_path_msg.header.frame_id = self.map_frame
 
         # Create PoseStamped from ref_pos
         traj_pose = PoseStamped()
@@ -859,105 +746,6 @@ class Robot(Base):
         adjusted_desired_yaw = current_yaw + angle_diff
         return adjusted_desired_yaw
 
-    def initiaize_data_writer(self):
-        if self.record:
-            # Create a timestamp string
-            timestamp_str = datetime.now().strftime('%Y%m%d_%H%M%S')
-            
-            # Create a folder with the timestamp as its name (in the current working directory)
-            folder_path = os.path.join(os.getcwd(), timestamp_str)
-            os.makedirs(folder_path, exist_ok=True)
-            
-            # Create a timestamped filename for the CSV
-            filename = f"{timestamp_str}_{self.prefix}.csv"
-            file_path = os.path.join(folder_path, filename)
-            
-            # Open the CSV file and prepare to write data
-            self.csv_file = open(file_path, 'w', newline='')
-            self.csv_writer = csv.writer(self.csv_file)
-
-            # Write a header row for clarity
-            columns = [
-                'timestamp',
-                'ros_time',
-                'base_x_force', 'base_y_force', 'base_z_force', 'base_x_torque', 'base_y_torque', 'base_z_torque',
-                'base_x', 'base_y', 'base_z', 'base_roll', 'base_pitch', 'base_yaw',
-                'base_dx', 'base_dy', 'base_dz', 'base_vel_roll', 'base_vel_pitch', 'base_vel_yaw',
-                
-                'effort_alpha_axis_e', 'effort_alpha_axis_d', 'effort_alpha_axis_c', 'effort_alpha_axis_b',
-                'q_alpha_axis_e', 'q_alpha_axis_d', 'q_alpha_axis_c', 'q_alpha_axis_b',
-                'dq_alpha_axis_e', 'dq_alpha_axis_d', 'dq_alpha_axis_c', 'dq_alpha_axis_b',
-
-                'imu_roll', 'imu_pitch', 'imu_yaw',
-                'imu_roll_unwrap', 'imu_pitch_unwrap', 'imu_yaw_unwrap',
-                'imu_q_w', 'imu_q_x', 'imu_q_y', 'imu_q_z',
-                'imu_ang_vel_x', 'imu_ang_vel_y','imu_ang_vel_z',
-                'imu_linear_acc_x', 'imu_linear_acc_y','imu_linear_acc_z',
-                'depth_from_pressure2',
-                'dvl_roll', 'dvl_pitch', 'dvl_yaw',
-                'dvl_speed_x', 'dvl_speed_y', 'dvl_speed_z',
-
-                'base_x_ref', 'base_y_ref', 'base_z_ref', 'base_roll_ref', 'base_pitch_ref', 'base_yaw_ref',
-                'q_alpha_axis_e_ref', 'q_alpha_axis_d_ref', 'q_alpha_axis_c_ref', 'q_alpha_axis_b_ref', 'q_alpha_axis_a_ref',
-
-                "position.x", "position.y", "position.z", "roll", "pitch", "yaw",
-                "orientation.w", "orientation.x", "orientation.y", "orientation.z", 
-                "velocity.x", "velocity.y", "velocity.z", 
-                "angular_velocity.x", "angular_velocity.y", "angular_velocity.z",
-
-                "position_estimate.x", "position_estimate.y", "position_estimate.z",
-                "roll_estimate", "pitch_estimate", "yaw_estimate",
-                "orientation_estimate.w", "orientation_estimate.x", "orientation_estimate.y", "orientation_estimate.z",
-                "velocity_estimate.x", "velocity_estimate.y", "velocity_estimate.z",
-                "angular_velocity_estimate.x", "angular_velocity_estimate.y", "angular_velocity_estimate.z",
-                "linear_acceleration.x", "linear_acceleration.y", "linear_acceleration.z",
-                "angular_acceleration.x", "angular_acceleration.y", "angular_acceleration.z",
-                "P_x_x", "P_y_y", "P_z_z", "P_roll_roll", "P_pitch_pitch", "P_yaw_yaw",
-                "P_u_u", "P_v_v", "P_w_w", "P_p_p", "P_q_q", "P_r_r",
-
-                "payload.mass", "payload.Ixx", "payload.Iyy", "payload.Izz",
-
-                "mocap_x", "mocap_y", "mocap_z", "mocap_q_w", "mocap_q_x", "mocap_q_y", "mocap_q_z",
-            ]
-
-            self.csv_writer.writerow(columns)
-    
-    def write_data_to_file(self, ref=[0,0,0, 0,0,0, 0,0,0,0, 0]):
-        if self.record:
-            t_ros = float(self.node.get_clock().now().nanoseconds) * 1e-9
-            row_data = []
-            info = self.get_state()
-            
-            row_data.extend([info['sim_time']])
-            row_data.extend([t_ros])
-            
-            row_data.extend(info['body_forces'])
-            row_data.extend(info['pose'])
-            row_data.extend(info['body_vel'])
-
-            row_data.extend(info['arm_effort'])
-            row_data.extend(info['q'])
-            row_data.extend(info['dq'])
-            
-            row_data.extend(info['raw_sensor_readings'])
-            row_data.extend(ref)
-            row_data.extend(self.prediction_readings)
-            row_data.extend(self.state_estimate_readings)
-            row_data.extend(self.payload_state_readings)
-            row_data.extend(info['mocap'])
-
-            if all(value == 0 for value in row_data):
-                return
-
-            """Write a single row of data to the CSV file."""
-            self.csv_writer.writerow(row_data)
-            self.csv_file.flush()
-
-    def publish_overlay_text_callback(self) -> None:
-        str_msg = String()
-        str_msg.data = f"© {datetime.now().year} Louisiana State University. Research use."
-        self.overlay_text_publisher.publish(str_msg)
-
     def publish_vehicle_and_arm(
         self,
         wrench_body_6: Sequence[float],
@@ -985,9 +773,117 @@ class Robot(Base):
         vehicle_pwm = container.to_vehicle_pwm()
         self.vehicle_pwm_command_publisher.publish(vehicle_pwm)
 
-    def close_csv(self):
-        # Close the CSV file when the node is destroyed
-        self.csv_file.close()
-
     def listener_callback(self, msg: DynamicJointState):
         self.update_state(msg)
+
+    def control_timer_callback(self):
+        k_planner = self.planner
+
+        state = self.get_state()
+        if state['status'] == 'active':
+            if self.final_goal is not None and k_planner.planned_result and k_planner.planned_result['is_success']:
+                self.node.get_logger().debug(f"Control timer callback {self.prefix} active.")
+                # Convert once to NumPy arrays
+                path_xyz = np.asarray(k_planner.planned_result["xyz"], dtype=float)
+                path_quat = np.asarray(k_planner.planned_result["quat_wxyz"], dtype=float)
+
+                # Compute current manifold errors
+                wp_err_trans, wp_err_rot, wp_err_joint, goal_err_trans, goal_err_rot = self.compute_errors()
+                goal_xyz_error = np.linalg.norm(goal_err_trans)
+
+                # Calculate the blend factor.
+                # When pos_error >= pos_blend_threshold, blend_factor will be 0 (full velocity_yaw).
+                # When pos_error == 0, blend_factor will be 1 (full target_yaw).
+                self.yaw_blend_factor = np.clip((self.pos_blend_threshold - goal_xyz_error) / self.pos_blend_threshold, 0.0, 1.0)
+                # self.get_logger().info(
+                #     f"{robot.yaw_blend_factor} yaw_blend_factor"
+                # )
+                # Get the velocity-based yaw.
+                adjusted_yaw = self.orient_towards_velocity()
+
+                pos_nwu, vel_nwu, acc_nwu, res = self.vehicle_cart_traj.update(self.yaw_blend_factor)
+
+                if pos_nwu is not None:
+                    target_nwu = np.asarray(pos_nwu, dtype=float)
+
+                    # Pick orientation from nearest OMPL waypoint
+                    dists = np.linalg.norm(path_xyz - target_nwu, axis=1)
+                    idx = int(np.argmin(dists))
+                    target_quat = path_quat[idx]
+
+                    q_arrow = self.planner.quat_wxyz_from_x_to_vec_scipy(vel_nwu)
+
+                    self.planner.update_target_viz(
+                        stamp=self.node.get_clock().now().to_msg(),
+                        frame_id="world",
+                        xyz=target_nwu,
+                        quat_wxyz=q_arrow,
+                        as_arrow=True,
+                        size=0.10,
+                        rate_hz=30.0,
+                        ttl_sec=0.0,
+                    )
+
+
+                    # Convert target pose from NWU to NED
+                    target_pose = PoseX.from_pose(
+                        xyz=target_nwu,
+                        rot=target_quat,
+                        rot_rep="quat_wxyz",
+                        frame="NWU",
+                    )
+                    p_cmd_ned, rpy_cmd_ned = target_pose.get_pose(
+                        frame="NED",
+                        rot_rep="euler_xyz",
+                    )
+
+
+                    # # Blend the yaw values: more weight to target_yaw as the position error decreases.
+                    # rpy_cmd_ned[2] = (1 - self.yaw_blend_factor) * adjusted_yaw + self.yaw_blend_factor * rpy_cmd_ned[2]
+
+                    # self.pose_command = [
+                    #     float(p_cmd_ned[0]),
+                    #     float(p_cmd_ned[1]),
+                    #     float(p_cmd_ned[2]),
+                    #     float(rpy_cmd_ned[0]),
+                    #     float(rpy_cmd_ned[1]),
+                    #     float(rpy_cmd_ned[2]),
+                    # ]
+
+
+        #         self.arm.q_command = [self.q0_des, self.q1_des, self.q2_des, self.q3_des]                        
+
+        veh_state_vec = np.array(
+            list(state['pose']) + list(state['body_vel']),
+            dtype=float
+        )
+        # log to terminal
+        # self.get_logger().info(f"robot command = {robot.pose_command}")
+
+        cmd_body_wrench = self.ll_controllers.vehicle_controller(
+            state=veh_state_vec,
+            target=np.array(self.pose_command, dtype=float),
+            dt=state["dt"]
+        )
+
+        # cmd_body_wrench = np.zeros(6)
+        # cmd_body_wrench = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 2.0])
+        # Arm PID
+        cmd_arm_tau = self.ll_controllers.arm_controller(
+            q=state["q"],
+            q_dot=state["dq"],
+            q_ref=self.arm.q_command,
+            Kp=alpha_params.Kp,
+            Ki=alpha_params.Ki,
+            Kd=alpha_params.Kd,
+            dt=state["dt"],
+            u_max=alpha_params.u_max,
+            u_min=alpha_params.u_min,
+            model_param=alpha_params.sim_p,
+        )
+
+        arm_tau_list = list(np.asarray(cmd_arm_tau, dtype=float).reshape(-1))
+        # always produce 5 values, slice if longer, pad if shorter
+        arm_tau_list = arm_tau_list[:5] + [0.0]
+
+        self.publish_commands(cmd_body_wrench, arm_tau_list)

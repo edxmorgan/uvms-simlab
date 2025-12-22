@@ -4,11 +4,11 @@ import numpy as np
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import PointCloud2
-
-import pyoctomap
+from std_msgs.msg import String
 import trimesh
 from ament_index_python.packages import get_package_share_directory
 from mesh_utils import collect_env_meshes, conc_env_trimesh, points_to_cloud2
+from datetime import datetime
 
 class VoxelVizNode(Node):
     def __init__(self):
@@ -26,7 +26,7 @@ class VoxelVizNode(Node):
             raise RuntimeError('no robot_description')
 
         # collect meshes
-        robot_mesh_infos, env_mesh_infos = collect_env_meshes(urdf_string)
+        robot_mesh_infos, env_mesh_infos, floor_depth = collect_env_meshes(urdf_string)
         if len(env_mesh_infos) == 0:
             self.get_logger().warn(
                 "No env meshes with prefix bathymetry_ found"
@@ -64,8 +64,21 @@ class VoxelVizNode(Node):
             10
         )
 
+        self.overlay_text_publisher = self.create_publisher(
+            String,
+            "chatter",
+            10
+        )
+
+        self.overlay_text_timer = self.create_timer(1.0 / 30, self.publish_overlay_text_callback)
         # timer
         self.timer = self.create_timer(0.1, self.tick)
+
+    def publish_overlay_text_callback(self) -> None:
+        str_msg = String()
+        str_msg.data = f"© {datetime.now().year} Louisiana State University. Research use."
+        self.overlay_text_publisher.publish(str_msg)
+
 
     def tick(self):
         """

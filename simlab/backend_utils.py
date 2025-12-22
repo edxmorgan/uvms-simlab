@@ -70,39 +70,8 @@ def get_broadcast_tf(stamp, pose, parent_frame, child_frame):
     t.transform.rotation = pose.orientation
     return t
 
-def pose_to_homogeneous(pose):
-    """Convert a geometry_msgs/Pose into a 4x4 homogeneous transformation matrix."""
-    quat = [pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w]
-    trans = [pose.position.x, pose.position.y, pose.position.z]
-    mat = quaternion_matrix(quat)
-    mat[0:3, 3] = trans
-    return mat
-
-def homogeneous_to_pose(mat):
-    """Convert a 4x4 homogeneous transformation matrix into a geometry_msgs/Pose."""
-    pose = Pose()
-    pose.position.x = mat[0, 3]
-    pose.position.y = mat[1, 3]
-    pose.position.z = mat[2, 3]
-    quat = quaternion_from_matrix(mat)
-    pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w = quat
-    return pose
-
-def get_relative_pose(marker_pose, endeffector_pose):
-    """
-    Compute the relative pose of the endeffector with respect to the marker.
-    marker_pose and endeffector_pose should be geometry_msgs/Pose.
-    Returns a Pose representing the endeffector pose in the marker's frame.
-    """
-    T_marker = pose_to_homogeneous(marker_pose)
-    T_ee = pose_to_homogeneous(endeffector_pose)
-    T_rel = np.dot(np.linalg.inv(T_marker), T_ee)
-    return homogeneous_to_pose(T_rel)
-
 def visualize_min_max_coords(min_coords, max_coords, bottom_z, world_frame):
     # Fallback if TF never came in
-    bottom_z = bottom_z if bottom_z is not None else 0.0
-
     pose_min = Pose()
     pose_min.position.x, pose_min.position.y, _ = min_coords
     pose_min.position.z = bottom_z

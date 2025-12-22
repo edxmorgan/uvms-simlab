@@ -93,6 +93,7 @@ def collect_env_meshes(urdf_string: str):
     env_out = []
 
     child_to_parent = {}
+    floor_depth = 0.0
 
     for j in model.joints or []:
         child_name = j.child if hasattr(j, "child") else None
@@ -125,12 +126,17 @@ def collect_env_meshes(urdf_string: str):
         # only care about robot_* and bathymetry_shipwreck*
         is_robot_link = link_name.startswith("robot_")
         is_env_link   = link_name.startswith("bathymetry_")
+        is_floor_link = link_name.startswith("world_bottom")
 
-        if not (is_robot_link or is_env_link):
+        if not (is_robot_link or is_env_link or is_floor_link):
             continue
-
+                
         # get the parent joint info for this link, if any
         joint_info = child_to_parent.get(link_name, None)
+
+        if is_floor_link:
+            # assume only one floor link, take the z from its first visual
+            floor_depth = joint_info["parent_to_link_xyz"][2]
 
         # walk visuals
         for vis in getattr(link, "visuals", []) or []:
@@ -182,7 +188,7 @@ def collect_env_meshes(urdf_string: str):
             if is_env_link:
                 env_out.append(entry)
 
-    return robot_out, env_out
+    return robot_out, env_out, floor_depth
 
 
 def getAABB_OBB(mesh):

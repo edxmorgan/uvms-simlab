@@ -5,7 +5,7 @@ import rclpy
 from rclpy.node import Node
 from tf2_ros import Buffer, TransformListener
 from visualization_msgs.msg import Marker
-from mesh_utils import make_marker, color, collect_env_meshes  # collect_env_meshes only for logging
+from mesh_utils import make_marker, color, collect_env_meshes
 from fcl_checker import FCLWorld
 
 
@@ -20,7 +20,7 @@ class CollisionNode(Node):
             raise RuntimeError('no robot_description')
 
         # optional log like your original
-        robot_links, env_links = collect_env_meshes(urdf_string)
+        robot_links, env_links, floor_depth = collect_env_meshes(urdf_string)
         self.get_logger().info(f'robot_links { [x["link"] for x in robot_links] }')
         self.get_logger().info(f'env_links { [x["link"] for x in env_links] }')
 
