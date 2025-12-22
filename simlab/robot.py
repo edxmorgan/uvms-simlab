@@ -43,6 +43,9 @@ from tf2_ros import TransformException, Buffer
 from tf2_geometry_msgs import do_transform_pose
 from typing import Optional
 from geometry_msgs.msg import Pose
+from typing import Optional, Tuple, Sequence
+import numpy as np
+from geometry_msgs.msg import Pose
 
 class PS4Controller(Controller):
     def __init__(self, ros_node: Node, prefix, **kwargs):
@@ -346,6 +349,7 @@ class Manipulator(Base):
         self.alpha_axis_c = f'{prefix}_axis_c'
         self.alpha_axis_d = f'{prefix}_axis_d'
         self.alpha_axis_e = f'{prefix}_axis_e'
+        self.joint_desired = [0.0]*n_joint
 
         self.joints = [self.alpha_axis_e, self.alpha_axis_d, self.alpha_axis_c, self.alpha_axis_b]
 
@@ -393,7 +397,8 @@ class Robot(Base):
         self.vehicle_cart_traj: VehicleCartesianRuckig = None
         self.endeffector_cart_traj: EndeffectorCartesianRuckig = None
         self.menu_handle = None
-        self.final_goal = None
+        self.final_goal_in_world = None
+        self.final_goal_map_ned_6 = None
         self.yaw_blend_factor = 0.0
         self.tf_buffer = tf_buffer
         self.dynamics_states_sub = node.create_subscription(
@@ -536,28 +541,52 @@ class Robot(Base):
         self.mocap_latest = [float(p.x), float(p.y), float(p.z),
                             float(q.w), float(q.x), float(q.y), float(q.z)]
 
+
+    def set_final_goal_in_world(self, goal_xyz_world_nwu, goal_quat_world_wxyz) -> None:
+        self.final_goal_in_world = (goal_xyz_world_nwu, goal_quat_world_wxyz)
+
+        res_map_ned = self.world_nwu_to_map_ned(
+            xyz_world_nwu=goal_xyz_world_nwu,
+            quat_world_wxyz=goal_quat_world_wxyz,
+            warn_context=f"final_goal world->map ({self.prefix})",
+        )
+        if res_map_ned is None:
+            self.final_goal_in_map_ned = None
+            return
+
+        p_goal_ned, rpy_goal_ned = res_map_ned
+        # store goal in the same 6D format as your state['pose'] (NED euler_xyz)
+        self.final_goal_in_map_ned = (
+            np.asarray([p_goal_ned[0], p_goal_ned[1], p_goal_ned[2]], dtype=float),
+            np.asarray([rpy_goal_ned[0], rpy_goal_ned[1], rpy_goal_ned[2]], dtype=float),
+        )
+
     def compute_errors(self):
         st = self.get_state()
-        goal_xyz, goal_quat_xyz = self.final_goal
-        X_goal_des = list(goal_xyz) + list(goal_quat_xyz)
-        # vehicle part. fix this. map and world conflict
-        X_curr = np.asarray(st["pose"], dtype=float)
-        X_wp_des  = np.asarray(self.pose_command, dtype=float)
 
-        err_wp = (X_wp_des - X_curr)
+        X_curr = np.asarray(st["pose"], dtype=float)          # 6D NED in map frame
+        X_wp_des = np.asarray(self.pose_command, dtype=float) # 6D NED in map frame
+
+        err_wp = X_wp_des - X_curr
         err_wp_trans = np.abs(err_wp[:3])
         err_wp_rotation = np.abs(err_wp[3:])
 
-        err_goal = (X_goal_des - X_curr)
-        err_goal_trans = np.abs(err_goal[:3])
-        err_goal_rotation = np.abs(err_goal[3:])
+        # Goal error (only if goal exists)
+        if self.final_goal_map_ned_6 is None:
+            err_goal_trans = np.zeros(3)
+            err_goal_rotation = np.zeros(3)
+        else:
+            X_goal_des = np.asarray(self.final_goal_map_ned_6, dtype=float)
+            err_goal = X_goal_des - X_curr
+            err_goal_trans = np.abs(err_goal[:3])
+            err_goal_rotation = np.abs(err_goal[3:])
 
-        # manipulator part, subtract per joint
         q_curr = np.asarray(st["q"], dtype=float).tolist()
         q_des  = np.asarray(self.arm.q_command, dtype=float).tolist()
-
         err_joints = [np.abs((Xd - Xc)) for Xd, Xc in zip(q_des, q_curr)]
-        return err_wp_trans, err_wp_rotation, err_joints , err_goal_trans, err_goal_rotation
+
+        return err_wp_trans, err_wp_rotation, err_joints, err_goal_trans, err_goal_rotation
+
 
     def start_joystick(self, device_interface):
         # Shared variables updated by the PS4 controller callbacks.
@@ -704,6 +733,77 @@ class Robot(Base):
         )
         return pose_dst
 
+
+
+    def _pose_msg_from_xyz_quat_wxyz_nwu(
+        self,
+        xyz: Sequence[float],
+        quat_wxyz: Sequence[float],
+    ) -> Pose:
+        """Build geometry_msgs/Pose from NWU xyz and quaternion (wxyz)."""
+        p = Pose()
+        p.position.x = float(xyz[0])
+        p.position.y = float(xyz[1])
+        p.position.z = float(xyz[2])
+        p.orientation.w = float(quat_wxyz[0])
+        p.orientation.x = float(quat_wxyz[1])
+        p.orientation.y = float(quat_wxyz[2])
+        p.orientation.z = float(quat_wxyz[3])
+        return p
+
+    def world_nwu_to_map_ned(
+        self,
+        xyz_world_nwu: Sequence[float],
+        quat_world_wxyz: Sequence[float],
+        *,
+        warn_context: str = "",
+    ) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+        """
+        Convert a pose given in 'world' frame (NWU) into (map-frame) NED pose.
+
+        Returns:
+        (p_cmd_ned, rpy_cmd_ned) where
+            p_cmd_ned: (3,) np.ndarray
+            rpy_cmd_ned: (3,) np.ndarray in euler_xyz
+        Returns None if TF is not ready.
+        """
+        # 1) world pose (NWU) as geometry_msgs/Pose
+        world_pose_nwu = self._pose_msg_from_xyz_quat_wxyz_nwu(
+            xyz_world_nwu,
+            quat_world_wxyz,
+        )
+
+        # 2) TF: world -> map_frame (still NWU representation, just different frame)
+        map_pose_nwu = self.try_transform_pose(
+            pose_in_source=world_pose_nwu,
+            target_frame=self.map_frame,
+            source_frame="world",
+            warn_context=warn_context or f"world_nwu_to_map_ned({self.prefix})",
+        )
+        if map_pose_nwu is None:
+            return None
+
+        # 3) Convert NWU pose message in map_frame to NED (p, rpy)
+        p_cmd_ned, rpy_cmd_ned = PoseX.from_pose(
+            xyz=np.array(
+                [map_pose_nwu.position.x, map_pose_nwu.position.y, map_pose_nwu.position.z],
+                dtype=float,
+            ),
+            rot=np.array(
+                [
+                    map_pose_nwu.orientation.w,
+                    map_pose_nwu.orientation.x,
+                    map_pose_nwu.orientation.y,
+                    map_pose_nwu.orientation.z,
+                ],
+                dtype=float,
+            ),
+            rot_rep="quat_wxyz",
+            frame="NWU",
+        ).get_pose(frame="NED", rot_rep="euler_xyz")
+
+        return np.asarray(p_cmd_ned, dtype=float), np.asarray(rpy_cmd_ned, dtype=float)
+
     def to_ned_velocity(self, body_vel, pose):
         velocity_ned = copy.copy(body_vel)
         J_UV_REF = self.vehicle_J(pose[3:6])
@@ -808,7 +908,7 @@ class Robot(Base):
     def control_timer_callback(self):
         state = self.get_state()
         if state['status'] == 'active':
-            if self.final_goal is not None and self.planner.planned_result and self.planner.planned_result['is_success']:
+            if self.final_goal_map_ned_6 is not None and self.planner.planned_result and self.planner.planned_result['is_success']:
                 self.node.get_logger().debug(f"Control timer callback {self.prefix} active.")
                 # Convert once to NumPy arrays
                 path_xyz = np.asarray(self.planner.planned_result["xyz"], dtype=float)
@@ -851,50 +951,27 @@ class Robot(Base):
                         ttl_sec=0.0,
                     )
 
-
-                    # Convert target pose from NWU to NED
-                    world_target_pose_NWU = PoseX.from_pose(
-                        xyz=target_nwu,
-                        rot=target_quat,
-                        rot_rep="quat_wxyz",
-                        frame="NWU",
-                    ).get_pose_as_Pose_msg(frame="NWU")
-
-                    # Use shared helper for TF lookup + transform + logging
-                    map_target_pose_NWU = self.try_transform_pose(
-                        pose_in_source=world_target_pose_NWU,
-                        target_frame=self.map_frame,
-                        source_frame="world",
-                        warn_context=f"_pose_from_world_to_map_frame({self.prefix})",
+                    res_map_ned = self.world_nwu_to_map_ned(
+                        xyz_world_nwu=target_nwu,
+                        quat_world_wxyz=target_quat,
+                        warn_context=f"target world->map ({self.prefix})",
                     )
+                    if res_map_ned is not None:
+                        p_cmd_ned, rpy_cmd_ned = res_map_ned
 
-                    p_cmd_ned, rpy_cmd_ned = PoseX.from_pose(
-                                xyz=[np.array(map_target_pose_NWU.position.x, float),
-                                     np.array(map_target_pose_NWU.position.y, float),
-                                     np.array(map_target_pose_NWU.position.z, float)],
-                                rot=[np.array(map_target_pose_NWU.orientation.w, float),
-                                     np.array(map_target_pose_NWU.orientation.x, float),
-                                     np.array(map_target_pose_NWU.orientation.y, float),
-                                     np.array(map_target_pose_NWU.orientation.z, float)],
-                                rot_rep="quat_wxyz",
-                                frame="NWU",
-                            ).get_pose(frame="NED",rot_rep="euler_xyz")
+                        # Blend yaw between velocity-based and target waypoint
+                        rpy_cmd_ned[2] = (1 - self.yaw_blend_factor) * adjusted_yaw + self.yaw_blend_factor * rpy_cmd_ned[2]
 
-
-                    # Blend the yaw values: more weight to target_yaw as the position error decreases.
-                    # rpy_cmd_ned[2] = (1 - self.yaw_blend_factor) * adjusted_yaw + self.yaw_blend_factor * rpy_cmd_ned[2]
-
-                    self.pose_command = [
-                        float(p_cmd_ned[0]),
-                        float(p_cmd_ned[1]),
-                        float(p_cmd_ned[2]),
-                        float(rpy_cmd_ned[0]),
-                        float(rpy_cmd_ned[1]),
-                        float(rpy_cmd_ned[2]),
-                    ]
-
-
-        #         self.arm.q_command = [self.q0_des, self.q1_des, self.q2_des, self.q3_des]                        
+                        self.pose_command = [
+                            float(p_cmd_ned[0]),
+                            float(p_cmd_ned[1]),
+                            float(p_cmd_ned[2]),
+                            float(rpy_cmd_ned[0]),
+                            float(rpy_cmd_ned[1]),
+                            float(rpy_cmd_ned[2]),
+                        ]
+            
+            self.arm.q_command = self.arm.joint_desired  
 
         veh_state_vec = np.array(
             list(state['pose']) + list(state['body_vel']),

@@ -102,7 +102,7 @@ class InteractiveControlsNode(Node):
             control_frame='arm_base_task',
             fixed=False,
             interaction_mode=InteractiveMarkerControl.MOVE_ROTATE_3D,
-            initial_pose=Pose(), #change to appropriate initial pose
+            initial_pose=self.uvms_backend.target_arm_base_endeffector_pose, #change to appropriate initial pose
             scale=0.2,
             show_6dof=True,
             ignore_dof=[]
@@ -216,7 +216,7 @@ class InteractiveControlsNode(Node):
         self.server.applyChanges()
 
     def world_task_marker_processFeedback(self, feedback: InteractiveMarkerFeedback):
-        task_pose_world_new = self.uvms_backend.try_transform_pose(
+        task_pose_world_new = self.uvms_backend.robot_selected.try_transform_pose(
             feedback.pose,
             target_frame=self.uvms_backend.world_frame,
             source_frame=self.uvms_backend.arm_base_target_frame,

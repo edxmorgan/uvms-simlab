@@ -100,7 +100,8 @@ class UVMSBackendCore:
         self.target_endeffector_in_world_tf_timer = self.node.create_timer(1.0 / 60.0, self.target_endeffector_in_world_tf_timer_callback)
         self.vehicle_target_cloud_timer = self.node.create_timer(1.0 / 100.0, self.vehicle_target_cloud_timer_callback)
         self.planner_viz_timer = self.node.create_timer(1.0 / 10.0, self.planner_viz_callback)
-
+        self.ik_solve_timer = self.node.create_timer(1.0 / 10.0, self.solve_execute_inverse_kinematics_wrt_vehicle_frame)
+        
         self.planner_marker_publisher = self.node.create_publisher(Marker, "planned_waypoints_marker", viz_qos)
         self.robots:List[Robot] = []
         self.max_cartesian_waypoints = 500
@@ -201,6 +202,10 @@ class UVMSBackendCore:
     def initialise_target_Poses(self):
         self.target_vehicle_pose = Pose()
         self.target_arm_base_endeffector_pose = Pose()
+        self.target_arm_base_endeffector_pose.position.x = 0.09669330716133118
+        self.target_arm_base_endeffector_pose.position.y = 0.0
+        self.target_arm_base_endeffector_pose.position.z = 0.1003517135977745
+
         self.target_world_endeffector_pose = Pose()
 
     def planner_viz_callback(self):
@@ -265,25 +270,25 @@ class UVMSBackendCore:
         )
 
     def _save_vehicle_goal_from_target(self):
-        gx = self.target_vehicle_pose.position.x
-        gy = self.target_vehicle_pose.position.y
-        gz = self.target_vehicle_pose.position.z
-        goal_xyz = np.array([gx, gy, gz], float)
+        goal_xyz_world_nwu, goal_quat_wxyz_world = self._get_vehicle_goal_from_marker()
 
-        goal_quat_wxyz = np.array([
-            self.target_vehicle_pose.orientation.w,
-            self.target_vehicle_pose.orientation.x,
-            self.target_vehicle_pose.orientation.y,
-            self.target_vehicle_pose.orientation.z,
-        ], float)
-        goal_now = PoseX.from_pose(
-            xyz=np.array(goal_xyz, float),
-            rot=np.array(goal_quat_wxyz, float),   # roll, pitch, yaw
-            rot_rep="quat_wxyz",
-            frame="NWU",
+        # Convert world (NWU) -> map (NED)
+        res = self.robot_selected.world_nwu_to_map_ned(
+            xyz_world_nwu=goal_xyz_world_nwu,
+            quat_world_wxyz=goal_quat_wxyz_world,
+            warn_context=f"save goal world->map ({self.robot_selected.prefix})",
         )
-        # Goal from the UV marker is in NWU, convert that to NED for control and save it.
-        self.robot_selected.final_goal = goal_now.get_pose(frame="NED", rot_rep="euler_xyz")
+        if res is None:
+            self.robot_selected.final_goal_map_ned_6 = None
+            return
+
+        p_goal_ned, rpy_goal_ned = res
+        self.robot_selected.final_goal_map_ned_6 = np.array(
+            [p_goal_ned[0], p_goal_ned[1], p_goal_ned[2],
+            rpy_goal_ned[0], rpy_goal_ned[1], rpy_goal_ned[2]],
+            dtype=float,
+        )
+
 
     def plan_vehicle_trajectory(self):
         self.node.get_logger().info(
@@ -325,3 +330,14 @@ class UVMSBackendCore:
             self.node.get_logger().error(f"Planner failed, {e}")
             k_planner.planned_result = {"is_success": False, "message": "Planner did not find a solution"}
             return k_planner.planned_result
+        
+    def solve_execute_inverse_kinematics_wrt_vehicle_frame(self):
+        msg = {'is_success':False,'result':None}
+        task_pose = self.target_arm_base_endeffector_pose
+        if self.is_valid_arm_base_task(task_pose):
+            q_ik_sol = self.robot_selected.manipulator_inverse_kinematics(
+                np.array([task_pose.position.x, task_pose.position.y, task_pose.position.z]))
+            self.robot_selected.arm.joint_desired = q_ik_sol
+            msg['is_success'] = True
+            msg['result'] = q_ik_sol
+        return msg
