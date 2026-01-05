@@ -26,16 +26,17 @@ class Params:
     joint_min = np.array([1.00, 0.01, 0.01, 0.01])
     joint_max = np.array([5.50, 3.40, 3.40, 5.70])
     joint_home = np.array([3.1, 0.7, 0.4, 2.1])
-
+    endeffector_wrt_base_home = np.array([0.09669330716133118, 0.0, 0.1003517135977745])
+    
     joint_limits = list(zip(joint_min.tolist(), joint_max.tolist()))
     joint_limits_configurations = np.array(list(itertools.product(*joint_limits)))
 
     u_min = np.array([-1.5, -1, -1, -0.54])
     u_max = np.array([1.5, 1, 1, 0.54])
     
-    Kp = cs.vertcat(10.0, 10.0, 10.0, 2.0)
+    Kp = cs.vertcat(10.0, 10.0, 10.0, 1.0)
     Ki = cs.vertcat(0.0, 0.0, 0.0, 0.0)
-    Kd = cs.vertcat(1.0, 1.0, 1.0, 1.0)
+    Kd = cs.vertcat(1.0, 1.0, 1.0, 0.0)
 
     gravity = 0.0
 

@@ -431,8 +431,6 @@ class Robot(Base):
 
         vehicle_J_path = os.path.join(package_share_directory, 'vehicle/J_uv.casadi')
 
-        whole_body_ik_path = os.path.join(package_share_directory, 'whole_body/whole_body_ik.casadi')
-
         self.fk_eval = ca.Function.load(fk_path) #  forward kinematics
         # also set a class attribute fk_eval so it can be shared
         if not hasattr(Robot, "fk_eval_cls"):
@@ -444,11 +442,6 @@ class Robot(Base):
             Robot.ik_eval_cls = self.ik_eval
 
         self.vehicle_J = ca.Function.load(vehicle_J_path)
-
-        self.whole_body_ik_eval = ca.Function.load(whole_body_ik_path)
-        # also set a class attribute whole_body_ik_eval so it can be shared
-        if not hasattr(Robot, "wb_ik_eval_cls"):
-            Robot.wb_ik_eval_cls = self.whole_body_ik_eval
 
         self.node = node
 
@@ -465,7 +458,7 @@ class Robot(Base):
         self.status = 'inactive'
         self.sim_time = 0.0
         self.start_time = 0.0
-
+        self.joint4_frame = f"{self.prefix}joint_4"
         # self.use_controller = controller
         self.pose_command = [0.0]*6
         self.body_vel_command = [0.0]*6
@@ -502,6 +495,7 @@ class Robot(Base):
         self.max_traj_pose_count = 2000  # cap RViz message size
         self.path_publish_period = 0.1  # seconds between stored poses
         self._last_path_pub_time = None
+        self.joint_4_in_world = None
 
         self.node_name = node.get_name()
         # Search for joystick device in /dev/input
@@ -516,10 +510,12 @@ class Robot(Base):
         else:
             self.node.get_logger().info(f"No joystick device found for robot {self.k_robot}.")
         self.robot_path_pub_timer = self.node.create_timer(1.0 / 60.0, self.publish_robot_path_callback)
+        self.planner_viz_timer = self.node.create_timer(1.0 / 10.0, self.planner_viz_callback)
         self.control_frequency = 60.0  # Hz
         self.control_timer = self.node.create_timer(1.0 / self.control_frequency, self.control_timer_callback)
         # Define a threshold error at which we start yaw blending.
         self.pos_blend_threshold = 1.1
+        self.world_task_pose_timer = self.node.create_timer(1.0 / self.control_frequency, self.world_robot_task_pose_callback)
 
     @classmethod
     def uvms_Forward_kinematics(cls, joint_qx, base_T0, world_pose, tipOffset):
@@ -529,11 +525,6 @@ class Robot(Base):
     def manipulator_inverse_kinematics(cls, target_position):
         return cls.ik_eval_cls(target_position).full().flatten().tolist()
 
-    @classmethod
-    def uvms_body_inverse_kinematics(cls, target_pose):
-        return cls.wb_ik_eval_cls(target_pose, alpha_params.base_T0_new, alpha_params.tipOffset,
-                                   alpha_params.joint_min, alpha_params.joint_max).full().flatten().tolist()
-    
     def _mocap_pose_cb(self, msg: PoseStamped):
         p = msg.pose.position
         q = msg.pose.orientation
@@ -709,7 +700,28 @@ class Robot(Base):
             return None
 
         return do_transform_pose(pose_in_source, tf)
-    
+
+    def get_frame_pose_in_frame(self, source_frame: str, target_frame: str) -> Optional[Pose]:
+        """
+        Return the pose of source_frame expressed in target_frame, as geometry_msgs/Pose.
+        Uses your existing try_transform_pose helper.
+        """
+        identity = Pose()
+        identity.position.x = 0.0
+        identity.position.y = 0.0
+        identity.position.z = 0.0
+        identity.orientation.w = 1.0
+        identity.orientation.x = 0.0
+        identity.orientation.y = 0.0
+        identity.orientation.z = 0.0
+
+        return self.try_transform_pose(
+            pose_in_source=identity,
+            target_frame=target_frame,
+            source_frame=source_frame,
+            warn_context=f"get_frame_pose_in_frame({self.prefix})",
+        )
+
     def _pose_from_state_in_frame(self, dst_frame: str) -> Optional[Pose]:
         """
         Returns the robot base pose expressed in dst_frame, or None if TF is unavailable.
@@ -732,8 +744,6 @@ class Robot(Base):
             warn_context=f"_pose_from_state_in_frame({self.prefix})",
         )
         return pose_dst
-
-
 
     def _pose_msg_from_xyz_quat_wxyz_nwu(
         self,
@@ -904,6 +914,25 @@ class Robot(Base):
 
     def listener_callback(self, msg: DynamicJointState):
         self.update_state(msg)
+
+    def planner_viz_callback(self):
+        stamp_now = self.node.get_clock().now().to_msg()
+        k_planner = self.planner
+        if k_planner.planned_result and k_planner.planned_result['is_success']:
+            k_planner.update_path_viz(
+                stamp=stamp_now,
+                frame_id="world",
+                xyz_np=k_planner.planned_result["xyz"],
+                step=3,
+                wp_size=0.08,
+                goal_size=0.14,
+            )
+
+    def world_robot_task_pose_callback(self):
+        pose_world = self.get_frame_pose_in_frame(self.joint4_frame, "world")
+        if pose_world is None:
+            return
+        self.joint_4_in_world = pose_world
 
     def control_timer_callback(self):
         state = self.get_state()

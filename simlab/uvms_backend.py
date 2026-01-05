@@ -14,6 +14,7 @@
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 #!/usr/bin/env python3
+from alpha_reach import Params as alpha_params 
 import rclpy
 from rclpy.node import Node
 from fcl_checker import FCLWorld
@@ -31,10 +32,10 @@ from geometry_msgs.msg import Pose
 from std_msgs.msg import Header
 import sensor_msgs_py.point_cloud2 as pc2
 from sensor_msgs.msg import PointCloud2
-from frame_utils import PoseX
 from se3_ompl_planner import plan_se3_path
 from planner_markers import PathPlanner
-from cartesian_ruckig import VehicleCartesianRuckig
+from cartesian_ruckig import VehicleCartesianRuckig, EndeffectorCartesianRuckig
+from frame_utils import PoseX
 
 class UVMSBackendCore:
     def __init__(self, node: Node,
@@ -99,8 +100,9 @@ class UVMSBackendCore:
         self.target_arm_base_marker_tf_timer = self.node.create_timer(1.0 / 60.0, self.target_arm_base_tf_timer_callback)
         self.target_endeffector_in_world_tf_timer = self.node.create_timer(1.0 / 60.0, self.target_endeffector_in_world_tf_timer_callback)
         self.vehicle_target_cloud_timer = self.node.create_timer(1.0 / 100.0, self.vehicle_target_cloud_timer_callback)
-        self.planner_viz_timer = self.node.create_timer(1.0 / 10.0, self.planner_viz_callback)
-        self.ik_solve_timer = self.node.create_timer(1.0 / 10.0, self.solve_execute_inverse_kinematics_wrt_vehicle_frame)
+        self.task_on_vehicle_solve_timer = self.node.create_timer(1.0 / 10.0, self.plan_and_execute_task_trajectory_wrt_vehicle)
+        self.task_on_world_solve_timer = self.node.create_timer(1.0 / 10.0, self.plan_and_execute_task_trajectory_wrt_world)
+
         
         self.planner_marker_publisher = self.node.create_publisher(Marker, "planned_waypoints_marker", viz_qos)
         self.robots:List[Robot] = []
@@ -126,6 +128,10 @@ class UVMSBackendCore:
         self.max_vel = np.array([0.15, 0.15, 0.10], dtype=float)
         self.max_acc = np.array([0.15, 0.15, 0.12], dtype=float)
         self.max_jerk = np.array([0.5, 0.5, 0.4], dtype=float)
+
+        self.max_end_vel = np.array([1.15, 1.15, 1.10], dtype=float)
+        self.max_end_acc = np.array([1.15, 1.15, 1.12], dtype=float)
+        self.max_end_jerk = np.array([0.5, 0.5, 0.4], dtype=float)
 
     def publish_fcl_environment_aabb_callback(self):
         stamp_now = self.node.get_clock().now().to_msg()
@@ -202,24 +208,10 @@ class UVMSBackendCore:
     def initialise_target_Poses(self):
         self.target_vehicle_pose = Pose()
         self.target_arm_base_endeffector_pose = Pose()
-        self.target_arm_base_endeffector_pose.position.x = 0.09669330716133118
-        self.target_arm_base_endeffector_pose.position.y = 0.0
-        self.target_arm_base_endeffector_pose.position.z = 0.1003517135977745
-
+        self.target_arm_base_endeffector_pose.position.x = alpha_params.endeffector_wrt_base_home[0]
+        self.target_arm_base_endeffector_pose.position.y = alpha_params.endeffector_wrt_base_home[1]
+        self.target_arm_base_endeffector_pose.position.z = alpha_params.endeffector_wrt_base_home[2]
         self.target_world_endeffector_pose = Pose()
-
-    def planner_viz_callback(self):
-        stamp_now = self.node.get_clock().now().to_msg()
-        k_planner = self.robot_selected.planner
-        if k_planner.planned_result and k_planner.planned_result['is_success']:
-            k_planner.update_path_viz(
-                stamp=stamp_now,
-                frame_id=self.world_frame,
-                xyz_np=k_planner.planned_result["xyz"],
-                step=3,
-                wp_size=0.08,
-                goal_size=0.14,
-            )
 
     def _get_robot_pose_now_world(self) -> Pose:
         return self.robot_selected._pose_from_state_in_frame(self.world_frame)
@@ -331,13 +323,22 @@ class UVMSBackendCore:
             k_planner.planned_result = {"is_success": False, "message": "Planner did not find a solution"}
             return k_planner.planned_result
         
-    def solve_execute_inverse_kinematics_wrt_vehicle_frame(self):
+    def solve_execute_inverse_kinematics_wrt_vehicle_frame(self, task_pose:Pose):
         msg = {'is_success':False,'result':None}
-        task_pose = self.target_arm_base_endeffector_pose
         if self.is_valid_arm_base_task(task_pose):
             q_ik_sol = self.robot_selected.manipulator_inverse_kinematics(
                 np.array([task_pose.position.x, task_pose.position.y, task_pose.position.z]))
-            self.robot_selected.arm.joint_desired = q_ik_sol
             msg['is_success'] = True
             msg['result'] = q_ik_sol
         return msg
+
+    def plan_and_execute_task_trajectory_wrt_vehicle(self):
+        msg = self.solve_execute_inverse_kinematics_wrt_vehicle_frame(self.target_arm_base_endeffector_pose)
+        if msg['is_success']:
+            self.robot_selected.arm.joint_desired = msg['result']
+
+    def plan_and_execute_task_trajectory_wrt_world(self):
+        if self.robot_selected.joint_4_in_world is None:
+            return
+        self.node.get_logger().info(f"{self.robot_selected.joint_4_in_world} robot.", throttle_duration_sec=2.0)
+        self.node.get_logger().info(f"{self.target_world_endeffector_pose} target.", throttle_duration_sec=2.0)

@@ -75,9 +75,10 @@ class InteractiveControlsNode(Node):
 
 
         task_handle = self.menu_handler.insert('tasks')
-        pick_handle = self.menu_handler.insert("Mark pick target", parent=task_handle)
-        place_handle = self.menu_handler.insert("Mark place target", parent=task_handle)
-        run_pick_place = self.menu_handler.insert("Run pick & place", parent=task_handle)
+        pick_place = self.menu_handler.insert('Pick & Place', parent=task_handle)
+        pick_handle = self.menu_handler.insert("Pick target", parent=pick_place)
+        place_handle = self.menu_handler.insert("Place target", parent=pick_place)
+        run_pick_place = self.menu_handler.insert("Run", parent=pick_place)
         # phases: MOVE_TO_PICK_APPROACH ->LOWER_AND_GRASP -> RETRACT -> MOVE_TO_PLACE_APPROACH -> LOWER_AND_RELEASE -> RETRACT.
         
         # Create markers
@@ -204,29 +205,29 @@ class InteractiveControlsNode(Node):
 
         self.uvms_backend.target_vehicle_pose = feedback.pose
 
+    def set_endeffector_world_marker_pose(self, new_pose: Pose):
+        task_pose_world_new = self.uvms_backend.robot_selected.try_transform_pose(
+            new_pose,
+            target_frame=self.uvms_backend.world_frame,
+            source_frame=self.uvms_backend.arm_base_target_frame,
+            warn_context="world_task_marker_processFeedback,new_pose",
+        )
+        self.uvms_backend.target_world_endeffector_pose = task_pose_world_new
+        # self.get_logger().info(f"{self.uvms_backend.target_world_endeffector_pose} Updated task marker pose.")
+        
     def arm_base_task_marker_processFeedback(self, feedback: InteractiveMarkerFeedback):
         # If valid, accept and store in arm_base_frame coordinates
         if self.uvms_backend.is_valid_arm_base_task(feedback.pose):
             self.uvms_backend.target_arm_base_endeffector_pose = feedback.pose
+            self.set_endeffector_world_marker_pose(feedback.pose)
             self.get_logger().debug("Updated arm base task marker pose.")
             return
-
         # Reset the task marker back to the last valid pose (boundary)
         self.server.setPose(self.arm_base_task_marker.name, self.uvms_backend.target_arm_base_endeffector_pose)
         self.server.applyChanges()
 
     def world_task_marker_processFeedback(self, feedback: InteractiveMarkerFeedback):
-        task_pose_world_new = self.uvms_backend.robot_selected.try_transform_pose(
-            feedback.pose,
-            target_frame=self.uvms_backend.world_frame,
-            source_frame=self.uvms_backend.arm_base_target_frame,
-            warn_context="world_task_marker_processFeedback,new_pose",
-        )
-        if task_pose_world_new is None:
-            return
-        self.uvms_backend.target_world_endeffector_pose = task_pose_world_new
-        self.get_logger().info(f"Updated world task marker pose. TODO: implement handling.")
-
+        self.set_endeffector_world_marker_pose(feedback.pose)
 
 def main(args=None):
     rclpy.init(args=args)
