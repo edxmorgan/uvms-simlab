@@ -114,7 +114,11 @@ class InteractiveControlsNode(Node):
         self._apply_joint_control_mode()
 
     def plan_execute(self, feedback: InteractiveMarkerFeedback):
-        self.uvms_backend.plan_vehicle_trajectory()
+        if self.uvms_backend.task_based_controller:
+            pass
+        else:
+            self.uvms_backend.plan_vehicle_trajectory()
+
 
     def switch_robot_in_use(self, feedback: InteractiveMarkerFeedback):
         if feedback.menu_entry_id in self.menu_id_to_robot_index:
@@ -181,12 +185,14 @@ class InteractiveControlsNode(Node):
             self.menu_handler.setCheckState(self.task_space_handle, MenuHandler.CHECKED)
             self.menu_handler.setCheckState(self.joint_space_handle, MenuHandler.UNCHECKED)
             self._apply_task_control_mode()
+            self.uvms_backend.task_based_controller = True
             self.get_logger().info("Switched to TASK space control.")
 
         elif feedback.menu_entry_id == self.joint_space_handle:
             self.menu_handler.setCheckState(self.joint_space_handle, MenuHandler.CHECKED)
             self.menu_handler.setCheckState(self.task_space_handle, MenuHandler.UNCHECKED)
             self._apply_joint_control_mode()
+            self.uvms_backend.task_based_controller = False
             self.get_logger().info("Switched to JOINT space control.")
 
         self.menu_handler.apply(self.server, feedback.marker_name)
@@ -205,29 +211,55 @@ class InteractiveControlsNode(Node):
 
         self.uvms_backend.target_vehicle_pose = feedback.pose
 
-    def set_endeffector_world_marker_pose(self, new_pose: Pose):
+    def set_endeffector_world_marker_pose(self, new_pose: Pose, source_frame: str) -> None:
+        if source_frame == self.uvms_backend.world_frame:
+            self.uvms_backend.target_world_endeffector_pose = new_pose
+            return
+
         task_pose_world_new = self.uvms_backend.robot_selected.try_transform_pose(
             new_pose,
             target_frame=self.uvms_backend.world_frame,
-            source_frame=self.uvms_backend.arm_base_target_frame,
-            warn_context="world_task_marker_processFeedback,new_pose",
+            source_frame=source_frame,
+            warn_context="set_endeffector_world_marker_pose",
         )
         self.uvms_backend.target_world_endeffector_pose = task_pose_world_new
-        # self.get_logger().info(f"{self.uvms_backend.target_world_endeffector_pose} Updated task marker pose.")
-        
+
     def arm_base_task_marker_processFeedback(self, feedback: InteractiveMarkerFeedback):
-        # If valid, accept and store in arm_base_frame coordinates
         if self.uvms_backend.is_valid_arm_base_task(feedback.pose):
             self.uvms_backend.target_arm_base_endeffector_pose = feedback.pose
-            self.set_endeffector_world_marker_pose(feedback.pose)
+            self.set_endeffector_world_marker_pose(feedback.pose, self.uvms_backend.arm_base_target_frame)
             self.get_logger().debug("Updated arm base task marker pose.")
             return
-        # Reset the task marker back to the last valid pose (boundary)
+
         self.server.setPose(self.arm_base_task_marker.name, self.uvms_backend.target_arm_base_endeffector_pose)
         self.server.applyChanges()
 
+
     def world_task_marker_processFeedback(self, feedback: InteractiveMarkerFeedback):
-        self.set_endeffector_world_marker_pose(feedback.pose)
+        pose_world = self.uvms_backend.robot_selected.try_transform_pose(
+            feedback.pose,
+            target_frame=self.uvms_backend.world_frame,
+            source_frame=self.uvms_backend.arm_base_target_frame,
+            warn_context="world_task_marker_processFeedback,to_world",
+        )
+
+        p = pose_world.position
+        p.x, p.y, p.z = self.uvms_backend.fcl_world.enforce_bounds([p.x, p.y, p.z])
+
+        pose_arm = self.uvms_backend.robot_selected.try_transform_pose(
+            pose_world,
+            target_frame=self.uvms_backend.arm_base_target_frame,
+            source_frame=self.uvms_backend.world_frame,
+            warn_context="world_task_marker_processFeedback,to_arm_base",
+        )
+
+        self.server.setPose(feedback.marker_name, pose_arm)
+        self.server.applyChanges()
+
+        # no duplicate transform now, we already have pose_world
+        self.set_endeffector_world_marker_pose(pose_world, self.uvms_backend.world_frame)
+
+
 
 def main(args=None):
     rclpy.init(args=args)

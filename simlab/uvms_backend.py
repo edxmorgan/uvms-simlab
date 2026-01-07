@@ -102,7 +102,7 @@ class UVMSBackendCore:
         self.vehicle_target_cloud_timer = self.node.create_timer(1.0 / 100.0, self.vehicle_target_cloud_timer_callback)
         self.task_on_vehicle_solve_timer = self.node.create_timer(1.0 / 10.0, self.plan_and_execute_task_trajectory_wrt_vehicle)
         self.task_on_world_solve_timer = self.node.create_timer(1.0 / 10.0, self.plan_and_execute_task_trajectory_wrt_world)
-
+        self.task_based_controller = False
         
         self.planner_marker_publisher = self.node.create_publisher(Marker, "planned_waypoints_marker", viz_qos)
         self.robots:List[Robot] = []
@@ -181,15 +181,16 @@ class UVMSBackendCore:
         self.tf_broadcaster.sendTransform(endeffector_t)
 
     def vehicle_target_cloud_timer_callback(self):
-        header = Header()
-        header.frame_id = self.vehicle_target_frame
-        header.stamp = self.node.get_clock().now().to_msg()
+        if not self.task_based_controller:
+            header = Header()
+            header.frame_id = self.vehicle_target_frame
+            header.stamp = self.node.get_clock().now().to_msg()
 
-        rov_cloud_msg = pc2.create_cloud_xyz32(header, self.workspace_pts)
-        self.taskspace_pc_publisher_.publish(rov_cloud_msg)
+            rov_cloud_msg = pc2.create_cloud_xyz32(header, self.workspace_pts)
+            self.taskspace_pc_publisher_.publish(rov_cloud_msg)
 
-        cloud_msg = pc2.create_cloud_xyz32(header, self.rov_ellipsoid_cl_pts)
-        self.rov_pc_publisher_.publish(cloud_msg)
+            cloud_msg = pc2.create_cloud_xyz32(header, self.rov_ellipsoid_cl_pts)
+            self.rov_pc_publisher_.publish(cloud_msg)
 
     def is_valid_arm_base_task(self, target_arm_base_endeffector_pose: Pose) -> bool:
         pose_v = self.robot_selected.try_transform_pose(
@@ -281,7 +282,6 @@ class UVMSBackendCore:
             dtype=float,
         )
 
-
     def plan_vehicle_trajectory(self):
         self.node.get_logger().info(
             f"Planning and executing motion for {self.robot_selected.prefix} to target pose..."
@@ -340,5 +340,5 @@ class UVMSBackendCore:
     def plan_and_execute_task_trajectory_wrt_world(self):
         if self.robot_selected.joint_4_in_world is None:
             return
-        self.node.get_logger().info(f"{self.robot_selected.joint_4_in_world} robot.", throttle_duration_sec=2.0)
-        self.node.get_logger().info(f"{self.target_world_endeffector_pose} target.", throttle_duration_sec=2.0)
+        self.node.get_logger().debug(f"{self.robot_selected.joint_4_in_world} robot.", throttle_duration_sec=2.0)
+        self.node.get_logger().debug(f"{self.target_world_endeffector_pose} target.", throttle_duration_sec=2.0)
