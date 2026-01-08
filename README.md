@@ -115,6 +115,6 @@ simlab/
 └── resource/                         # CasADi controllers + models
 ```
 
-## Contributing & community 🤝
+## Contributing
 
-Have a planner, sensor, or teleop workflow that should live here? Open an issue or PR
+Contributions are welcome.
