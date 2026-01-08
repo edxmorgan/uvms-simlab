@@ -392,9 +392,11 @@ class Robot(Base):
                   k_robot, 
                   n_joint, 
                   prefix,
-                  controller='pid'):
-        self.planner: PathPlanner = None
-        self.vehicle_cart_traj: VehicleCartesianRuckig = None
+                  controller='pid',
+                  planner=None,
+                  vehicle_cart_traj=None):
+        self.planner: PathPlanner = planner
+        self.vehicle_cart_traj: VehicleCartesianRuckig = vehicle_cart_traj
         self.menu_handle = None
         self.final_goal_in_world = None
         self.final_goal_map_ned_6 = None
@@ -509,7 +511,6 @@ class Robot(Base):
         else:
             self.node.get_logger().info(f"No joystick device found for robot {self.k_robot}.")
         self.robot_path_pub_timer = self.node.create_timer(1.0 / 60.0, self.publish_robot_path_callback)
-
         if self.planner:
             self.planner_viz_timer = self.node.create_timer(1.0 / 10.0, self.planner_viz_callback)
             self.control_timer = self.node.create_timer(1.0 / 60.0, self.control_timer_callback)

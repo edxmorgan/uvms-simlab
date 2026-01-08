@@ -110,14 +110,16 @@ class UVMSBackendCore:
         self.robots_prefix = self.node.get_parameter('robots_prefix').value
         self.controllers = self.node.get_parameter('controllers').value
         for k, (prefix, controller) in enumerate(zip(self.robots_prefix, self.controllers)):
-            robot_k = Robot(self.node, self.tf_buffer, k, 4, prefix, controller)
-            robot_k.vehicle_cart_traj = VehicleCartesianRuckig(
+            planner = PathPlanner(self.planner_marker_publisher, ns=f"planner/{prefix}", base_id=k)
+            vehicle_cart_traj = VehicleCartesianRuckig(
                 self.node,
                 dofs=3,
-                control_dt=1.0 / robot_k.control_frequency,
+                control_dt=1.0 / 60.0,
                 max_waypoints=self.max_cartesian_waypoints,
             )
-            robot_k.planner = PathPlanner(self.planner_marker_publisher, ns=f"planner/{prefix}", base_id=k)
+
+            robot_k = Robot(self.node, self.tf_buffer, k, 4, prefix, controller, planner, vehicle_cart_traj)
+
 
             self.robots.append(robot_k)
 
