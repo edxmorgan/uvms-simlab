@@ -1,17 +1,17 @@
-# uvms_simlab 🚀
+# uvms_simlab
 
 A field-ready ROS 2 lab for **Underwater Vehicle–Manipulator Systems**. `uvms_simlab` layers interactive teleoperation, collision-aware planning, and hardware-in-the-loop tooling on top of [uvms-simulator](https://github.com/edxmorgan/uvms-simulator) so you can go from concept to wet tests without rebuilding infrastructure.
 
 
 ## Highlights
 
-- 🌀🖱️ **Direct RViz manipulation** – interactive markers drive the vehicle and arm-base targets without custom plugins.
-- 🤖 **Collision + clearance monitoring** – FCL-backed checks visualize contacts, environment bounds, and clearance markers.
-- 🗺️ **SE(3) planning with live visualization** – OMPL planners + Ruckig execution stream candidate paths and waypoints to RViz.
-- 🎮 **Control modes** – PS4 teleop, joint-space torque control, or direct thruster PWM via launch args.
-- 📡 **Mocap + viz tooling** – OptiTrack/mocap4r2 publishing, pose/path trails, workspace clouds, and voxelized bathymetry.
-- 📓 **Data logging** – rosbag2 MCAP recorder for repeatable datasets.
-- 🌊 **Perception extras** – optional RGB-to-pointcloud (MiDaS) for quick depth-based clouds.
+- **Direct RViz manipulation** – interactive markers drive the vehicle and arm-base targets without custom plugins.
+- **Collision + clearance monitoring** – FCL-backed checks visualize contacts, environment bounds, and clearance markers.
+- **SE(3) planning with live visualization** – OMPL planners + Ruckig execution stream candidate paths and waypoints to RViz.
+- **Control modes** – PS4 teleop, joint-space torque control, or direct thruster PWM via launch args.
+- **Mocap + viz tooling** – OptiTrack/mocap4r2 publishing, pose/path trails, workspace clouds, and voxelized bathymetry.
+- **Data logging** – rosbag2 MCAP recorder for repeatable datasets.
+- **Perception extras** – optional RGB-to-pointcloud (MiDaS) for quick depth-based clouds.
 
 ## Requirements
 
@@ -46,7 +46,7 @@ A field-ready ROS 2 lab for **Underwater Vehicle–Manipulator Systems**. `uvms_
    source install/setup.bash
    ```
 
-## Launch recipes 🚢
+## Launch recipes
 
 **Interactive planner & RViz**
 
@@ -88,7 +88,7 @@ ros2 launch ros2_control_blue_reach_5 robot_system_multi_interface.launch.py \
 
 > 💡 Hardware swap: set `use_vehicle_hardware:=true` and `use_manipulator_hardware:=true` to put your BlueROV2 Heavy, Reach Alpha 5, and A50 DVL directly into the loop.
 
-## Task modes 🎛️
+## Task modes
 
 | task | Simlab node | What it does | Input |
 | --- | --- | --- | --- |
@@ -97,7 +97,7 @@ ros2 launch ros2_control_blue_reach_5 robot_system_multi_interface.launch.py \
 | `joint` | `joint_controller` | Skeleton node for custom joint-space torque commands | Your node/scripts |
 | `direct_thrusters` | `direct_thruster_controller` | Direct PWM commands | Keyboard |
 
-## Project layout 🧭
+## Project layout
 
 ```
 simlab/
