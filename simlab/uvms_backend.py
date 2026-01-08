@@ -335,12 +335,111 @@ class UVMSBackendCore:
         return msg
 
     def plan_and_execute_task_trajectory_wrt_vehicle(self):
-        msg = self.solve_execute_inverse_kinematics_wrt_vehicle_frame(self.target_arm_base_endeffector_pose)
-        if msg['is_success']:
-            self.robot_selected.arm.joint_desired = msg['result']
+        if not self.task_based_controller:
+            msg = self.solve_execute_inverse_kinematics_wrt_vehicle_frame(self.target_arm_base_endeffector_pose)
+            if msg['is_success']:
+                self.robot_selected.arm.joint_desired = msg['result']
 
+    def solve_execute_inverse_kinematics_wrt_world_frame(self):
+        msg = {'is_success': False, 'result': None}
+        world_pose_now = self._get_robot_pose_now_world()
+        if world_pose_now is None:
+            return msg
+
+        state = self.robot_selected.get_state()
+        q = np.asarray(state.get("q", []), dtype=float).reshape(-1)
+        if q.size == 0:
+            return msg
+
+        p_now, rpy_now = PoseX.from_pose(
+            xyz=np.array(
+                [
+                    world_pose_now.position.x,
+                    world_pose_now.position.y,
+                    world_pose_now.position.z,
+                ],
+                dtype=float,
+            ),
+            rot=np.array(
+                [
+                    world_pose_now.orientation.w,
+                    world_pose_now.orientation.x,
+                    world_pose_now.orientation.y,
+                    world_pose_now.orientation.z,
+                ],
+                dtype=float,
+            ),
+            rot_rep="quat_wxyz",
+            frame="NWU",
+        ).get_pose(frame="NWU", rot_rep="euler_xyz")
+        world_pose = np.concatenate([p_now, rpy_now]).astype(float)
+
+        p_des = np.array(
+            [
+                self.target_world_endeffector_pose.position.x,
+                self.target_world_endeffector_pose.position.y,
+                self.target_world_endeffector_pose.position.z,
+            ],
+            dtype=float,
+        )
+
+        kp = np.array([1.0, 1.0, 1.0], dtype=float)
+        w_rp = 1.0
+        w_reg = 0.02
+        k_rp = 0.2
+        dt = 0.01
+
+        x_world_next, q_next, e_p_task_star_new = self.robot_selected.manipulator_whole_body_inverse_kinematics(
+            q,
+            world_pose,
+            kp,
+            p_des,
+            w_rp,
+            w_reg,
+            k_rp,
+            dt,
+            alpha_params.base_T0_new,
+            alpha_params.tipOffset,
+        )
+
+        x_world_next = x_world_next.full().flatten().tolist()
+        q_next = q_next.full().flatten().tolist()
+        e_p_task_star_new = e_p_task_star_new.full().flatten().tolist()
+
+        self.robot_selected.arm.joint_desired = q_next
+
+
+        pose_next = PoseX.from_pose(
+            xyz=x_world_next[0:3],
+            rot=x_world_next[3:6],
+            rot_rep="euler_xyz",
+            frame="NWU",
+        )
+        _, quat_wxyz = pose_next.get_pose(frame="NWU", rot_rep="quat_wxyz")
+        res_map_ned = self.robot_selected.world_nwu_to_map_ned(
+            xyz_world_nwu=x_world_next[0:3],
+            quat_world_wxyz=quat_wxyz,
+            warn_context=f"task world->map ({self.robot_selected.prefix})",
+        )
+
+        p_cmd_ned, rpy_cmd_ned = res_map_ned
+        self.robot_selected.pose_command = [
+            float(p_cmd_ned[0]),
+            float(p_cmd_ned[1]),
+            float(p_cmd_ned[2]),
+            float(rpy_cmd_ned[0]),
+            float(rpy_cmd_ned[1]),
+            float(rpy_cmd_ned[2]),
+        ]
+
+        msg["is_success"] = True
+        self.node.get_logger().debug(f"task_error : {e_p_task_star_new}", throttle_duration_sec=2.0)
+        return msg
+        
+    
     def plan_and_execute_task_trajectory_wrt_world(self):
-        if self.robot_selected.joint_4_in_world is None:
-            return
-        self.node.get_logger().debug(f"{self.robot_selected.joint_4_in_world} robot.", throttle_duration_sec=2.0)
-        self.node.get_logger().debug(f"{self.target_world_endeffector_pose} target.", throttle_duration_sec=2.0)
+        if self.task_based_controller and self.robot_selected.task_pose_in_world:
+            self.solve_execute_inverse_kinematics_wrt_world_frame()
+            self.node.get_logger().debug(f"{self.robot_selected.task_pose_in_world} robot.", throttle_duration_sec=2.0)
+            self.node.get_logger().debug(f"{self.target_world_endeffector_pose} target.", throttle_duration_sec=2.0)
+        return

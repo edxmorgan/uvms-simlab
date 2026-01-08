@@ -431,6 +431,7 @@ class Robot(Base):
         ik_path = os.path.join(package_share_directory, 'manipulator/ik_eval.casadi')
 
         vehicle_J_path = os.path.join(package_share_directory, 'vehicle/J_uv.casadi')
+        ik_wb_path = os.path.join(package_share_directory, 'whole_body/ik_whole_b.casadi')
 
         self.fk_eval = ca.Function.load(fk_path) #  forward kinematics
         # also set a class attribute fk_eval so it can be shared
@@ -441,6 +442,12 @@ class Robot(Base):
         # also set a class attribute ik_eval so it can be shared
         if not hasattr(Robot, "ik_eval_cls"):
             Robot.ik_eval_cls = self.ik_eval
+
+
+        self.ik_wb_eval = ca.Function.load(ik_wb_path) #  inverse kinematics
+        # also set a class attribute ik_eval so it can be shared
+        if not hasattr(Robot, "ik_wb_eval_cls"):
+            Robot.ik_wb_eval_cls = self.ik_wb_eval
 
         self.vehicle_J = ca.Function.load(vehicle_J_path)
 
@@ -496,7 +503,7 @@ class Robot(Base):
         self.max_traj_pose_count = 2000  # cap RViz message size
         self.path_publish_period = 0.1  # seconds between stored poses
         self._last_path_pub_time = None
-        self.joint_4_in_world = None
+        self.task_pose_in_world = None
 
         self.node_name = node.get_name()
         # Search for joystick device in /dev/input
@@ -526,6 +533,11 @@ class Robot(Base):
     @classmethod
     def manipulator_inverse_kinematics(cls, target_position):
         return cls.ik_eval_cls(target_position).full().flatten().tolist()
+    
+    @classmethod
+    def manipulator_whole_body_inverse_kinematics(cls, q, world_pose, kp, p_des, w_rp, w_reg, k_rp, dt, base_T0, tipOffset):
+        x_world_next, q_next, e_p_task_star_new = cls.ik_wb_eval_cls(q, world_pose, kp, p_des, w_rp, w_reg, k_rp, dt, base_T0, tipOffset)
+        return x_world_next, q_next, e_p_task_star_new
 
     def _mocap_pose_cb(self, msg: PoseStamped):
         p = msg.pose.position
@@ -934,7 +946,7 @@ class Robot(Base):
         pose_world = self.get_frame_pose_in_frame(self.joint4_frame, "world")
         if pose_world is None:
             return
-        self.joint_4_in_world = pose_world
+        self.task_pose_in_world = pose_world
 
     def control_timer_callback(self):
         state = self.get_state()
