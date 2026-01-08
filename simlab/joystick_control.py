@@ -18,6 +18,7 @@ import rclpy
 from rclpy.node import Node
 from robot import Robot
 from typing import List
+import tf2_ros
 ###############################################################################
 # ROS2 Node that uses the PS4 controller for ROV teleoperation.
 #
@@ -46,6 +47,9 @@ class PS4TeleopNode(Node):
         self.robots_prefix = self.get_parameter('robots_prefix').value
         self.controllers = self.get_parameter('controllers').value
 
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
+
         self.get_logger().info(f"Robot prefixes found: {self.robots_prefix}")
         self.total_no_efforts = self.no_robot * self.no_efforts
         self.get_logger().info(f"Total number of commands: {self.total_no_efforts}")
@@ -53,7 +57,7 @@ class PS4TeleopNode(Node):
         self.robots:List[Robot] = []
         
         for k, (prefix, controller) in enumerate(list(zip(self.robots_prefix, self.controllers))):
-            robot_k = Robot(self, k, 4, prefix, controller)
+            robot_k = Robot(self,  self.tf_buffer, k, 4, prefix, controller)
             self.robots.append(robot_k)
 
         # Create a timer callback to publish commands at 1000 Hz.

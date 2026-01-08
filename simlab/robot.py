@@ -395,7 +395,6 @@ class Robot(Base):
                   controller='pid'):
         self.planner: PathPlanner = None
         self.vehicle_cart_traj: VehicleCartesianRuckig = None
-        self.endeffector_cart_traj: EndeffectorCartesianRuckig = None
         self.menu_handle = None
         self.final_goal_in_world = None
         self.final_goal_map_ned_6 = None
@@ -510,12 +509,14 @@ class Robot(Base):
         else:
             self.node.get_logger().info(f"No joystick device found for robot {self.k_robot}.")
         self.robot_path_pub_timer = self.node.create_timer(1.0 / 60.0, self.publish_robot_path_callback)
-        self.planner_viz_timer = self.node.create_timer(1.0 / 10.0, self.planner_viz_callback)
-        self.control_frequency = 60.0  # Hz
-        self.control_timer = self.node.create_timer(1.0 / self.control_frequency, self.control_timer_callback)
+
+        if self.planner:
+            self.planner_viz_timer = self.node.create_timer(1.0 / 10.0, self.planner_viz_callback)
+            self.control_timer = self.node.create_timer(1.0 / 60.0, self.control_timer_callback)
+
         # Define a threshold error at which we start yaw blending.
         self.pos_blend_threshold = 1.1
-        self.world_task_pose_timer = self.node.create_timer(1.0 / self.control_frequency, self.world_robot_task_pose_callback)
+        self.world_task_pose_timer = self.node.create_timer(1.0 / 60.0, self.world_robot_task_pose_callback)
 
     @classmethod
     def uvms_Forward_kinematics(cls, joint_qx, base_T0, world_pose, tipOffset):
