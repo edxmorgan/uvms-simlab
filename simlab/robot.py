@@ -535,8 +535,37 @@ class Robot(Base):
         return cls.ik_eval_cls(target_position).full().flatten().tolist()
     
     @classmethod
-    def manipulator_whole_body_inverse_kinematics(cls, q, world_pose, kp, p_des, w_rp, w_reg, k_rp, dt, base_T0, tipOffset):
-        x_world_next, q_next, e_p_task_star_new = cls.ik_wb_eval_cls(q, world_pose, kp, p_des, w_rp, w_reg, k_rp, dt, base_T0, tipOffset)
+    def manipulator_whole_body_inverse_kinematics(
+        cls,
+        q,
+        world_pose,
+        kp,
+        p_des,
+        w_rp,
+        w_reg,
+        k_rp,
+        a_des,
+        k_axis,
+        w_axis,
+        dt,
+        base_T0,
+        tipOffset,
+    ):
+        x_world_next, q_next, e_p_task_star_new = cls.ik_wb_eval_cls(
+            q,
+            world_pose,
+            kp,
+            p_des,
+            w_rp,
+            w_reg,
+            k_rp,
+            a_des,
+            k_axis,
+            w_axis,
+            dt,
+            base_T0,
+            tipOffset,
+        )
         return x_world_next, q_next, e_p_task_star_new
 
     def _mocap_pose_cb(self, msg: PoseStamped):

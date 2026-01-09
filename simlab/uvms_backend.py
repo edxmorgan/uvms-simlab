@@ -387,8 +387,35 @@ class UVMSBackendCore:
         w_rp = 1.0
         w_reg = 0.02
         k_rp = 0.2
-        dt = 0.01
+        k_axis = 1.0
+        w_axis = 1.5
+        dt = float(state.get("dt", 0.0))
+        if dt <= 0.0:
+            dt = 1.0 / 60.0
 
+        tool_axis = np.array([0.0, 0.0, -1.0], dtype=float)
+        target_rot = PoseX.from_pose(
+            xyz=np.array(
+                [
+                    self.target_world_endeffector_pose.position.x,
+                    self.target_world_endeffector_pose.position.y,
+                    self.target_world_endeffector_pose.position.z,
+                ],
+                dtype=float,
+            ),
+            rot=np.array(
+                [
+                    self.target_world_endeffector_pose.orientation.w,
+                    self.target_world_endeffector_pose.orientation.x,
+                    self.target_world_endeffector_pose.orientation.y,
+                    self.target_world_endeffector_pose.orientation.z,
+                ],
+                dtype=float,
+            ),
+            rot_rep="quat_wxyz",
+            frame="NWU",
+        ).get_rot(frame="NWU", rot_rep="matrix")
+        a_des = target_rot @ tool_axis
         x_world_next, q_next, e_p_task_star_new = self.robot_selected.manipulator_whole_body_inverse_kinematics(
             q,
             world_pose,
@@ -397,42 +424,56 @@ class UVMSBackendCore:
             w_rp,
             w_reg,
             k_rp,
+            a_des,
+            k_axis,
+            w_axis,
             dt,
-            alpha_params.base_T0_new,
-            alpha_params.tipOffset,
+            np.asarray(alpha_params.base_T0_new, dtype=float),
+            np.asarray(alpha_params.tipOffset, dtype=float),
         )
 
-        x_world_next = x_world_next.full().flatten().tolist()
-        q_next = q_next.full().flatten().tolist()
-        e_p_task_star_new = e_p_task_star_new.full().flatten().tolist()
+        def _to_1d(arr):
+            if hasattr(arr, "full"):
+                arr = arr.full()
+            return np.asarray(arr, dtype=float).reshape(-1)
 
-        self.robot_selected.arm.joint_desired = q_next
+        x_world_next = _to_1d(x_world_next)
+        q_next = _to_1d(q_next)
+        e_p_task_star_new = _to_1d(e_p_task_star_new)
 
+        if q_next.size == q.size:
+            self.robot_selected.arm.joint_desired = q_next.tolist()
 
-        pose_next = PoseX.from_pose(
-            xyz=x_world_next[0:3],
-            rot=x_world_next[3:6],
-            rot_rep="euler_xyz",
-            frame="NWU",
-        )
-        _, quat_wxyz = pose_next.get_pose(frame="NWU", rot_rep="quat_wxyz")
-        res_map_ned = self.robot_selected.world_nwu_to_map_ned(
-            xyz_world_nwu=x_world_next[0:3],
-            quat_world_wxyz=quat_wxyz,
-            warn_context=f"task world->map ({self.robot_selected.prefix})",
-        )
-
-        p_cmd_ned, rpy_cmd_ned = res_map_ned
-        self.robot_selected.pose_command = [
-            float(p_cmd_ned[0]),
-            float(p_cmd_ned[1]),
-            float(p_cmd_ned[2]),
-            float(rpy_cmd_ned[0]),
-            float(rpy_cmd_ned[1]),
-            float(rpy_cmd_ned[2]),
-        ]
+        if x_world_next.size == 6:
+            pose_next = PoseX.from_pose(
+                xyz=x_world_next[0:3],
+                rot=x_world_next[3:6],
+                rot_rep="euler_xyz",
+                frame="NWU",
+            )
+            _, quat_wxyz = pose_next.get_pose(frame="NWU", rot_rep="quat_wxyz")
+            res_map_ned = self.robot_selected.world_nwu_to_map_ned(
+                xyz_world_nwu=x_world_next[0:3],
+                quat_world_wxyz=quat_wxyz,
+                warn_context=f"task world->map ({self.robot_selected.prefix})",
+            )
+            if res_map_ned is not None:
+                p_cmd_ned, rpy_cmd_ned = res_map_ned
+                self.robot_selected.pose_command = [
+                    float(p_cmd_ned[0]),
+                    float(p_cmd_ned[1]),
+                    float(p_cmd_ned[2]),
+                    float(rpy_cmd_ned[0]),
+                    float(rpy_cmd_ned[1]),
+                    float(rpy_cmd_ned[2]),
+                ]
 
         msg["is_success"] = True
+        msg["result"] = {
+            "x_world_next": x_world_next,
+            "q_next": q_next,
+            "task_error": e_p_task_star_new,
+        }
         self.node.get_logger().debug(f"task_error : {e_p_task_star_new}", throttle_duration_sec=2.0)
         return msg
         
