@@ -416,7 +416,7 @@ class UVMSBackendCore:
             frame="NWU",
         ).get_rot(frame="NWU", rot_rep="matrix")
         a_des = target_rot @ tool_axis
-        x_world_next, q_next, e_p_task_star_new = self.robot_selected.manipulator_whole_body_inverse_kinematics(
+        x_world_next, q_next, e_p_task_star_new, e_axis_task_star_new = self.robot_selected.manipulator_whole_body_inverse_kinematics(
             q,
             world_pose,
             kp,

@@ -551,7 +551,7 @@ class Robot(Base):
         base_T0,
         tipOffset,
     ):
-        x_world_next, q_next, e_p_task_star_new = cls.ik_wb_eval_cls(
+        x_world_next, q_next, e_p_task_star_new, e_axis_task_star_new = cls.ik_wb_eval_cls(
             q,
             world_pose,
             kp,
@@ -566,7 +566,7 @@ class Robot(Base):
             base_T0,
             tipOffset,
         )
-        return x_world_next, q_next, e_p_task_star_new
+        return x_world_next, q_next, e_p_task_star_new, e_axis_task_star_new
 
     def _mocap_pose_cb(self, msg: PoseStamped):
         p = msg.pose.position

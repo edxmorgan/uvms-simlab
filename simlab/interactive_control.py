@@ -70,6 +70,17 @@ class InteractiveControlsNode(Node):
         self.control_handle = self.menu_handler.insert('Control space')
         self.task_space_handle = self.menu_handler.insert('Task space', parent=self.control_handle, callback=self.switch_control_Type)
         self.menu_handler.setCheckState(self.task_space_handle, MenuHandler.UNCHECKED)
+
+        # self.x_axis_align_target_task_space_handle = self.menu_handler.insert('x-axis align', 
+        #                                                                 parent=self.task_space_handle, callback=self.switch_control_Type)
+        # self.y_axis_align_target_task_space_handle = self.menu_handler.insert('y-axis align', 
+        #                                                                 parent=self.task_space_handle, callback=self.switch_control_Type)
+        # self.z_axis_align_target_task_space_handle = self.menu_handler.insert('z-axis align', 
+        #                                                                 parent=self.task_space_handle, callback=self.switch_control_Type)
+        # self.menu_handler.setCheckState(self.z_axis_align_target_task_space_handle, MenuHandler.UNCHECKED)
+        # self.menu_handler.setCheckState(self.z_axis_align_target_task_space_handle, MenuHandler.UNCHECKED)
+        # self.menu_handler.setCheckState(self.z_axis_align_target_task_space_handle, MenuHandler.UNCHECKED)
+
         self.joint_space_handle = self.menu_handler.insert('Joint space', parent=self.control_handle,callback=self.switch_control_Type)
         self.menu_handler.setCheckState(self.joint_space_handle, MenuHandler.CHECKED)
 
