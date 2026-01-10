@@ -358,6 +358,9 @@ class Manipulator(Base):
         self.dq_command = np.zeros((4,)).tolist()
         self.ddq_command = np.zeros((4,)).tolist()
 
+        # Initialize grasper state so get_state() is safe before first update.
+        self.grasper_q = [0.0]
+        self.grasper_q_dot = [0.0]
         self.grasp_command = alpha_params.grasper_close
 
     def update_state(self, msg: DynamicJointState):
@@ -994,71 +997,72 @@ class Robot(Base):
 
     def control_timer_callback(self):
         state = self.get_state()
-        if state['status'] == 'active':
-            if self.final_goal_map_ned_6 is not None and self.planner.planned_result and self.planner.planned_result['is_success']:
-                self.node.get_logger().debug(f"Control timer callback {self.prefix} active.")
-                # Convert once to NumPy arrays
-                path_xyz = np.asarray(self.planner.planned_result["xyz"], dtype=float)
-                path_quat = np.asarray(self.planner.planned_result["quat_wxyz"], dtype=float)
+        if state['status'] != 'active':
+            return
+        if self.final_goal_map_ned_6 is not None and self.planner.planned_result and self.planner.planned_result['is_success']:
+            self.node.get_logger().debug(f"Control timer callback {self.prefix} active.")
+            # Convert once to NumPy arrays
+            path_xyz = np.asarray(self.planner.planned_result["xyz"], dtype=float)
+            path_quat = np.asarray(self.planner.planned_result["quat_wxyz"], dtype=float)
 
-                # Compute current manifold errors
-                wp_err_trans, wp_err_rot, wp_err_joint, goal_err_trans, goal_err_rot = self.compute_errors()
-                goal_xyz_error = np.linalg.norm(goal_err_trans)
+            # Compute current manifold errors
+            wp_err_trans, wp_err_rot, wp_err_joint, goal_err_trans, goal_err_rot = self.compute_errors()
+            goal_xyz_error = np.linalg.norm(goal_err_trans)
 
-                # Calculate the blend factor.
-                # When pos_error >= pos_blend_threshold, blend_factor will be 0 (full velocity_yaw).
-                # When pos_error == 0, blend_factor will be 1 (full target_yaw).
-                self.yaw_blend_factor = np.clip((self.pos_blend_threshold - goal_xyz_error) / self.pos_blend_threshold, 0.0, 1.0)
-                # self.get_logger().info(
-                #     f"{robot.yaw_blend_factor} yaw_blend_factor"
-                # )
-                # Get the velocity-based yaw.
-                adjusted_yaw = self.orient_towards_velocity()
+            # Calculate the blend factor.
+            # When pos_error >= pos_blend_threshold, blend_factor will be 0 (full velocity_yaw).
+            # When pos_error == 0, blend_factor will be 1 (full target_yaw).
+            self.yaw_blend_factor = np.clip((self.pos_blend_threshold - goal_xyz_error) / self.pos_blend_threshold, 0.0, 1.0)
+            # self.get_logger().info(
+            #     f"{robot.yaw_blend_factor} yaw_blend_factor"
+            # )
+            # Get the velocity-based yaw.
+            adjusted_yaw = self.orient_towards_velocity()
 
-                pos_nwu, vel_nwu, acc_nwu, res = self.vehicle_cart_traj.update(self.yaw_blend_factor)
+            pos_nwu, vel_nwu, acc_nwu, res = self.vehicle_cart_traj.update(self.yaw_blend_factor)
 
-                if pos_nwu is not None:
-                    target_nwu = np.asarray(pos_nwu, dtype=float)
+            if pos_nwu is not None:
+                target_nwu = np.asarray(pos_nwu, dtype=float)
 
-                    # Pick orientation from nearest OMPL waypoint
-                    dists = np.linalg.norm(path_xyz - target_nwu, axis=1)
-                    idx = int(np.argmin(dists))
-                    target_quat = path_quat[idx]
+                # Pick orientation from nearest OMPL waypoint
+                dists = np.linalg.norm(path_xyz - target_nwu, axis=1)
+                idx = int(np.argmin(dists))
+                target_quat = path_quat[idx]
 
-                    q_arrow = self.planner.quat_wxyz_from_x_to_vec_scipy(vel_nwu)
+                q_arrow = self.planner.quat_wxyz_from_x_to_vec_scipy(vel_nwu)
 
-                    self.planner.update_target_viz(
-                        stamp=self.node.get_clock().now().to_msg(),
-                        frame_id="world",
-                        xyz=target_nwu,
-                        quat_wxyz=q_arrow,
-                        as_arrow=True,
-                        size=0.10,
-                        rate_hz=30.0,
-                        ttl_sec=0.0,
-                    )
+                self.planner.update_target_viz(
+                    stamp=self.node.get_clock().now().to_msg(),
+                    frame_id="world",
+                    xyz=target_nwu,
+                    quat_wxyz=q_arrow,
+                    as_arrow=True,
+                    size=0.10,
+                    rate_hz=30.0,
+                    ttl_sec=0.0,
+                )
 
-                    res_map_ned = self.world_nwu_to_map_ned(
-                        xyz_world_nwu=target_nwu,
-                        quat_world_wxyz=target_quat,
-                        warn_context=f"target world->map ({self.prefix})",
-                    )
-                    if res_map_ned is not None:
-                        p_cmd_ned, rpy_cmd_ned = res_map_ned
+                res_map_ned = self.world_nwu_to_map_ned(
+                    xyz_world_nwu=target_nwu,
+                    quat_world_wxyz=target_quat,
+                    warn_context=f"target world->map ({self.prefix})",
+                )
+                if res_map_ned is not None:
+                    p_cmd_ned, rpy_cmd_ned = res_map_ned
 
-                        # Blend yaw between velocity-based and target waypoint
-                        rpy_cmd_ned[2] = (1 - self.yaw_blend_factor) * adjusted_yaw + self.yaw_blend_factor * rpy_cmd_ned[2]
+                    # Blend yaw between velocity-based and target waypoint
+                    rpy_cmd_ned[2] = (1 - self.yaw_blend_factor) * adjusted_yaw + self.yaw_blend_factor * rpy_cmd_ned[2]
 
-                        self.pose_command = [
-                            float(p_cmd_ned[0]),
-                            float(p_cmd_ned[1]),
-                            float(p_cmd_ned[2]),
-                            float(rpy_cmd_ned[0]),
-                            float(rpy_cmd_ned[1]),
-                            float(rpy_cmd_ned[2]),
-                        ]
-            
-            self.arm.q_command = self.arm.joint_desired  
+                    self.pose_command = [
+                        float(p_cmd_ned[0]),
+                        float(p_cmd_ned[1]),
+                        float(p_cmd_ned[2]),
+                        float(rpy_cmd_ned[0]),
+                        float(rpy_cmd_ned[1]),
+                        float(rpy_cmd_ned[2]),
+                    ]
+        
+        self.arm.q_command = self.arm.joint_desired  
 
         veh_state_vec = np.array(
             list(state['pose']) + list(state['body_vel']),
@@ -1071,8 +1075,6 @@ class Robot(Base):
             dt=state["dt"]
         )
 
-        # cmd_body_wrench = np.zeros(6)
-        # cmd_body_wrench = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 2.0])
         # Arm PID
         cmd_arm_tau = self.ll_controllers.arm_controller(
             q=list(state["q"]) + list(state['grasper_q']),
@@ -1093,4 +1095,4 @@ class Robot(Base):
 
         self.publish_commands(cmd_body_wrench, arm_tau_list)
 
-    
+
