@@ -352,10 +352,13 @@ class Manipulator(Base):
         self.joint_desired = [0.0]*n_joint
 
         self.joints = [self.alpha_axis_e, self.alpha_axis_d, self.alpha_axis_c, self.alpha_axis_b]
+        self.grasper = [self.alpha_axis_a]
 
         self.q_command = alpha_params.joint_home.tolist()
         self.dq_command = np.zeros((4,)).tolist()
         self.ddq_command = np.zeros((4,)).tolist()
+
+        self.grasp_command = alpha_params.grasper_close
 
     def update_state(self, msg: DynamicJointState):
         self.q = self.get_interface_value(
@@ -378,9 +381,21 @@ class Manipulator(Base):
             [self.alpha_axis_e],
             [Axis_Interface_names.sim_period]
         )
+        self.grasper_q = self.get_interface_value(
+            msg,
+            self.grasper,
+            [Axis_Interface_names.manipulator_position]
+        )
+        self.grasper_q_dot = self.get_interface_value(
+            msg,
+            self.grasper,
+            [Axis_Interface_names.manipulator_velocity]
+        )
     def get_state(self) -> Dict[str, np.ndarray]:
         return {
             'arm_effort':self.effort,
+            'grasper_q': self.grasper_q,
+            'grasper_qdot': self.grasper_q_dot,
             'q':self.q,
             'dq':self.dq,
             'dt':self.sim_period[0]
@@ -1049,8 +1064,6 @@ class Robot(Base):
             list(state['pose']) + list(state['body_vel']),
             dtype=float
         )
-        # log to terminal
-        # self.get_logger().info(f"robot command = {robot.pose_command}")
 
         cmd_body_wrench = self.ll_controllers.vehicle_controller(
             state=veh_state_vec,
@@ -1062,20 +1075,22 @@ class Robot(Base):
         # cmd_body_wrench = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 2.0])
         # Arm PID
         cmd_arm_tau = self.ll_controllers.arm_controller(
-            q=state["q"],
-            q_dot=state["dq"],
-            q_ref=self.arm.q_command,
-            Kp=alpha_params.Kp,
-            Ki=alpha_params.Ki,
-            Kd=alpha_params.Kd,
+            q=list(state["q"]) + list(state['grasper_q']),
+            q_dot=list(state["dq"]) + list(state['grasper_qdot']),
+            q_ref=list(self.arm.q_command) + list([self.arm.grasp_command]),
+            Kp=list(alpha_params.Kp) + list(alpha_params.grasper_kp),
+            Ki=list(alpha_params.Ki) + list(alpha_params.grasper_ki),
+            Kd=list(alpha_params.Kd) + list(alpha_params.grasper_kd),
             dt=state["dt"],
-            u_max=alpha_params.u_max,
-            u_min=alpha_params.u_min,
+            u_max=list(alpha_params.u_max) + list(alpha_params.grasper_u_max),
+            u_min=list(alpha_params.u_min) + list(alpha_params.grasper_u_min),
             model_param=alpha_params.sim_p,
         )
 
-        arm_tau_list = list(np.asarray(cmd_arm_tau, dtype=float).reshape(-1))
-        # always produce 5 values, slice if longer, pad if shorter
-        arm_tau_list = arm_tau_list[:5] + [0.0]
+        arm_tau_list = np.asarray(cmd_arm_tau, dtype=float).tolist()
+        self.node.get_logger().debug(f"robot command = {arm_tau_list}")
+
 
         self.publish_commands(cmd_body_wrench, arm_tau_list)
+
+    

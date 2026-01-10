@@ -36,7 +36,7 @@ class LowLevelController:
         arm_pid_controller_path = os.path.join(package_share_directory, 'manipulator/arm_pid.casadi')
         self.arm_pid_controller = ca.Function.load(arm_pid_controller_path)
         self.arm_dof = int(arm_dof)
-        self.arm_pid_i_buffer = np.zeros(self.arm_dof, dtype=float)  # arm integral buffer
+        self.arm_pid_i_buffer = np.zeros(self.arm_dof+1, dtype=float)  # arm integral buffer
 
         self.vehicle_model_params = [3.72028553e+01, 2.21828075e+01, 6.61734807e+01, 3.38909801e+00,
                                   6.41362046e-01, 6.41362034e-01, 3.38909800e+00, 1.39646394e+00,
@@ -110,8 +110,8 @@ class LowLevelController:
         # Coerce shapes
         def v(x):
             x = np.asarray(x, dtype=float).reshape(-1)
-            if x.size != self.arm_dof:
-                raise ValueError(f"expected length {self.arm_dof}, got {x.size}")
+            if x.size != self.arm_dof+1:
+                raise ValueError(f"expected length {self.arm_dof+1}, got {x.size}")
             return x
 
         q     = v(q)
@@ -124,8 +124,8 @@ class LowLevelController:
         u_min = v(u_min)
 
         buf = np.asarray(self.arm_pid_i_buffer, dtype=float).reshape(-1)
-        if buf.size != self.arm_dof:
-            buf = np.zeros(self.arm_dof, dtype=float)
+        if buf.size != self.arm_dof+1:
+            buf = np.zeros(self.arm_dof+1, dtype=float)
 
         u_sat, err, buf_next = self.arm_pid_controller(
             ca.DM(q),
@@ -141,5 +141,5 @@ class LowLevelController:
             ca.DM(model_param)
         )
 
-        self.arm_pid_i_buffer = np.asarray(buf_next).reshape(-1)[: self.arm_dof]
+        self.arm_pid_i_buffer = np.asarray(buf_next).reshape(-1)[: self.arm_dof+1]
         return np.asarray(u_sat).reshape(-1)

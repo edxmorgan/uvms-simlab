@@ -56,7 +56,7 @@ class InteractiveControlsNode(Node):
         self.menu_handler = MenuHandler()
         self.menu_id_to_robot_index = {}
 
-        self.execute_handle = self.menu_handler.insert("Plan & execute", callback=self.plan_execute)
+        self.execute_handle = self.menu_handler.insert("Plan & Execute", callback=self.plan_execute)
         robot_select_menu_handle = self.menu_handler.insert("Robots")
 
         # add a menu item for this robot and remember which handle maps to which index
@@ -67,25 +67,45 @@ class InteractiveControlsNode(Node):
             if self.uvms_backend.robot_selected.k_robot == robot.k_robot:
                 self.menu_handler.setCheckState(h, MenuHandler.CHECKED)
 
-        self.control_handle = self.menu_handler.insert('Control space')
-        self.task_space_handle = self.menu_handler.insert('Task space', parent=self.control_handle, callback=self.switch_control_Type)
+        self.control_handle = self.menu_handler.insert('Control Space')
+        self.task_space_handle = self.menu_handler.insert('Task Space', parent=self.control_handle, callback=self.switch_control_Type)
         self.menu_handler.setCheckState(self.task_space_handle, MenuHandler.UNCHECKED)
 
-        # self.x_axis_align_target_task_space_handle = self.menu_handler.insert('x-axis align', 
-        #                                                                 parent=self.task_space_handle, callback=self.switch_control_Type)
-        # self.y_axis_align_target_task_space_handle = self.menu_handler.insert('y-axis align', 
-        #                                                                 parent=self.task_space_handle, callback=self.switch_control_Type)
-        # self.z_axis_align_target_task_space_handle = self.menu_handler.insert('z-axis align', 
-        #                                                                 parent=self.task_space_handle, callback=self.switch_control_Type)
-        # self.menu_handler.setCheckState(self.z_axis_align_target_task_space_handle, MenuHandler.UNCHECKED)
-        # self.menu_handler.setCheckState(self.z_axis_align_target_task_space_handle, MenuHandler.UNCHECKED)
-        # self.menu_handler.setCheckState(self.z_axis_align_target_task_space_handle, MenuHandler.UNCHECKED)
+        self.axis_menu_map = {}
+        self.axis_align_handle = self.menu_handler.insert('Axis Align', parent=self.control_handle)
+        self.x_axis_align_target_task_space_handle = self.menu_handler.insert(
+            'x-axis',
+            parent=self.axis_align_handle,
+            callback=self.switch_tool_axis
+        )
+        self.y_axis_align_target_task_space_handle = self.menu_handler.insert(
+            'y-axis',
+            parent=self.axis_align_handle,
+            callback=self.switch_tool_axis
+        )
+        self.z_axis_align_target_task_space_handle = self.menu_handler.insert(
+            'z-axis',
+            parent=self.axis_align_handle,
+            callback=self.switch_tool_axis
+        )
+        self.axis_menu_map[self.x_axis_align_target_task_space_handle] = np.array([-1.0, 0.0, 0.0], dtype=float)
+        self.axis_menu_map[self.y_axis_align_target_task_space_handle] = np.array([0.0, -1.0, 0.0], dtype=float)
+        self.axis_menu_map[self.z_axis_align_target_task_space_handle] = np.array([0.0, 0.0, -1.0], dtype=float)
+        self.menu_handler.setCheckState(self.x_axis_align_target_task_space_handle, MenuHandler.UNCHECKED)
+        self.menu_handler.setCheckState(self.y_axis_align_target_task_space_handle, MenuHandler.UNCHECKED)
+        self.menu_handler.setCheckState(self.z_axis_align_target_task_space_handle, MenuHandler.CHECKED)
+        self.active_axis_handle = self.z_axis_align_target_task_space_handle
+        self.uvms_backend.tool_axis = self.axis_menu_map[self.z_axis_align_target_task_space_handle]
 
-        self.joint_space_handle = self.menu_handler.insert('Joint space', parent=self.control_handle,callback=self.switch_control_Type)
+        self.joint_space_handle = self.menu_handler.insert('Joint Space', parent=self.control_handle,callback=self.switch_control_Type)
         self.menu_handler.setCheckState(self.joint_space_handle, MenuHandler.CHECKED)
 
+        grasper_handle = self.menu_handler.insert('Grasper')
+        self.open_grasper_handle = self.menu_handler.insert('Open', parent=grasper_handle, callback=self.grasper_callback)
+        self.close_grasper_handle = self.menu_handler.insert("Close", parent=grasper_handle, callback=self.grasper_callback)
 
-        task_handle = self.menu_handler.insert('tasks')
+
+        task_handle = self.menu_handler.insert('Tasks')
         pick_place = self.menu_handler.insert('Pick & Place', parent=task_handle)
         pick_handle = self.menu_handler.insert("Pick target", parent=pick_place)
         place_handle = self.menu_handler.insert("Place target", parent=pick_place)
@@ -124,6 +144,12 @@ class InteractiveControlsNode(Node):
         # Start in joint control
         self._apply_joint_control_mode()
 
+    def grasper_callback(self, feedback: InteractiveMarkerFeedback):
+        if feedback.menu_entry_id == self.open_grasper_handle:
+            self.uvms_backend.open_grasper()
+        elif feedback.menu_entry_id == self.close_grasper_handle:
+            self.uvms_backend.close_grasper()
+    
     def plan_execute(self, feedback: InteractiveMarkerFeedback):
         if self.uvms_backend.task_based_controller:
             pass
@@ -208,6 +234,31 @@ class InteractiveControlsNode(Node):
 
         self.menu_handler.apply(self.server, feedback.marker_name)
         self.server.applyChanges()
+
+    def switch_tool_axis(self, feedback: InteractiveMarkerFeedback):
+        if not self.uvms_backend.task_based_controller:
+            # Keep axis selection locked unless in task space control.
+            if feedback.menu_entry_id != self.active_axis_handle:
+                self.menu_handler.setCheckState(feedback.menu_entry_id, MenuHandler.UNCHECKED)
+                self.menu_handler.setCheckState(self.active_axis_handle, MenuHandler.CHECKED)
+                self.menu_handler.apply(self.server, feedback.marker_name)
+                self.server.applyChanges()
+            self.get_logger().info("Axis align is available only in Task space mode.")
+            return
+
+        axis = self.axis_menu_map.get(feedback.menu_entry_id)
+        if axis is None:
+            return
+
+        for mid in self.axis_menu_map.keys():
+            self.menu_handler.setCheckState(mid, MenuHandler.UNCHECKED)
+        self.menu_handler.setCheckState(feedback.menu_entry_id, MenuHandler.CHECKED)
+        self.menu_handler.apply(self.server, feedback.marker_name)
+        self.server.applyChanges()
+
+        self.uvms_backend.tool_axis = axis
+        self.active_axis_handle = feedback.menu_entry_id
+        self.get_logger().info(f"Tool axis align set to {axis.tolist()}")
     
     def vehicle_marker_processFeedback(self, feedback: InteractiveMarkerFeedback):
         pos = feedback.pose.position

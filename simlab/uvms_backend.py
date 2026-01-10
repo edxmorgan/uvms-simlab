@@ -103,6 +103,7 @@ class UVMSBackendCore:
         self.task_on_vehicle_solve_timer = self.node.create_timer(1.0 / 10.0, self.plan_and_execute_task_trajectory_wrt_vehicle)
         self.task_on_world_solve_timer = self.node.create_timer(1.0 / 10.0, self.plan_and_execute_task_trajectory_wrt_world)
         self.task_based_controller = False
+        self.tool_axis = np.array([0.0, 0.0, -1.0], dtype=float)
         
         self.planner_marker_publisher = self.node.create_publisher(Marker, "planned_waypoints_marker", viz_qos)
         self.robots:List[Robot] = []
@@ -324,7 +325,8 @@ class UVMSBackendCore:
             self.node.get_logger().error(f"Planner failed, {e}")
             k_planner.planned_result = {"is_success": False, "message": "Planner did not find a solution"}
             return k_planner.planned_result
-        
+
+
     def solve_execute_inverse_kinematics_wrt_vehicle_frame(self, task_pose:Pose):
         msg = {'is_success':False,'result':None}
         if self.is_valid_arm_base_task(task_pose):
@@ -389,11 +391,9 @@ class UVMSBackendCore:
         k_rp = 0.2
         k_axis = 1.0
         w_axis = 1.5
-        dt = float(state.get("dt", 0.0))
-        if dt <= 0.0:
-            dt = 1.0 / 60.0
+        dt = 1.0 / 500.0        
 
-        tool_axis = np.array([0.0, 0.0, -1.0], dtype=float)
+        tool_axis = np.asarray(self.tool_axis, dtype=float).reshape(3)
         target_rot = PoseX.from_pose(
             xyz=np.array(
                 [
@@ -440,6 +440,7 @@ class UVMSBackendCore:
         x_world_next = _to_1d(x_world_next)
         q_next = _to_1d(q_next)
         e_p_task_star_new = _to_1d(e_p_task_star_new)
+        e_axis_task_star_new = _to_1d(e_axis_task_star_new)
 
         if q_next.size == q.size:
             self.robot_selected.arm.joint_desired = q_next.tolist()
@@ -484,3 +485,9 @@ class UVMSBackendCore:
             self.node.get_logger().debug(f"{self.robot_selected.task_pose_in_world} robot.", throttle_duration_sec=2.0)
             self.node.get_logger().debug(f"{self.target_world_endeffector_pose} target.", throttle_duration_sec=2.0)
         return
+
+    def open_grasper(self):
+        self.robot_selected.arm.grasp_command = alpha_params.grasper_open
+
+    def close_grasper(self):
+        self.robot_selected.arm.grasp_command = alpha_params.grasper_close

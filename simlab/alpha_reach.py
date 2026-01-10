@@ -27,6 +27,9 @@ class Params:
     joint_max = np.array([5.50, 3.40, 3.40, 5.70])
     joint_home = np.array([3.1, 0.7, 0.4, 2.1])
     endeffector_wrt_base_home = np.array([0.09669330716133118, 0.0, 0.1003517135977745])
+
+    grasper_open = 0.014
+    grasper_close = 0.0
     
     joint_limits = list(zip(joint_min.tolist(), joint_max.tolist()))
     joint_limits_configurations = np.array(list(itertools.product(*joint_limits)))
@@ -34,9 +37,16 @@ class Params:
     u_min = np.array([-1.5, -1, -1, -0.54])
     u_max = np.array([1.5, 1, 1, 0.54])
     
-    Kp = cs.vertcat(10.0, 10.0, 10.0, 1.0)
-    Ki = cs.vertcat(0.0, 0.0, 0.0, 0.0)
-    Kd = cs.vertcat(1.0, 1.0, 1.0, 0.0)
+    Kp = np.array([10.0, 10.0, 10.0, 1.0])
+    Ki = np.array([0.0, 0.0, 0.0, 0.0])
+    Kd = np.array([1.0, 1.0, 1.0, 0.0])
+
+    grasper_kp = np.array([1000.0])
+    grasper_ki = np.array([0.0])
+    grasper_kd = np.array([0.0])
+
+    grasper_u_min = np.array([-10.0])
+    grasper_u_max = np.array([10.0])
 
     gravity = 0.0
 
