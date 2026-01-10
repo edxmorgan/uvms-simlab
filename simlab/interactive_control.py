@@ -87,9 +87,9 @@ class InteractiveControlsNode(Node):
             callback=self.switch_control_Type
         )
         self.axis_menu_map = {}
-        self.axis_menu_map[self.x_axis_align_target_task_space_handle] = np.array([-1, 0, 0], dtype=int)
-        self.axis_menu_map[self.y_axis_align_target_task_space_handle] = np.array([0, -1, 0], dtype=int)
-        self.axis_menu_map[self.z_axis_align_target_task_space_handle] = np.array([0, 0, -1], dtype=int)
+        self.axis_menu_map[self.x_axis_align_target_task_space_handle] = np.array([1, 0, 0], dtype=int)
+        self.axis_menu_map[self.y_axis_align_target_task_space_handle] = np.array([0, 1, 0], dtype=int)
+        self.axis_menu_map[self.z_axis_align_target_task_space_handle] = np.array([0, 0, 1], dtype=int)
         self.menu_handler.setCheckState(self.x_axis_align_target_task_space_handle, MenuHandler.UNCHECKED)
         self.menu_handler.setCheckState(self.y_axis_align_target_task_space_handle, MenuHandler.UNCHECKED)
         self.menu_handler.setCheckState(self.z_axis_align_target_task_space_handle, MenuHandler.UNCHECKED)

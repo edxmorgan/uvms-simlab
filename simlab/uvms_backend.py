@@ -388,9 +388,12 @@ class UVMSBackendCore:
         kp = np.array([1.0, 1.0, 1.0], dtype=float)
         w_rp = 1.0
         w_reg = 0.02
+        w_axis = 1.5
         k_rp = 0.2
         k_axis = 1.0
-        w_axis = 1.5
+        w_align = 1.0
+        k_align = 1.0
+        
         dt = 1.0 / 500.0        
 
         tool_axis = np.asarray(self.tool_axis, dtype=float).reshape(3)
@@ -427,6 +430,7 @@ class UVMSBackendCore:
             a_des,
             k_axis,
             w_axis,
+            w_align, k_align,
             dt,
             np.asarray(alpha_params.base_T0_new, dtype=float),
             np.asarray(alpha_params.tipOffset, dtype=float),
