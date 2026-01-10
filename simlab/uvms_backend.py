@@ -104,6 +104,7 @@ class UVMSBackendCore:
         self.task_on_world_solve_timer = self.node.create_timer(1.0 / 10.0, self.plan_and_execute_task_trajectory_wrt_world)
         self.task_based_controller = False
         self.tool_axis = np.array([0.0, 0.0, -1.0], dtype=float)
+        self.w_align = 0.0
         
         self.planner_marker_publisher = self.node.create_publisher(Marker, "planned_waypoints_marker", viz_qos)
         self.robots:List[Robot] = []
@@ -391,7 +392,7 @@ class UVMSBackendCore:
         w_axis = 1.5
         k_rp = 0.2
         k_axis = 1.0
-        w_align = 1.0
+        w_align = float(self.w_align)
         k_align = 1.0
         
         dt = 1.0 / 500.0        

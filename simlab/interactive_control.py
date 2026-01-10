@@ -86,6 +86,11 @@ class InteractiveControlsNode(Node):
             parent=self.task_space_handle,
             callback=self.switch_control_Type
         )
+        self.align_tool_axis_handle = self.menu_handler.insert(
+            'align arm with base',
+            parent=self.task_space_handle,
+            callback=self.toggle_align_weight,
+        )
         self.axis_menu_map = {}
         self.axis_menu_map[self.x_axis_align_target_task_space_handle] = np.array([1, 0, 0], dtype=int)
         self.axis_menu_map[self.y_axis_align_target_task_space_handle] = np.array([0, 1, 0], dtype=int)
@@ -93,6 +98,8 @@ class InteractiveControlsNode(Node):
         self.menu_handler.setCheckState(self.x_axis_align_target_task_space_handle, MenuHandler.UNCHECKED)
         self.menu_handler.setCheckState(self.y_axis_align_target_task_space_handle, MenuHandler.UNCHECKED)
         self.menu_handler.setCheckState(self.z_axis_align_target_task_space_handle, MenuHandler.UNCHECKED)
+        self.menu_handler.setCheckState(self.align_tool_axis_handle, MenuHandler.UNCHECKED)
+        self.align_tool_axis_enabled = False
 
 
         self.joint_space_handle = self.menu_handler.insert('Joint Space', parent=self.control_handle,callback=self.switch_control_Type)
@@ -244,6 +251,15 @@ class InteractiveControlsNode(Node):
 
         self.menu_handler.apply(self.server, feedback.marker_name)
         self.server.applyChanges()
+
+    def toggle_align_weight(self, feedback: InteractiveMarkerFeedback):
+        self.align_tool_axis_enabled = not self.align_tool_axis_enabled
+        state = MenuHandler.CHECKED if self.align_tool_axis_enabled else MenuHandler.UNCHECKED
+        self.menu_handler.setCheckState(self.align_tool_axis_handle, state)
+        self.uvms_backend.w_align = 1.0 if self.align_tool_axis_enabled else 0.0
+        self.menu_handler.apply(self.server, feedback.marker_name)
+        self.server.applyChanges()
+        self.get_logger().info(f"Align arm with base weight set to {self.uvms_backend.w_align:.1f}")
     
     def vehicle_marker_processFeedback(self, feedback: InteractiveMarkerFeedback):
         pos = feedback.pose.position
