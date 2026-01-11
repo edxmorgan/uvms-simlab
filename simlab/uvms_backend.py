@@ -489,6 +489,7 @@ class UVMSBackendCore:
             self.solve_execute_inverse_kinematics_wrt_world_frame()
             self.node.get_logger().debug(f"{self.robot_selected.task_pose_in_world} robot.", throttle_duration_sec=2.0)
             self.node.get_logger().debug(f"{self.target_world_endeffector_pose} target.", throttle_duration_sec=2.0)
+            self.node.get_logger().debug(f"{self.target_arm_base_endeffector_pose} base target.", throttle_duration_sec=2.0)
         return
 
     def open_grasper(self):

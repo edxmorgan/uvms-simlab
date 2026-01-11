@@ -271,8 +271,8 @@ class InteractiveControlsNode(Node):
         self.server.setPose(feedback.marker_name, feedback.pose)
         self.server.applyChanges()
         self.get_logger().debug("Clipped uv_marker position to stay within environment bounds.")
-
         self.uvms_backend.target_vehicle_pose = feedback.pose
+        self.set_endeffector_world_marker_pose(self.uvms_backend.target_arm_base_endeffector_pose, self.uvms_backend.arm_base_target_frame)
 
     def set_endeffector_world_marker_pose(self, new_pose: Pose, source_frame: str) -> None:
         if source_frame == self.uvms_backend.world_frame:
@@ -290,7 +290,7 @@ class InteractiveControlsNode(Node):
     def arm_base_task_marker_processFeedback(self, feedback: InteractiveMarkerFeedback):
         if self.uvms_backend.is_valid_arm_base_task(feedback.pose):
             self.uvms_backend.target_arm_base_endeffector_pose = feedback.pose
-            self.set_endeffector_world_marker_pose(feedback.pose, self.uvms_backend.arm_base_target_frame)
+            self.set_endeffector_world_marker_pose(self.uvms_backend.target_arm_base_endeffector_pose, self.uvms_backend.arm_base_target_frame)
             self.get_logger().debug("Updated arm base task marker pose.")
             return
 
