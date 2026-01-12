@@ -457,6 +457,7 @@ class UVMSBackendCore:
                 rot_rep="euler_xyz",
                 frame="NWU",
             )
+            self._vehicle_desired_pose_from_ik_ = pose_next.get_pose_as_Pose_msg()
             _, quat_wxyz = pose_next.get_pose(frame="NWU", rot_rep="quat_wxyz")
             res_map_ned = self.robot_selected.world_nwu_to_map_ned(
                 xyz_world_nwu=x_world_next[0:3],

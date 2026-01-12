@@ -139,7 +139,7 @@ class InteractiveControlsNode(Node):
             control_frame='arm_base_task',
             fixed=False,
             interaction_mode=InteractiveMarkerControl.MOVE_ROTATE_3D,
-            initial_pose=self.uvms_backend.target_arm_base_endeffector_pose, #change to appropriate initial pose
+            initial_pose=self.uvms_backend.target_arm_base_endeffector_pose,
             scale=0.2,
             show_6dof=True,
             ignore_dof=[]
@@ -195,10 +195,12 @@ class InteractiveControlsNode(Node):
         self._clear_markers()
 
         # uv marker (vehicle)
+        self.uv_marker.pose = getattr(self.uvms_backend, "_vehicle_desired_pose_from_ik_", None) or Pose()
         self.server.insert(self.uv_marker)
         self.server.setCallback(self.uv_marker.name, self.vehicle_marker_processFeedback)
 
         # endeffector marker (arm base frame)
+        self.arm_base_task_marker.pose = self.uvms_backend.target_arm_base_endeffector_pose
         self.server.insert(self.arm_base_task_marker)
         self.server.setCallback(self.arm_base_task_marker.name, self.arm_base_task_marker_processFeedback)
 
@@ -208,6 +210,7 @@ class InteractiveControlsNode(Node):
 
         self.menu_handler.apply(self.server, self.uv_marker.name)
         self.menu_handler.apply(self.server, self.arm_base_task_marker.name)
+        
         self.server.applyChanges()
 
     def _apply_task_control_mode(self) -> None:
@@ -247,6 +250,14 @@ class InteractiveControlsNode(Node):
             self.menu_handler.setCheckState(self.joint_space_handle, MenuHandler.CHECKED)
             self._apply_joint_control_mode()
             self.uvms_backend.task_based_controller = False
+            self.uvms_backend.target_vehicle_pose = self.uvms_backend._vehicle_desired_pose_from_ik_
+            arm_pose_world_new = self.uvms_backend.robot_selected.try_transform_pose(
+                self.uvms_backend.target_world_endeffector_pose,
+                target_frame=self.uvms_backend.arm_base_target_frame,
+                source_frame=self.uvms_backend.world_frame,
+                warn_context="set_endeffector_base_marker_pose",
+            )
+            self.uvms_backend.target_arm_base_endeffector_pose = arm_pose_world_new
             self.get_logger().info("Switched to JOINT space control.")
 
         self.menu_handler.apply(self.server, feedback.marker_name)
@@ -272,9 +283,19 @@ class InteractiveControlsNode(Node):
         self.server.applyChanges()
         self.get_logger().debug("Clipped uv_marker position to stay within environment bounds.")
         self.uvms_backend.target_vehicle_pose = feedback.pose
-        self.set_endeffector_world_marker_pose(self.uvms_backend.target_arm_base_endeffector_pose, self.uvms_backend.arm_base_target_frame)
+        self.sync_endeffector_world_marker_pose(self.uvms_backend.target_arm_base_endeffector_pose, self.uvms_backend.arm_base_target_frame)
 
-    def set_endeffector_world_marker_pose(self, new_pose: Pose, source_frame: str) -> None:
+    def arm_base_task_marker_processFeedback(self, feedback: InteractiveMarkerFeedback):
+        if self.uvms_backend.is_valid_arm_base_task(feedback.pose):
+            self.uvms_backend.target_arm_base_endeffector_pose = feedback.pose
+            self.sync_endeffector_world_marker_pose(self.uvms_backend.target_arm_base_endeffector_pose, self.uvms_backend.arm_base_target_frame)
+            self.get_logger().debug("Updated arm base task marker pose.")
+            return
+
+        self.server.setPose(self.arm_base_task_marker.name, self.uvms_backend.target_arm_base_endeffector_pose)
+        self.server.applyChanges()
+
+    def sync_endeffector_world_marker_pose(self, new_pose: Pose, source_frame: str) -> None:
         if source_frame == self.uvms_backend.world_frame:
             self.uvms_backend.target_world_endeffector_pose = new_pose
             return
@@ -286,17 +307,6 @@ class InteractiveControlsNode(Node):
             warn_context="set_endeffector_world_marker_pose",
         )
         self.uvms_backend.target_world_endeffector_pose = task_pose_world_new
-
-    def arm_base_task_marker_processFeedback(self, feedback: InteractiveMarkerFeedback):
-        if self.uvms_backend.is_valid_arm_base_task(feedback.pose):
-            self.uvms_backend.target_arm_base_endeffector_pose = feedback.pose
-            self.set_endeffector_world_marker_pose(self.uvms_backend.target_arm_base_endeffector_pose, self.uvms_backend.arm_base_target_frame)
-            self.get_logger().debug("Updated arm base task marker pose.")
-            return
-
-        self.server.setPose(self.arm_base_task_marker.name, self.uvms_backend.target_arm_base_endeffector_pose)
-        self.server.applyChanges()
-
 
     def world_task_marker_processFeedback(self, feedback: InteractiveMarkerFeedback):
         pose_world = self.uvms_backend.robot_selected.try_transform_pose(
@@ -320,7 +330,7 @@ class InteractiveControlsNode(Node):
         self.server.applyChanges()
 
         # no duplicate transform now, we already have pose_world
-        self.set_endeffector_world_marker_pose(pose_world, self.uvms_backend.world_frame)
+        self.sync_endeffector_world_marker_pose(pose_world, self.uvms_backend.world_frame)
 
 
 
