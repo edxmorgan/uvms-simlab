@@ -46,7 +46,6 @@ setup(
                       'sensor_msgs',
                       'geometry_msgs',
                       'visualization_msgs',
-                      'tf2_ros',
                       'numpy',
                       'trimesh',
                       'pycollada',
