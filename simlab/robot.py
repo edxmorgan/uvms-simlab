@@ -469,7 +469,7 @@ class Robot(Base):
         vehicle_J_path = os.path.join(package_share_directory, 'vehicle/J_uv.casadi')
         vehicle_ned2body_acc_path = os.path.join(package_share_directory, 'vehicle/ned2body_acc.casadi')
         vehicle_ned2body_vel_path = os.path.join(package_share_directory, 'vehicle/ned2body_vel.casadi')
-        ik_wb_path = os.path.join(package_share_directory, 'whole_body/ik_whole_b.casadi')
+        ik_wb_path = os.path.join(package_share_directory, 'whole_body/ik.so')
 
         self.fk_eval = ca.Function.load(fk_path) #  forward kinematics
         # also set a class attribute fk_eval so it can be shared
@@ -481,8 +481,7 @@ class Robot(Base):
         if not hasattr(Robot, "ik_eval_cls"):
             Robot.ik_eval_cls = self.ik_eval
 
-
-        self.ik_wb_eval = ca.Function.load(ik_wb_path) #  inverse kinematics
+        self.ik_wb_eval = ca.external('mapacc_task_based_ik',ik_wb_path) #  inverse kinematics
         # also set a class attribute ik_eval so it can be shared
         if not hasattr(Robot, "ik_wb_eval_cls"):
             Robot.ik_wb_eval_cls = self.ik_wb_eval

@@ -1,1 +1,2 @@
 *.casadi filter=lfs diff=lfs merge=lfs -text
+resource/whole_body/ik.so filter=lfs diff=lfs merge=lfs -text
