@@ -160,3 +160,4 @@ cython_debug/
 #.idea/
 
 ik_whole_b.casadi
+!ik.so
