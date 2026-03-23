@@ -19,6 +19,8 @@ import ament_index_python
 import os
 import casadi as ca
 from rclpy.node import Node
+from namor import OGES, build_weight_vector
+from namor import load_blue_rov_params, load_uv_model_function, load_alpha_reach_params
 
 class LowLevelPidController:
     def __init__(self, node: Node, arm_dof: int = 4):
@@ -46,6 +48,7 @@ class LowLevelPidController:
                                   -3.36082112e+01, -8.94055107e+01, -2.98736214e+00, -1.57921531e+00,
                                   -3.39766499e+00, -1.47912104e-04, -5.16373030e-04, -9.85522538e+01,
                                   -3.05907788e-02, -1.27877517e-01, -1.63514832e+00]
+
 
         self.kp = np.array([40.0, 40.0, 40.0, 10, 10, 10.0])
         self.ki = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
@@ -300,3 +303,52 @@ class LowLevelOptimalModelbasedController:
 
         self.arm_pid_i_buffer = np.asarray(buf_next).reshape(-1)[: self.arm_dof+1]
         return np.asarray(u_sat).reshape(-1)
+
+
+class OgesModelbasedController:
+    def __init__(self, node: Node, arm_dof: int = 4):
+        self.node = node
+        oges = OGES(n_dof=6, use_jit=False, cyclic_dims=(3, 4, 5))
+        A, b, V = oges.define_lyapunov_joint_constraints()
+        self.policy = oges.controller(A, b, V)
+
+        self.weights = build_weight_vector(
+            a1=[15, 15, 30, 15, 15, 15],
+            a2=[1, 1, 5, 0.2, 0.2, 0.2],
+            cross_ratio=0.5,
+            decay_rate=0.001,
+        )
+
+
+        self.blue = load_blue_rov_params()
+        self.alpha_params = load_alpha_reach_params()
+
+        self.M_uv_matrix = load_uv_model_function("M_id.casadi")
+        self.C_uv_mat = load_uv_model_function("C_id.casadi")
+        self.g_uv_vec = load_uv_model_function("g_id.casadi")
+        self.Dp_uv_vec = load_uv_model_function("body_damping_matrix_id.casadi")
+        self.J_uv = load_uv_model_function("J_uv.casadi")
+
+        self.node.get_logger().info(f"\033[96mOGES controller {self.policy} : controller active.\033[0m")
+        self.node.get_logger().info(f"\033[93mOGES controller parameters{self.blue.sim_p} : controller active.\033[0m")
+
+
+    def vehicle_controller(self, state: np.ndarray, target_pos: np.ndarray, target_vel: np.ndarray, target_acc: np.ndarray, dt: float) -> np.ndarray:
+        return np.zeros(6, dtype=float)
+
+    def arm_controller(
+        self,
+        q: np.ndarray,
+        q_dot: np.ndarray,
+        q_ref: np.ndarray,
+        dq_ref: np.ndarray,
+        ddq_ref: np.ndarray,
+        Kp: np.ndarray,
+        Ki: np.ndarray,
+        Kd: np.ndarray,
+        dt: float,
+        u_max: np.ndarray,
+        u_min: np.ndarray,
+        model_param: np.ndarray,
+    ) -> np.ndarray:
+        return np.zeros(5, dtype=float)

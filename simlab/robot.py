@@ -34,7 +34,7 @@ from typing import Sequence, Dict, Callable, Any, Optional
 from control_msgs.msg import DynamicInterfaceGroupValues
 from std_msgs.msg import Float64MultiArray
 from simlab.controller_msg import FullRobotMsg
-from simlab.controllers import LowLevelPidController, LowLevelOptimalModelbasedController
+from simlab.controllers import LowLevelPidController, LowLevelOptimalModelbasedController, OgesModelbasedController
 from simlab.planner_markers import PathPlanner
 from simlab.cartesian_ruckig import VehicleCartesianRuckig
 from ruckig import Result
@@ -513,6 +513,7 @@ class Robot(Base):
         self.body_acc_command = [0.0]*6
         self.ll_statefeedback_controllers = LowLevelPidController(self.node, self.n_joint)
         self.ll_modelbased_controllers = LowLevelOptimalModelbasedController(self.node, self.n_joint)
+        self.ll_oges_modelbased_controllers = OgesModelbasedController(self.node, self.n_joint)
         self.planner_action_client = PlannerActionClient(
             self.node,
             action_name="planner",
@@ -641,6 +642,17 @@ class Robot(Base):
                 Ki=list(alpha_params.acc_Ki) + list(alpha_params.grasper_ki),
                 Kd=list(alpha_params.acc_Kd) + list(alpha_params.grasper_kd),
             ),
+        )
+
+        self.register_controller(
+            name="namor_model",
+            vehicle_fn=self.ll_oges_modelbased_controllers.vehicle_controller,
+            arm_fn=self.ll_oges_modelbased_controllers.arm_controller,
+            arm_gains=ArmGains(
+                Kp=list([0, 0, 0, 0]) + list([0.0]),
+                Ki=list([0, 0, 0, 0]) + list([0.0]),
+                Kd=list([0, 0, 0, 0]) + list([0.0]),
+            ), # not used here
         )
 
         # set default controller
