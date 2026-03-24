@@ -314,18 +314,19 @@ class OgesModelbasedController:
     def __init__(self, node: Node, arm_dof: int = 4):
         self.node = node
         self.arm_dof = int(arm_dof)
+        self.use_control_filter = False
 
-        uv_oges = OGES(n_dof=6, use_jit=False, cyclic_dims=(3, 4, 5))
+        uv_oges = OGES(n_dof=6, use_jit=True, cyclic_dims=(3, 4, 5))
         uv_A, uv_b, uv_V = uv_oges.define_lyapunov_joint_constraints()
-        self.vehicle_policy = uv_oges.controller(uv_A, uv_b, uv_V, include_constraint_violation=True)
+        self.vehicle_policy = uv_oges.controller(uv_A, uv_b, uv_V, include_constraint_violation=True, filter_control=self.use_control_filter)
 
-        arm_oges = OGES(n_dof=self.arm_dof, use_jit=False)
+        arm_oges = OGES(n_dof=self.arm_dof, use_jit=True)
         arm_A, arm_b, arm_V = arm_oges.define_lyapunov_joint_constraints()
-        self.arm_policy = arm_oges.controller(arm_A, arm_b, arm_V, include_constraint_violation=True)
+        self.arm_policy = arm_oges.controller(arm_A, arm_b, arm_V, include_constraint_violation=True, filter_control=self.use_control_filter)
 
         self.vehicle_weights = build_weight_vector(
             a1=[15, 15, 30, 15, 15, 15],
-            a2=[3, 3, 10, 0.2, 0.2, 0.2],
+            a2=[1, 1, 5, 0.2, 0.2, 0.2],
             cross_ratio=0.5,
             decay_rate=0.001,
         )
@@ -355,6 +356,8 @@ class OgesModelbasedController:
         self.arm_u_prev = np.zeros(self.arm_dof, dtype=float)
         self.vehicle_time = 0.0
         self.arm_time = 0.0
+        self.vehicle_lowpass_tau = np.full(6, 0.0)
+        self.arm_lowpass_tau = np.array([0.1, 0.1, 0.1, 0.25])
 
         self.node.get_logger().info(f"\033[96mOGES vehicle controller {self.vehicle_policy} : controller active.\033[0m")
         self.node.get_logger().info(f"\033[93mOGES controller parameters{self.blue.sim_p} : controller active.\033[0m")
@@ -380,8 +383,7 @@ class OgesModelbasedController:
         target_body_acc_ref = target_acc.copy()
         tau_nullspace = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=float)
 
-        u, V, null_err, idem_err, metric_err, clf_violation = self.vehicle_policy(
-            state,
+        vehicle_policy_args = [state,
             self.vehicle_weights,
             N_i,
             H_i,
@@ -394,8 +396,16 @@ class OgesModelbasedController:
             self.vehicle_time,
             self.blue.u_min,
             self.blue.u_max,
-            tau_nullspace,
-        )
+            tau_nullspace]
+        
+        if self.use_control_filter:
+            vehicle_policy_args.extend([
+                self.vehicle_u_prev,
+                self.vehicle_lowpass_tau,
+                dt,
+            ])
+        
+        u, V, null_err, idem_err, metric_err, clf_violation = self.vehicle_policy(*vehicle_policy_args)
         u = np.asarray(u.full(), dtype=float).reshape(-1)
         self.vehicle_u_prev = u.copy()
         return u
@@ -436,7 +446,7 @@ class OgesModelbasedController:
         Jk_ref = np.eye(self.arm_dof, dtype=float)
         tau_nullspace = np.zeros(self.arm_dof, dtype=float)
 
-        arm_tau, V, null_err, idem_err, metric_err, clf_violation = self.arm_policy(
+        arm_policy_args = [
             np.concatenate((q_arm, qdot_arm)),
             self.arm_weights,
             N_i,
@@ -451,7 +461,16 @@ class OgesModelbasedController:
             u_min[: self.arm_dof],
             u_max[: self.arm_dof],
             tau_nullspace,
-        )
+        ]
+            
+        if self.use_control_filter:
+            arm_policy_args.extend([
+                self.arm_u_prev,
+                self.arm_lowpass_tau,
+                dt,
+            ])
+
+        arm_tau, V, null_err, idem_err, metric_err, clf_violation = self.arm_policy(*arm_policy_args)
 
         arm_tau = np.asarray(arm_tau.full(), dtype=float).reshape(-1)
         self.arm_u_prev = arm_tau.copy()
