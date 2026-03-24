@@ -27,8 +27,6 @@ from namor import (
     load_uv_model_function,
 )
 
-
-
 class LowLevelPidController:
     def __init__(self, node: Node, arm_dof: int = 4):
         package_share_directory = ament_index_python.get_package_share_directory('simlab')
