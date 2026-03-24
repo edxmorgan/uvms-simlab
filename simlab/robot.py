@@ -649,10 +649,10 @@ class Robot(Base):
             vehicle_fn=self.ll_oges_modelbased_controllers.vehicle_controller,
             arm_fn=self.ll_oges_modelbased_controllers.arm_controller,
             arm_gains=ArmGains(
-                Kp=list([0, 0, 0, 0]) + list([0.0]),
-                Ki=list([0, 0, 0, 0]) + list([0.0]),
-                Kd=list([0, 0, 0, 0]) + list([0.0]),
-            ), # not used here
+                Kp=list(alpha_params.tau_Kp) + list(alpha_params.grasper_kp),
+                Ki=list(alpha_params.tau_Ki) + list(alpha_params.grasper_ki),
+                Kd=list(alpha_params.tau_Kd) + list(alpha_params.grasper_kd),
+            ),
         )
 
         # set default controller
@@ -1450,6 +1450,9 @@ class Robot(Base):
             if target_pose_map_ned is not None and tw6_map_ned is not None and acc6_map_ned is not None:
                 p_cmd_ned, rpy_cmd_ned = target_pose_map_ned
 
+                # Blend yaw between velocity-based and target waypoint
+                rpy_cmd_ned[2] = (1 - self.yaw_blend_factor) * adjusted_yaw + self.yaw_blend_factor * rpy_cmd_ned[2]
+
                 cmd_J_UV = self.vehicle_J(rpy_cmd_ned).full()
                 self.node.get_logger().debug(f"v_cmd_ned {tw6_map_ned} : active.")
 
@@ -1458,9 +1461,6 @@ class Robot(Base):
 
                 body_acc_command = self.to_body_acceleration(rpy_cmd_ned, tw6_map_ned, acc6_map_ned, self.v_c)
                 self.node.get_logger().debug(f"body_acc_command {acc6_map_ned} : active.")
-
-                # Blend yaw between velocity-based and target waypoint
-                rpy_cmd_ned[2] = (1 - self.yaw_blend_factor) * adjusted_yaw + self.yaw_blend_factor * rpy_cmd_ned[2]
 
                 self.pose_command = [
                     float(p_cmd_ned[0]),
