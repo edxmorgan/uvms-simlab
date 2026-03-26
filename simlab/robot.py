@@ -342,9 +342,13 @@ class Axis_Interface_names:
     floating_torque_x = 'torque.x'
     floating_torque_y = 'torque.y'
     floating_torque_z = 'torque.z'
+    floating_control_power_abs = 'control_power_abs'
+    floating_control_energy_abs = 'control_energy_abs'
 
     sim_time = 'sim_time'
     sim_period = 'sim_period'
+    arm_control_power_abs = 'control_power_abs'
+    arm_control_energy_abs = 'control_energy_abs'
     
 class Manipulator(Base):
     def __init__(self, node: Node, n_joint, prefix):
@@ -503,6 +507,10 @@ class Robot(Base):
         self.body_vel = [0] * 6
         self.ned_vel = [0] * 6
         self.body_forces = [0] * 6
+        self.vehicle_control_power = 0.0
+        self.vehicle_control_energy = 0.0
+        self.arm_control_power = 0.0
+        self.arm_control_energy = 0.0
         self.prefix = prefix
         self.status = 'inactive'
         self.sim_time = 0.0
@@ -897,6 +905,27 @@ class Robot(Base):
             Axis_Interface_names.floating_torque_z
             ]
         )
+
+        self.vehicle_control_power = self.get_interface_value(
+            msg,
+            [self.floating_base_IOs],
+            [Axis_Interface_names.floating_control_power_abs]
+        )[0]
+        self.vehicle_control_energy = self.get_interface_value(
+            msg,
+            [self.floating_base_IOs],
+            [Axis_Interface_names.floating_control_energy_abs]
+        )[0]
+        self.arm_control_power = self.get_interface_value(
+            msg,
+            [self.arm_IOs],
+            [Axis_Interface_names.arm_control_power_abs]
+        )[0]
+        self.arm_control_energy = self.get_interface_value(
+            msg,
+            [self.arm_IOs],
+            [Axis_Interface_names.arm_control_energy_abs]
+        )[0]
    
         dynamics_sim_time = self.get_interface_value(msg,[self.floating_base_IOs],[Axis_Interface_names.sim_time])[0]
         if self.status == 'inactive':
@@ -912,11 +941,24 @@ class Robot(Base):
         xq['body_vel'] = self.body_vel
         xq['ned_vel'] = self.ned_vel
         xq['body_forces'] = self.body_forces
+        xq['vehicle_control_power_abs'] = self.vehicle_control_power
+        xq['vehicle_control_energy_abs'] = self.vehicle_control_energy
+        xq['arm_control_power_abs'] = self.arm_control_power
+        xq['arm_control_energy_abs'] = self.arm_control_energy
         xq['status'] = self.status
         xq['sim_time'] = self.sim_time
         xq['prefix'] = self.prefix
         xq['mocap'] = self.mocap_latest
         return xq
+
+    def get_energy_metrics(self) -> Dict:
+        return {
+            'prefix': self.prefix,
+            'vehicle_control_power_abs': float(self.vehicle_control_power),
+            'vehicle_control_energy_abs': float(self.vehicle_control_energy),
+            'arm_control_power_abs': float(self.arm_control_power),
+            'arm_control_energy_abs': float(self.arm_control_energy),
+        }
 
     def try_transform_pose(
         self,
