@@ -16,6 +16,7 @@
 #!/usr/bin/env python3
 import rclpy
 from rclpy.node import Node
+from rviz_2d_overlay_msgs.msg import OverlayText
 from simlab.uvms_backend import UVMSBackendCore
 from visualization_msgs.msg import InteractiveMarkerControl, InteractiveMarkerFeedback
 from interactive_markers.interactive_marker_server import InteractiveMarkerServer
@@ -50,6 +51,15 @@ class InteractiveControlsNode(Node):
                                                               self.vehicle_target_frame, self.arm_base_target_frame, 
                                                               self.world_frame,
                                                               self.world_endeffector_target_frame, alpha)
+        self.robot_metrics_overlay_pub = self.create_publisher(
+            OverlayText,
+            'robot_metrics_overlay_text',
+            10,
+        )
+        self.robot_metrics_overlay_timer = self.create_timer(
+            1.0 / 5.0,
+            self.publish_robot_metrics_overlay_callback,
+        )
         # Create marker server, menu handler
         self.server = InteractiveMarkerServer(self, "uvms_interactive_controls")
 
@@ -199,6 +209,26 @@ class InteractiveControlsNode(Node):
             self.uvms_backend.plan_task_trajectory()
             return
         self.uvms_backend.plan_vehicle_trajectory()
+
+    def publish_robot_metrics_overlay_callback(self) -> None:
+        msg = OverlayText()
+        msg.action = OverlayText.ADD
+        msg.width = 620
+        msg.height = max(180, 70 + 28 * len(self.uvms_backend.robots))
+        msg.horizontal_distance = 28
+        msg.vertical_distance = 170
+        msg.horizontal_alignment = OverlayText.RIGHT
+        msg.vertical_alignment = OverlayText.TOP
+        msg.bg_color.a = 0.45
+        msg.line_width = 2
+        msg.text_size = 14.0
+        msg.font = 'Sans Serif'
+        msg.fg_color.r = 1.0
+        msg.fg_color.g = 0.9
+        msg.fg_color.b = 0.2
+        msg.fg_color.a = 0.95
+        msg.text = self.uvms_backend.format_robot_metrics_overlay_text()
+        self.robot_metrics_overlay_pub.publish(msg)
 
     def _set_robot_submenus_visible(self, selected_k_robot: int) -> None:
         for r in self.uvms_backend.robots:

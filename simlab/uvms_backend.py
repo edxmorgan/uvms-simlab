@@ -141,6 +141,21 @@ class UVMSBackendCore:
         self.env_aabb_pub.publish(min_marker)
         self.env_aabb_pub.publish(max_marker)
 
+    def format_robot_metrics_overlay_text(self) -> str:
+        lines = ['Robot Controller Energy Applied']
+        for robot in self.robots:
+            metrics = robot.get_energy_metrics()
+            selected = ' *' if robot == self.robot_selected else ''
+            total_energy = (
+                metrics['vehicle_control_energy_abs'] +
+                metrics['arm_control_energy_abs']
+            )
+            lines.append(
+                f"{metrics['prefix']}{selected} | "
+                f"E {total_energy:.2f}"
+            )
+        return '\n'.join(lines)
+
     def fcl_update_callback(self):
         self.fcl_world.update_from_tf(self.tf_buffer, rclpy.time.Time())
 
