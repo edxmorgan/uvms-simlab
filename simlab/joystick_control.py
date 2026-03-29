@@ -18,6 +18,8 @@ import rclpy
 from rclpy.node import Node
 from simlab.robot import Robot, ControlMode
 import tf2_ros
+from geometry_msgs.msg import PoseStamped
+from control_msgs.msg import DynamicJointState
 ###############################################################################
 # ROS2 Node that uses the PS4 controller for ROV teleoperation.
 #
@@ -51,10 +53,32 @@ class PS4TeleopNode(Node):
         self.get_logger().info(f"Robot prefixes found: {self.robots_prefix}")
         self.total_no_efforts = self.no_robot * self.no_efforts
         self.get_logger().info(f"Total number of commands: {self.total_no_efforts}")
-        
+        self.robots = []
         for k, prefix in enumerate(self.robots_prefix):
-            robot_k = Robot(self,  self.tf_buffer, k, 4, prefix)
+            robot_k = Robot(self,  self.tf_buffer, k, 4, prefix, create_subscriptions=False)
             robot_k.set_control_mode(ControlMode.TELEOP)
+            self.robots.append(robot_k)
+
+        self.dynamics_states_sub = self.create_subscription(
+            DynamicJointState,
+            'dynamic_joint_states',
+            self._dynamic_joint_states_cb,
+            10,
+        )
+        self.mocap_pose_sub = self.create_subscription(
+            PoseStamped,
+            'mocap_pose',
+            self._mocap_pose_cb,
+            10,
+        )
+
+    def _dynamic_joint_states_cb(self, msg: DynamicJointState) -> None:
+        for robot in self.robots:
+            robot.listener_callback(msg)
+
+    def _mocap_pose_cb(self, msg: PoseStamped) -> None:
+        for robot in self.robots:
+            robot._mocap_pose_cb(msg)
 
 
 def main(args=None):

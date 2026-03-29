@@ -32,6 +32,8 @@ from geometry_msgs.msg import Pose
 from std_msgs.msg import Header
 import sensor_msgs_py.point_cloud2 as pc2
 from sensor_msgs.msg import PointCloud2
+from geometry_msgs.msg import PoseStamped
+from control_msgs.msg import DynamicJointState
 from simlab.planner_markers import PathPlanner
 from simlab.cartesian_ruckig import VehicleCartesianRuckig
 from simlab.frame_utils import PoseX
@@ -120,13 +122,34 @@ class UVMSBackendCore:
                 max_waypoints=self.max_cartesian_waypoints,
             )
 
-            robot_k = Robot(self.node, self.tf_buffer, k, 4, prefix, planner, vehicle_cart_traj)
+            robot_k = Robot(
+                self.node,
+                self.tf_buffer,
+                k,
+                4,
+                prefix,
+                planner,
+                vehicle_cart_traj,
+                create_subscriptions=False,
+            )
             robot_k.set_control_mode(ControlMode.PLANNER)
 
 
             self.robots.append(robot_k)
 
         self.robot_selected = self.robots[0]
+        self.dynamics_states_sub = self.node.create_subscription(
+            DynamicJointState,
+            'dynamic_joint_states',
+            self._dynamic_joint_states_cb,
+            10,
+        )
+        self.mocap_pose_sub = self.node.create_subscription(
+            PoseStamped,
+            'mocap_pose',
+            self._mocap_pose_cb,
+            10,
+        )
 
         self.initialise_target_Poses()
 
@@ -160,6 +183,14 @@ class UVMSBackendCore:
                 f"E {total_energy:.2f} J | dE/dt {total_power:.2f} W"
             )
         return '\n'.join(lines)
+
+    def _dynamic_joint_states_cb(self, msg: DynamicJointState) -> None:
+        for robot in self.robots:
+            robot.listener_callback(msg)
+
+    def _mocap_pose_cb(self, msg: PoseStamped) -> None:
+        for robot in self.robots:
+            robot._mocap_pose_cb(msg)
 
     def fcl_update_callback(self):
         self.fcl_world.update_from_tf(self.tf_buffer, rclpy.time.Time())

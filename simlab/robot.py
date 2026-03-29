@@ -430,7 +430,8 @@ class Robot(Base):
                   n_joint, 
                   prefix,
                   planner=None,
-                  vehicle_cart_traj=None):
+                  vehicle_cart_traj=None,
+                  create_subscriptions: bool = True):
         self.planner: PathPlanner = planner
         self.vehicle_cart_traj: VehicleCartesianRuckig = vehicle_cart_traj
         self.menu_handle = None
@@ -439,31 +440,34 @@ class Robot(Base):
         self.tf_buffer = tf_buffer
         self.task_based_controller = False
 
-        self.dynamics_states_sub = node.create_subscription(
-                DynamicJointState,
-                'dynamic_joint_states',
-                self.listener_callback,
-                10
-            )
+        self.dynamics_states_sub = None
         
         # Latest mocap pose [x, y, z, qw, qx, qy, qz]
         self.mocap_latest = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
 
         self.v_c = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
-        # Subscribe to the ENU, origin offset pose from MocapPathBuilder
-        # Topic name must match MocapPathBuilder.mocap_pose_topic, default 'mocap_pose'
-        self.mocap_pose_sub = node.create_subscription(
-            PoseStamped,
-            'mocap_pose',
-            self._mocap_pose_cb,
-            10
-        )
+        self.mocap_pose_sub = None
+        if create_subscriptions:
+            self.dynamics_states_sub = node.create_subscription(
+                    DynamicJointState,
+                    'dynamic_joint_states',
+                    self.listener_callback,
+                    10
+                )
+
+            # Subscribe to the ENU, origin offset pose from MocapPathBuilder
+            # Topic name must match MocapPathBuilder.mocap_pose_topic, default 'mocap_pose'
+            self.mocap_pose_sub = node.create_subscription(
+                PoseStamped,
+                'mocap_pose',
+                self._mocap_pose_cb,
+                10
+            )
         
         self.k_robot = k_robot
         self.user_id = None
         self.robot_name = f'uvms {prefix}: {k_robot}'
-        self.dynamics_states_sub  # prevent unused variable warning
     
         package_share_directory = ament_index_python.get_package_share_directory(
                 'simlab')
@@ -594,7 +598,7 @@ class Robot(Base):
             self.trajectory_viz_timer = self.node.create_timer(1.0 / 60.0, self.trajectory_viz_callback)
 
         # one loop publishes
-        self.control_loop_timer = self.node.create_timer(1.0/2500.0, self.control_loop_callback)
+        self.control_loop_timer = self.node.create_timer(1.0 / 100.0, self.control_loop_callback)
 
         # joystick updates memory only (no publish inside)
         self.joystick_read_timer = self.node.create_timer(1.0/60.0, self.joystick_read_callback)

@@ -39,6 +39,8 @@ from pynput import keyboard  # pip install pynput
 from simlab.robot import Robot
 from typing import List
 import tf2_ros
+from geometry_msgs.msg import PoseStamped
+from control_msgs.msg import DynamicJointState
 # Mapping from key characters to channel indices
 KEY_TO_CHANNEL = {
     'u': 0,
@@ -73,8 +75,21 @@ class KeyMappingNeutralPublisher(Node):
 
         self.robots:List[Robot] = []
         for k, prefix in enumerate(self.robots_prefix):
-            robot_k = Robot(self, self.tf_buffer, k, 4, prefix)
+            robot_k = Robot(self, self.tf_buffer, k, 4, prefix, create_subscriptions=False)
             self.robots.append(robot_k)  
+
+        self.dynamics_states_sub = self.create_subscription(
+            DynamicJointState,
+            'dynamic_joint_states',
+            self._dynamic_joint_states_cb,
+            10,
+        )
+        self.mocap_pose_sub = self.create_subscription(
+            PoseStamped,
+            'mocap_pose',
+            self._mocap_pose_cb,
+            10,
+        )
 
         # Define the base neutral command message.
         self.neutral_msg = [NEUTRAL_VALUE] * 8
@@ -93,6 +108,14 @@ class KeyMappingNeutralPublisher(Node):
             on_release=self.on_release
         )
         self.listener.start()
+
+    def _dynamic_joint_states_cb(self, msg: DynamicJointState) -> None:
+        for robot in self.robots:
+            robot.listener_callback(msg)
+
+    def _mocap_pose_cb(self, msg: PoseStamped) -> None:
+        for robot in self.robots:
+            robot._mocap_pose_cb(msg)
 
     def timer_callback(self):
         """
