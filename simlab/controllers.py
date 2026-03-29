@@ -314,7 +314,7 @@ class OgesModelbasedController:
     def __init__(self, node: Node, arm_dof: int = 4):
         self.node = node
         self.arm_dof = int(arm_dof)
-        self.use_control_filter = False
+        self.use_control_filter = True
 
         uv_oges = OGES(n_dof=6, use_jit=True, cyclic_dims=(3, 4, 5))
         uv_A, uv_b, uv_V = uv_oges.define_lyapunov_joint_constraints()

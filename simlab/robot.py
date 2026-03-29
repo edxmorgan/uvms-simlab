@@ -594,7 +594,7 @@ class Robot(Base):
             self.trajectory_viz_timer = self.node.create_timer(1.0 / 60.0, self.trajectory_viz_callback)
 
         # one loop publishes
-        self.control_loop_timer = self.node.create_timer(1.0/60.0, self.control_loop_callback)
+        self.control_loop_timer = self.node.create_timer(1.0/2500.0, self.control_loop_callback)
 
         # joystick updates memory only (no publish inside)
         self.joystick_read_timer = self.node.create_timer(1.0/60.0, self.joystick_read_callback)
@@ -631,7 +631,7 @@ class Robot(Base):
 
         # Register your existing controllers
         self.register_controller(
-            name="pid",
+            name="PID",
             vehicle_fn=self.ll_statefeedback_controllers.vehicle_controller,
             arm_fn=self.ll_statefeedback_controllers.arm_controller,
             arm_gains=ArmGains(
@@ -642,7 +642,7 @@ class Robot(Base):
         )
 
         self.register_controller(
-            name="model",
+            name="InvDyn",
             vehicle_fn=self.ll_modelbased_controllers.vehicle_controller,
             arm_fn=self.ll_modelbased_controllers.arm_controller,
             arm_gains=ArmGains(
@@ -653,7 +653,7 @@ class Robot(Base):
         )
 
         self.register_controller(
-            name="namor_model",
+            name="Ours",
             vehicle_fn=self.ll_oges_modelbased_controllers.vehicle_controller,
             arm_fn=self.ll_oges_modelbased_controllers.arm_controller,
             arm_gains=ArmGains(
@@ -664,7 +664,7 @@ class Robot(Base):
         )
 
         # set default controller
-        self.set_controller("pid")
+        self.set_controller("PID")
 
         # Active path planner
         self.planner_name = None

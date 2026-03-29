@@ -145,14 +145,19 @@ class UVMSBackendCore:
         lines = ['Robot Controller Energy Applied']
         for robot in self.robots:
             metrics = robot.get_energy_metrics()
+            controller_in_use = robot.controller_name
             selected = ' *' if robot == self.robot_selected else ''
             total_energy = (
                 metrics['vehicle_control_energy_abs'] +
                 metrics['arm_control_energy_abs']
             )
+            total_power = (
+                metrics['vehicle_control_power_abs'] +
+                metrics['arm_control_power_abs']
+            )
             lines.append(
-                f"{metrics['prefix']}{selected} | "
-                f"E {total_energy:.2f}"
+                f"{metrics['prefix']}{selected} | {controller_in_use} | "
+                f"E {total_energy:.2f} J | dE/dt {total_power:.2f} W"
             )
         return '\n'.join(lines)
 
