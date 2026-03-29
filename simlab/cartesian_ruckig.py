@@ -73,7 +73,6 @@ class VehicleCartesianRuckig:
         self.inp.max_velocity = max_vel.tolist()
         self.inp.max_acceleration = max_acc.tolist()
         self.inp.max_jerk = max_jerk.tolist()
-
         self.active = True
 
     def update(self, yaw_blend_factor):
@@ -99,4 +98,3 @@ class VehicleCartesianRuckig:
             self.active = False
 
         return pos, vel, acc, res
-
