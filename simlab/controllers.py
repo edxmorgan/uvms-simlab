@@ -314,7 +314,7 @@ class OgesModelbasedController:
     def __init__(self, node: Node, arm_dof: int = 4):
         self.node = node
         self.arm_dof = int(arm_dof)
-        self.use_control_filter = True
+        self.use_control_filter = False
 
         uv_oges = OGES(n_dof=6, use_jit=True, cyclic_dims=(3, 4, 5))
         uv_A, uv_b, uv_V = uv_oges.define_lyapunov_joint_constraints()
@@ -354,8 +354,8 @@ class OgesModelbasedController:
 
         self.vehicle_u_prev = np.zeros(6, dtype=float)
         self.arm_u_prev = np.zeros(self.arm_dof, dtype=float)
-        self.vehicle_time = 0.0
-        self.arm_time = 0.0
+        self.vehicle_w_scale = 0.1
+        self.arm_w_scale = 1.0
         self.vehicle_lowpass_tau = np.full(6, 0.0)
         self.arm_lowpass_tau = np.array([0.1, 0.1, 0.1, 0.25])
 
@@ -364,7 +364,6 @@ class OgesModelbasedController:
 
     def vehicle_controller(self, state: np.ndarray, target_pos: np.ndarray, target_vel: np.ndarray, target_acc: np.ndarray, dt: float) -> np.ndarray:
         dt = float(dt)
-        self.vehicle_time += max(dt, 0.0)
 
         vr_i = state[6:12].reshape(-1, 1)
         eul = state[3:6].reshape(-1, 1)
@@ -393,7 +392,7 @@ class OgesModelbasedController:
             target_body_acc_ref,
             Jk,
             Jk_ref,
-            self.vehicle_time,
+            self.vehicle_w_scale,
             self.blue.u_min,
             self.blue.u_max,
             tau_nullspace]
@@ -427,7 +426,6 @@ class OgesModelbasedController:
     ) -> np.ndarray:
 
         dt = float(dt)
-        self.arm_time += max(dt, 0.0)
 
         q_arm = q[: self.arm_dof]
         qdot_arm = q_dot[: self.arm_dof]
@@ -457,7 +455,7 @@ class OgesModelbasedController:
             ddqref_arm,
             Jk,
             Jk_ref,
-            self.arm_time,
+            self.arm_w_scale,
             u_min[: self.arm_dof],
             u_max[: self.arm_dof],
             tau_nullspace,

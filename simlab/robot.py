@@ -598,7 +598,7 @@ class Robot(Base):
             self.trajectory_viz_timer = self.node.create_timer(1.0 / 60.0, self.trajectory_viz_callback)
 
         # one loop publishes
-        self.control_loop_timer = self.node.create_timer(1.0 / 100.0, self.control_loop_callback)
+        self.control_loop_timer = self.node.create_timer(1.0 / 150.0, self.control_loop_callback)
 
         # joystick updates memory only (no publish inside)
         self.joystick_read_timer = self.node.create_timer(1.0/60.0, self.joystick_read_callback)
