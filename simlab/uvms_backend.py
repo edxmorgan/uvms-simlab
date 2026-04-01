@@ -137,7 +137,6 @@ class UVMSBackendCore:
 
             self.robots.append(robot_k)
 
-        self.robot_selected = self.robots[0]
         self.dynamics_states_sub = self.node.create_subscription(
             DynamicJointState,
             'dynamic_joint_states',
@@ -150,9 +149,8 @@ class UVMSBackendCore:
             self._mocap_pose_cb,
             10,
         )
-
         self.initialise_target_Poses()
-
+        self.set_robot_selected(self.robots[0].k_robot)
 
     def publish_fcl_environment_aabb_callback(self):
         stamp_now = self.node.get_clock().now().to_msg()

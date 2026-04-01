@@ -14,6 +14,8 @@
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 #!/usr/bin/env python3
+import time
+
 import rclpy
 from rclpy.node import Node
 from rviz_2d_overlay_msgs.msg import OverlayText
@@ -64,8 +66,8 @@ class InteractiveControlsNode(Node):
         self.server = InteractiveMarkerServer(self, "uvms_interactive_controls")
 
         self.menu_handler = MenuHandler()
-
         self.execute_handle = self.menu_handler.insert("Plan & Execute", callback=self.plan_execute)
+        self.reset_sim_handle = self.menu_handler.insert("Reset Simulation", callback=self.reset_simulation)
 
         self.control_space_menu_map = {}  # mid -> (k_robot, control_space_name)
         self.axis_menu_map = {}
@@ -171,6 +173,7 @@ class InteractiveControlsNode(Node):
                 "grasper": grasper_parent,
                 "planner": path_planner_parent,
             }
+           
 
         # Create markers
         self.uv_marker = marker_util.make_UVMS_Dof_Marker(
@@ -203,6 +206,20 @@ class InteractiveControlsNode(Node):
         self._apply_joint_control_mode(robot = self.uvms_backend.robot_selected)
         self._set_robot_submenus_visible(self.uvms_backend.robot_selected.k_robot)
 
+    def reset_simulation(self, feedback: InteractiveMarkerFeedback):
+        pass
+        # original_robot = self.uvms_backend.robot_selected
+        # RESET_SWITCH_SETTLE_SEC = 5.0
+
+        # for robot in self.uvms_backend.robots:
+        #     self._set_selected_robot_menu_state(robot, feedback.marker_name)
+        #     self.configure_selected_robot(robot)
+        #     time.sleep(self.RESET_SWITCH_SETTLE_SEC)
+
+        # if original_robot in self.uvms_backend.robots:
+        #     self._set_selected_robot_menu_state(original_robot, feedback.marker_name)
+        #     self.configure_selected_robot(original_robot)
+        #     time.sleep(self.RESET_SWITCH_SETTLE_SEC)
 
     def plan_execute(self, feedback: InteractiveMarkerFeedback):
         if self.uvms_backend.robot_selected.task_based_controller:
@@ -244,21 +261,35 @@ class InteractiveControlsNode(Node):
 
     # switch to robot i
     def switch_robot_in_use(self, feedback: InteractiveMarkerFeedback):
-        for r in self.uvms_backend.robots:
-            self.menu_handler.setCheckState(r.user_id, MenuHandler.UNCHECKED)
-            if r.user_id == feedback.menu_entry_id:
-                selected_robot = r
+        selected_robot = None
+        for robot in self.uvms_backend.robots:
+            if robot.user_id == feedback.menu_entry_id:
+                selected_robot = robot
+                break
 
-        # check the one that was clicked
-        self.menu_handler.setCheckState(feedback.menu_entry_id, MenuHandler.CHECKED)
+        if selected_robot is None:
+            self.get_logger().error(
+                f"No robot is associated with menu entry id {feedback.menu_entry_id}."
+            )
+            return
 
-        self.menu_handler.apply(self.server, feedback.marker_name)
+        self._set_selected_robot_menu_state(selected_robot, feedback.marker_name)
+        self.configure_selected_robot(selected_robot)
+
+    def _set_selected_robot_menu_state(self, selected_robot: Robot, marker_name: str) -> None:
+        for robot in self.uvms_backend.robots:
+            state = MenuHandler.CHECKED if robot.k_robot == selected_robot.k_robot else MenuHandler.UNCHECKED
+            self.menu_handler.setCheckState(robot.user_id, state)
+
+        self.menu_handler.apply(self.server, marker_name)
         self.server.applyChanges()
 
+    def configure_selected_robot(self, selected_robot: Robot):
         self.uvms_backend.set_robot_selected(selected_robot.k_robot)
         self._set_robot_submenus_visible(selected_robot.k_robot)
 
-        self.get_logger().info(f"Switched to another robot is task based {selected_robot.task_based_controller} for robot {selected_robot.prefix}.")
+        self.get_logger().info(f"""Switched to another robot is task based 
+                               {selected_robot.task_based_controller} for robot {selected_robot.prefix}.""")
 
         if selected_robot.control_space == ControlSpace.TASK_SPACE:
             self._apply_task_control_mode(robot=selected_robot, abort_motion=False)
