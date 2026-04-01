@@ -314,15 +314,28 @@ class OgesModelbasedController:
     def __init__(self, node: Node, arm_dof: int = 4):
         self.node = node
         self.arm_dof = int(arm_dof)
-        self.use_control_filter = True
+        self.use_vehicle_control_filter = True
+        self.use_arm_control_filter = False
 
         uv_oges = OGES(n_dof=6, use_jit=True, cyclic_dims=(3, 4, 5))
         uv_A, uv_b, uv_V = uv_oges.define_lyapunov_joint_constraints()
-        self.vehicle_policy = uv_oges.controller(uv_A, uv_b, uv_V, include_constraint_violation=True, filter_control=self.use_control_filter)
+        self.vehicle_policy = uv_oges.controller(
+            uv_A,
+            uv_b,
+            uv_V,
+            include_constraint_violation=True,
+            filter_control=self.use_vehicle_control_filter,
+        )
 
         arm_oges = OGES(n_dof=self.arm_dof, use_jit=True)
         arm_A, arm_b, arm_V = arm_oges.define_lyapunov_joint_constraints()
-        self.arm_policy = arm_oges.controller(arm_A, arm_b, arm_V, include_constraint_violation=True, filter_control=self.use_control_filter)
+        self.arm_policy = arm_oges.controller(
+            arm_A,
+            arm_b,
+            arm_V,
+            include_constraint_violation=True,
+            filter_control=self.use_arm_control_filter,
+        )
 
         self.vehicle_weights = build_weight_vector(
             a1=[15, 15, 30, 15, 15, 15],
@@ -397,7 +410,7 @@ class OgesModelbasedController:
             self.blue.u_max,
             tau_nullspace]
         
-        if self.use_control_filter:
+        if self.use_vehicle_control_filter:
             vehicle_policy_args.extend([
                 self.vehicle_u_prev,
                 self.vehicle_lowpass_tau,
@@ -461,7 +474,7 @@ class OgesModelbasedController:
             tau_nullspace,
         ]
             
-        if self.use_control_filter:
+        if self.use_arm_control_filter:
             arm_policy_args.extend([
                 self.arm_u_prev,
                 self.arm_lowpass_tau,
