@@ -27,6 +27,7 @@ from geometry_msgs.msg import PoseStamped, Pose, TwistStamped, AccelStamped
 from rclpy.qos import QoSProfile, QoSHistoryPolicy
 import copy
 from std_msgs.msg import Float32
+from std_srvs.srv import Trigger
 from pyPS4Controller.controller import Controller
 import threading
 import glob
@@ -531,6 +532,7 @@ class Robot(Base):
             action_name="planner",
             on_result=self._on_planner_action_result,
         )
+        self._accept_planner_results = True
         self.debug_pub = DebugTargetPublisher(self.node, self.prefix)
         qos_profile = QoSProfile(
             history=QoSHistoryPolicy.KEEP_LAST,
@@ -557,8 +559,17 @@ class Robot(Base):
             f"manipulation_effort_controller_{prefix}/commands",
             qos_profile
         )
+        self.reset_sim_uvms_client = self.node.create_client(
+            Trigger,
+            f"/{self.prefix}reset_sim_uvms",
+        )
+        self.release_sim_uvms_client = self.node.create_client(
+            Trigger,
+            f"/{self.prefix}release_sim_uvms",
+        )
 
         self.control_mode = ControlMode.TELEOP
+        self.sim_reset_hold = False
 
         # inverse IK tool axis and alignment weight CONFIGURATIONS
         self.ik_tool_axis = np.array([0.0, 0.0, 1.0], dtype=float)
@@ -568,6 +579,7 @@ class Robot(Base):
         self.max_traj_pose_count = 2000  # cap RViz message size
         self.path_publish_period = 0.1  # seconds between stored poses
         self._last_path_pub_time = None
+        self._path_recording_enabled = True
         self.task_pose_in_world = None
 
         self.max_traj_vel = np.array([0.15, 0.15, 0.10], dtype=float)
@@ -1162,6 +1174,9 @@ class Robot(Base):
         return body_acc
 
     def publish_robot_path_callback(self):
+        if not self._path_recording_enabled:
+            return
+
         # Publish the robot trajectory path to RViz
         now_msg = self.node.get_clock().now().to_msg()
         stamp_time = now_msg.sec + now_msg.nanosec * 1e-9
@@ -1306,6 +1321,16 @@ class Robot(Base):
         )
 
     def _on_planner_action_result(self, plan_result: Dict[str, Any]) -> None:
+        if self.sim_reset_hold or not self._accept_planner_results:
+            if self.planner is not None:
+                self.planner.planned_result = None
+            if self.vehicle_cart_traj is not None:
+                self.vehicle_cart_traj.active = False
+            self.node.get_logger().info(
+                f"Ignoring stale planner result for {self.prefix} after reset/stop."
+            )
+            return
+
         if self.planner is not None:
             self.planner.planned_result = dict(plan_result)
 
@@ -1338,10 +1363,16 @@ class Robot(Base):
         time_limit: float = 1.0,
         robot_collision_radius: float = 0.4,
     ) -> bool:
+        if self.sim_reset_hold:
+            self.node.get_logger().warn(
+                f"Planner request ignored for {self.prefix}; simulation is held after reset."
+            )
+            return False
         self.node.get_logger().info(
             f"Planning motion with {self.planner_name} for {self.prefix} to target pose..."
         )
         self.abrupt_planner_stop()
+        self._accept_planner_results = True
         pose_now = self._pose_from_state_in_frame(self.world_frame)
         if pose_now is None:
             self.node.get_logger().warn("Planner action request was not sent, current pose unavailable.")
@@ -1379,6 +1410,9 @@ class Robot(Base):
             return
 
         stamp_now = self.node.get_clock().now().to_msg()
+        if self.sim_reset_hold:
+            k_planner.clear_path(stamp_now, self.world_frame)
+            return
         pr = None if k_planner.planned_result is None else dict(k_planner.planned_result)
         viz_plan = bool(pr and pr.get("is_success", False) and "xyz" in pr)
 
@@ -1402,6 +1436,9 @@ class Robot(Base):
             return
 
         stamp_now = self.node.get_clock().now().to_msg()
+        if self.sim_reset_hold:
+            k_planner.clear_target(stamp_now, self.world_frame)
+            return
         if self.control_mode == ControlMode.PLANNER and k_trajectory.active:
             target_pose_nwu = np.asarray(list(k_trajectory.out.new_position), dtype=float)
             target_vel_nwu = np.asarray(list(k_trajectory.out.new_velocity), dtype=float)
@@ -1424,6 +1461,8 @@ class Robot(Base):
             return
         state = self.get_state()
         if state['status'] != 'active':
+            return
+        if self.sim_reset_hold:
             return
         if self.control_mode != ControlMode.PLANNER:
             return
@@ -1696,6 +1735,8 @@ class Robot(Base):
         self.abrupt_planner_stop()
     
     def abrupt_planner_stop(self):
+        self._accept_planner_results = False
+        self.planner_action_client.cancel_active_goal()
         self.final_goal_map_ned_6 = None
         if self.planner is not None:
             self.planner.planned_result = None
@@ -1705,6 +1746,74 @@ class Robot(Base):
 
         # publish zeros once immediately
         self.publish_commands([0.0]*6, [0.0]*5)
+
+    def reset_simulation(self) -> None:
+        self.sim_reset_hold = True
+        self._reset_local_command_state()
+        self._call_uvms_service(
+            client=self.reset_sim_uvms_client,
+            service_name=f"/{self.prefix}reset_sim_uvms",
+            log_label=f"[{self.prefix}] reset",
+        )
+
+    def release_simulation(self) -> None:
+        self.sim_reset_hold = False
+        self._path_recording_enabled = True
+        self._call_uvms_service(
+            client=self.release_sim_uvms_client,
+            service_name=f"/{self.prefix}release_sim_uvms",
+            log_label=f"[{self.prefix}] release",
+        )
+
+    def _reset_local_command_state(self) -> None:
+        self.abrupt_planner_stop()
+        self._path_recording_enabled = False
+        self.clear_robot_path_history()
+        if self.planner is not None:
+            self.planner.clear_target(self.node.get_clock().now().to_msg(), self.world_frame)
+        self._zero_teleop_commands()
+        self.teleop_wrench_body_6 = [0.0] * 6
+        self.teleop_arm_effort_5 = [0.0] * 5
+        self.pose_command = [0.0] * 6
+        self.body_vel_command = [0.0] * 6
+        self.body_acc_command = [0.0] * 6
+        self.arm.q_command = alpha_params.joint_home.tolist()
+        self.arm.dq_command = np.zeros((4,), dtype=float).tolist()
+        self.arm.ddq_command = np.zeros((4,), dtype=float).tolist()
+        self.arm.close_grasper()
+
+    def clear_robot_path_history(self) -> None:
+        self.traj_path_poses = []
+        self._last_path_pub_time = None
+        clear_msg = Path()
+        clear_msg.header.stamp = self.node.get_clock().now().to_msg()
+        clear_msg.header.frame_id = self.map_frame
+        self.trajectory_path_publisher.publish(clear_msg)
+
+    def _call_uvms_service(self, client, service_name: str, log_label: str) -> None:
+        if not client.wait_for_service(timeout_sec=0.5):
+            self.node.get_logger().warn(f"{log_label} skipped, service {service_name} is not ready.")
+            return
+
+        future = client.call_async(Trigger.Request())
+
+        def _done_callback(done_future) -> None:
+            try:
+                response = done_future.result()
+            except Exception as exc:
+                self.node.get_logger().error(f"{log_label} failed: {exc}")
+                return
+
+            if response is None:
+                self.node.get_logger().error(f"{log_label} failed: empty response from {service_name}")
+                return
+
+            if response.success:
+                self.node.get_logger().info(f"{log_label} ok: {response.message}")
+            else:
+                self.node.get_logger().warn(f"{log_label} rejected: {response.message}")
+
+        future.add_done_callback(_done_callback)
 
 
     def _zero_teleop_commands(self):
@@ -1732,6 +1841,9 @@ class Robot(Base):
     def control_loop_callback(self):
         state = self.get_state()
         if state["status"] != "active":
+            return
+        if self.sim_reset_hold:
+            self.publish_commands([0.0] * 6, [0.0] * 5)
             return
 
         if self.control_mode == ControlMode.TELEOP:

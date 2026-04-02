@@ -74,6 +74,15 @@ class PlannerActionClient:
         send_future.add_done_callback(self._goal_response_callback)
         return True
 
+    def cancel_active_goal(self) -> bool:
+        if self._goal_handle is None or not self._goal_handle.is_active:
+            return False
+
+        self._node.get_logger().info(f"{self._tag} cancelling active planner goal.")
+        cancel_future = self._goal_handle.cancel_goal_async()
+        cancel_future.add_done_callback(self._cancel_done_callback)
+        return True
+
     def _goal_response_callback(self, future) -> None:
         try:
             goal_handle = future.result()
@@ -135,6 +144,17 @@ class PlannerActionClient:
         finally:
             self._goal_handle = None
             self._busy = False
+
+    def _cancel_done_callback(self, future) -> None:
+        try:
+            cancel_response = future.result()
+            goals_canceling = getattr(cancel_response, "goals_canceling", [])
+            if goals_canceling:
+                self._node.get_logger().info(f"{self._tag} planner goal cancel accepted.")
+            else:
+                self._node.get_logger().warn(f"{self._tag} planner goal cancel was not accepted.")
+        except Exception as exc:
+            self._node.get_logger().error(f"{self._tag} cancel handling failed: {exc}")
 
     def _feedback_callback(self, feedback_msg) -> None:
         feedback = feedback_msg.feedback

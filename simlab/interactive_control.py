@@ -68,6 +68,7 @@ class InteractiveControlsNode(Node):
         self.menu_handler = MenuHandler()
         self.execute_handle = self.menu_handler.insert("Plan & Execute", callback=self.plan_execute)
         self.reset_sim_handle = self.menu_handler.insert("Reset Simulation", callback=self.reset_simulation)
+        self.release_sim_handle = self.menu_handler.insert("Release Simulation", callback=self.release_simulation)
 
         self.control_space_menu_map = {}  # mid -> (k_robot, control_space_name)
         self.axis_menu_map = {}
@@ -207,19 +208,11 @@ class InteractiveControlsNode(Node):
         self._set_robot_submenus_visible(self.uvms_backend.robot_selected.k_robot)
 
     def reset_simulation(self, feedback: InteractiveMarkerFeedback):
-        pass
-        # original_robot = self.uvms_backend.robot_selected
-        # RESET_SWITCH_SETTLE_SEC = 5.0
+        robot = self.uvms_backend.robot_selected
+        robot.reset_simulation()
 
-        # for robot in self.uvms_backend.robots:
-        #     self._set_selected_robot_menu_state(robot, feedback.marker_name)
-        #     self.configure_selected_robot(robot)
-        #     time.sleep(self.RESET_SWITCH_SETTLE_SEC)
-
-        # if original_robot in self.uvms_backend.robots:
-        #     self._set_selected_robot_menu_state(original_robot, feedback.marker_name)
-        #     self.configure_selected_robot(original_robot)
-        #     time.sleep(self.RESET_SWITCH_SETTLE_SEC)
+    def release_simulation(self, feedback: InteractiveMarkerFeedback):
+        self.uvms_backend.robot_selected.release_simulation()
 
     def plan_execute(self, feedback: InteractiveMarkerFeedback):
         if self.uvms_backend.robot_selected.task_based_controller:
@@ -228,23 +221,28 @@ class InteractiveControlsNode(Node):
         self.uvms_backend.plan_vehicle_trajectory()
 
     def publish_robot_metrics_overlay_callback(self) -> None:
+        text = self.uvms_backend.format_robot_metrics_overlay_text()
+        lines = text.splitlines() or [""]
+        longest_line = max(len(line) for line in lines)
         msg = OverlayText()
         msg.action = OverlayText.ADD
-        msg.width = 620
-        msg.height = max(180, 70 + 28 * len(self.uvms_backend.robots))
+        msg.text_size = 14.0
+        char_width = msg.text_size * 0.92
+        line_height = msg.text_size * 3.2
+        msg.width = max(760, int(longest_line * char_width) + 80)
+        msg.height = max(520, int((160 + line_height * len(lines)) * 1.6))
         msg.horizontal_distance = 28
         msg.vertical_distance = 170
         msg.horizontal_alignment = OverlayText.RIGHT
         msg.vertical_alignment = OverlayText.TOP
         msg.bg_color.a = 0.45
         msg.line_width = 2
-        msg.text_size = 14.0
-        msg.font = 'Sans Serif'
+        msg.font = 'DejaVu Sans Mono'
         msg.fg_color.r = 1.0
         msg.fg_color.g = 0.9
         msg.fg_color.b = 0.2
         msg.fg_color.a = 0.95
-        msg.text = self.uvms_backend.format_robot_metrics_overlay_text()
+        msg.text = text
         self.robot_metrics_overlay_pub.publish(msg)
 
     def _set_robot_submenus_visible(self, selected_k_robot: int) -> None:

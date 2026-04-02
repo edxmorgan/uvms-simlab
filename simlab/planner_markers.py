@@ -31,8 +31,6 @@ class PathPlanner:
 
         self._last_target_t_ns = 0
         self._last_target_xyz = None
-
-
         self.pub = pub
 
     def clear_path(self, stamp, frame_id):

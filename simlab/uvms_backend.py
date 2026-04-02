@@ -164,10 +164,11 @@ class UVMSBackendCore:
 
     def format_robot_metrics_overlay_text(self) -> str:
         lines = ['Robot Controller Energy Applied']
-        for robot in self.robots:
+        for index, robot in enumerate(self.robots):
             metrics = robot.get_energy_metrics()
             controller_in_use = robot.controller_name
             selected = ' *' if robot == self.robot_selected else ''
+            hold_state = 'HELD' if robot.sim_reset_hold else 'RELEASED'
             total_energy = (
                 metrics['vehicle_control_energy_abs'] +
                 metrics['arm_control_energy_abs']
@@ -176,8 +177,10 @@ class UVMSBackendCore:
                 metrics['vehicle_control_power_abs'] +
                 metrics['arm_control_power_abs']
             )
+            if index > 0:
+                lines.append('-' * 72)
             lines.append(
-                f"{metrics['prefix']}{selected} | {controller_in_use} | "
+                f"{metrics['prefix']}{selected} | {hold_state} | {controller_in_use} | "
                 f"E {total_energy:.2f} J | dE/dt {total_power:.2f} W"
             )
         return '\n'.join(lines)
@@ -267,6 +270,12 @@ class UVMSBackendCore:
         self.target_world_endeffector_pose = Pose()
         self.target_world_endeffector_pose.orientation.w = 1.0
 
+    def reset_selected_robot_targets(self):
+        self.initialise_target_Poses()
+        self.node.get_logger().info(
+            f"Reset planner and marker targets for {self.robot_selected.prefix}."
+        )
+
     def plan_vehicle_trajectory(self):
         goal_pose = self.target_vehicle_pose
         return self.robot_selected.plan_vehicle_trajectory_action(
@@ -285,12 +294,19 @@ class UVMSBackendCore:
         return msg
 
     def plan_and_execute_task_trajectory_wrt_vehicle(self):
+        if self.robot_selected.sim_reset_hold:
+            return
         if not self.robot_selected.task_based_controller:
             msg = self.solve_execute_inverse_kinematics_wrt_vehicle_frame(self.target_arm_base_endeffector_pose)
             if msg['is_success']:
                 self.robot_selected.arm.q_command = msg['result']
 
     def plan_task_trajectory(self):
+        if self.robot_selected.sim_reset_hold:
+            self.node.get_logger().warn(
+                f"Task trajectory request ignored for {self.robot_selected.prefix}; simulation is held after reset."
+            )
+            return
         if self.robot_selected.task_based_controller and self.robot_selected.task_pose_in_world:
             self.robot_selected.solve_inverse_kinematics_wrt_world_frame(self.target_world_endeffector_pose)
             self.node.get_logger().info(f"task trajectory plan & control", throttle_duration_sec=2.0)
