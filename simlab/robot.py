@@ -1747,6 +1747,18 @@ class Robot(Base):
         # publish zeros once immediately
         self.publish_commands([0.0]*6, [0.0]*5)
 
+    def close(self) -> None:
+        self._accept_planner_results = False
+        if self.vehicle_cart_traj is not None:
+            self.vehicle_cart_traj.close()
+            self.vehicle_cart_traj = None
+        if getattr(self, "ps4_controller", None) is not None:
+            try:
+                self.ps4_controller.running = False
+            except Exception:
+                pass
+        self.ps4_controller = None
+
     def reset_simulation(self) -> None:
         self.sim_reset_hold = True
         self._reset_local_command_state()

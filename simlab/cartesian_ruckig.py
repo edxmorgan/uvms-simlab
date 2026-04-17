@@ -98,3 +98,10 @@ class VehicleCartesianRuckig:
             self.active = False
 
         return pos, vel, acc, res
+
+    def close(self):
+        self.active = False
+        self.out = None
+        self.inp = None
+        self.otg = None
+        self.rclpy_node = None

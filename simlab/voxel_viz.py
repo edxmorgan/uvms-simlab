@@ -18,6 +18,7 @@ import os
 import numpy as np
 import rclpy
 from rclpy.node import Node
+from simlab.shutdown import install_signal_shutdown_handler, shutdown_node, spin_until_shutdown
 from sensor_msgs.msg import PointCloud2
 from std_msgs.msg import String
 import trimesh
@@ -90,9 +91,15 @@ class VoxelVizNode(Node):
         self.timer = self.create_timer(0.1, self.tick)
 
     def publish_overlay_text_callback(self) -> None:
+        if not rclpy.ok():
+            return
         str_msg = String()
         str_msg.data = f"© {datetime.now().year} Louisiana State University. Research use."
-        self.overlay_text_publisher.publish(str_msg)
+        try:
+            self.overlay_text_publisher.publish(str_msg)
+        except Exception:
+            if rclpy.ok():
+                raise
 
 
     def tick(self):
@@ -101,6 +108,8 @@ class VoxelVizNode(Node):
         1. Publish point cloud of voxel centers to RViz for geometric sanity check.
         2. Placeholder for OccupancyGrid projection from octree later.
         """
+        if not rclpy.ok():
+            return
         # Publish voxel centers as PointCloud2
         if self.centers is not None and self.centers.shape[0] > 0:
             cloud_msg = points_to_cloud2(
@@ -108,7 +117,11 @@ class VoxelVizNode(Node):
                 frame_id="world_bottom",
                 stamp=self.get_clock().now().to_msg()
             )
-            self.cloud_pub.publish(cloud_msg)
+            try:
+                self.cloud_pub.publish(cloud_msg)
+            except Exception:
+                if rclpy.ok():
+                    raise
 
 
     def get_cache_path(self, voxel_size: float):
@@ -177,9 +190,12 @@ class VoxelVizNode(Node):
 
 def main():
     rclpy.init()
+    install_signal_shutdown_handler()
     node = VoxelVizNode()
-    rclpy.spin(node)
-    rclpy.shutdown()
+    try:
+        spin_until_shutdown(node)
+    finally:
+        shutdown_node(node)
 
 
 if __name__ == "__main__":

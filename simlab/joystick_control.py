@@ -16,6 +16,7 @@
 #!/usr/bin/env python3
 import rclpy
 from rclpy.node import Node
+from simlab.shutdown import install_signal_shutdown_handler, shutdown_node, spin_until_shutdown
 from simlab.robot import Robot, ControlMode
 import tf2_ros
 from geometry_msgs.msg import PoseStamped
@@ -83,14 +84,12 @@ class PS4TeleopNode(Node):
 
 def main(args=None):
     rclpy.init(args=args)
+    install_signal_shutdown_handler()
     teleop_node = PS4TeleopNode()
     try:
-        rclpy.spin(teleop_node)
-    except KeyboardInterrupt:
-        teleop_node.get_logger().info('PS4 Teleop node stopped by KeyboardInterrupt.')
+        spin_until_shutdown(teleop_node)
     finally:
-        teleop_node.destroy_node()
-        rclpy.shutdown()
+        shutdown_node(teleop_node)
 
 
 if __name__ == '__main__':
