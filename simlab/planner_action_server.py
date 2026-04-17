@@ -9,6 +9,7 @@ from rclpy.executors import MultiThreadedExecutor
 import tf2_ros
 from simlab.fcl_checker import FCLWorld
 from simlab.se3_ompl_planner import OmplPlanner
+from simlab.shutdown import install_signal_shutdown_handler, spin_until_shutdown
 
 class PlannerActionServer(Node):
 
@@ -239,15 +240,25 @@ class PlannerActionServer(Node):
 
 def main(args=None):
     rclpy.init(args=args)
+    install_signal_shutdown_handler()
     planner_action_server = PlannerActionServer()
 
     # Use a MultiThreadedExecutor to enable processing goals concurrently
     executor = MultiThreadedExecutor()
 
-    rclpy.spin(planner_action_server, executor=executor)
-
-    planner_action_server.destroy()
-    rclpy.shutdown()
+    try:
+        spin_until_shutdown(planner_action_server, executor=executor)
+    finally:
+        executor.shutdown()
+        try:
+            planner_action_server.destroy_node()
+        except (KeyboardInterrupt, Exception):
+            pass
+        if rclpy.ok():
+            try:
+                rclpy.shutdown()
+            except Exception:
+                pass
 
 if __name__ == '__main__':
     main()

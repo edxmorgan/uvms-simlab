@@ -18,6 +18,7 @@ import os
 import numpy as np
 import rclpy
 from rclpy.node import Node
+from simlab.shutdown import install_signal_shutdown_handler, shutdown_node, spin_until_shutdown
 
 
 class EnvObstacleNode(Node):
@@ -36,9 +37,12 @@ class EnvObstacleNode(Node):
 
 def main():
     rclpy.init()
+    install_signal_shutdown_handler()
     node = EnvObstacleNode()
-    rclpy.spin(node)
-    rclpy.shutdown()
+    try:
+        spin_until_shutdown(node)
+    finally:
+        shutdown_node(node)
 
 
 if __name__ == "__main__":

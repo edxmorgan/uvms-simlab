@@ -7,6 +7,7 @@ from tf2_ros import Buffer, TransformListener
 from visualization_msgs.msg import Marker
 from simlab.mesh_utils import make_marker, color, collect_env_meshes
 from simlab.fcl_checker import FCLWorld
+from simlab.shutdown import install_signal_shutdown_handler, shutdown_node, spin_until_shutdown
 
 
 class CollisionNode(Node):
@@ -36,6 +37,8 @@ class CollisionNode(Node):
         self.timer = self.create_timer(0.05, self.tick)
 
     def tick(self):
+        if not rclpy.ok():
+            return
         ok = self.world.update_from_tf(self.tf_buf, rclpy.time.Time())
         if not ok:
             return
@@ -44,7 +47,12 @@ class CollisionNode(Node):
         clear = Marker()
         clear.header.frame_id = 'world'
         clear.action = Marker.DELETEALL
-        self.contact_pub.publish(clear)
+        try:
+            self.contact_pub.publish(clear)
+        except Exception:
+            if rclpy.ok():
+                raise
+            return
 
         # 1. collision, one marker per robot link vs env link
         pairs = self.world.robot_env_contacts_one_point_per_pair()
@@ -55,7 +63,12 @@ class CollisionNode(Node):
             m = make_marker('contact', idx, 'world', CONTACT_MARKER_SIZE, p_world, red)
             m.lifetime.sec = 0
             m.lifetime.nanosec = int(0.1 * 1e9)
-            self.contact_pub.publish(m)
+            try:
+                self.contact_pub.publish(m)
+            except Exception:
+                if rclpy.ok():
+                    raise
+                return
 
         # 2. global clearance identical intent, now with nearest points enabled
         try:
@@ -72,15 +85,23 @@ class CollisionNode(Node):
                 # mr.lifetime.nanosec = int(0.1 * 1e9)
                 me.lifetime.nanosec = int(0.1 * 1e9)
                 # self.contact_pub.publish(mr)
-                self.contact_pub.publish(me)
+                try:
+                    self.contact_pub.publish(me)
+                except Exception:
+                    if rclpy.ok():
+                        raise
         except Exception as e:
-            self.get_logger().warn(f'clearance failed, {e}')
+            if rclpy.ok():
+                self.get_logger().warn(f'clearance failed, {e}')
 
 def main():
     rclpy.init()
+    install_signal_shutdown_handler()
     node = CollisionNode()
-    rclpy.spin(node)
-    rclpy.shutdown()
+    try:
+        spin_until_shutdown(node)
+    finally:
+        shutdown_node(node)
 
 if __name__ == '__main__':
     main()

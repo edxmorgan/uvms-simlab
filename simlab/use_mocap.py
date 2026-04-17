@@ -13,6 +13,7 @@ import numpy as np
 import tf2_ros
 from tf2_ros import TransformException
 from geometry_msgs.msg import TransformStamped
+from simlab.shutdown import install_signal_shutdown_handler, shutdown_node, spin_until_shutdown
 
 def apply_transform(ps_in: PoseStamped, ts: TransformStamped, target_frame: str) -> PoseStamped:
     # ts gives a transform that converts data in source into target
@@ -136,7 +137,7 @@ class MocapPathBuilder(Node):
 
         # TF2 buffer and listener
         self.tf_buffer = tf2_ros.Buffer(cache_time=Duration(seconds=10.0))
-        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self, spin_thread=True)
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
     def cb_rigid_bodies(self, msg: RigidBodies):
         if not msg.rigidbodies:
@@ -204,13 +205,12 @@ class MocapPathBuilder(Node):
         
 def main():
     rclpy.init()
+    install_signal_shutdown_handler()
     node = MocapPathBuilder()
     try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
-    node.destroy_node()
-    rclpy.shutdown()
+        spin_until_shutdown(node)
+    finally:
+        shutdown_node(node)
 
 
 if __name__ == '__main__':

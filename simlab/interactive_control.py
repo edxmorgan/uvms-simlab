@@ -18,6 +18,7 @@ import time
 
 import rclpy
 from rclpy.node import Node
+from simlab.shutdown import install_signal_shutdown_handler, shutdown_node, spin_until_shutdown
 from rviz_2d_overlay_msgs.msg import OverlayText
 from simlab.uvms_backend import UVMSBackendCore
 from visualization_msgs.msg import InteractiveMarkerControl, InteractiveMarkerFeedback
@@ -535,14 +536,12 @@ class InteractiveControlsNode(Node):
 
 def main(args=None):
     rclpy.init(args=args)
+    install_signal_shutdown_handler()
     node = InteractiveControlsNode()
     try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
+        spin_until_shutdown(node)
     finally:
-        node.destroy_node()
-        rclpy.shutdown()
+        shutdown_node(node)
 
 if __name__ == '__main__':
     main()
