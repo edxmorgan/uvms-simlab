@@ -38,18 +38,20 @@ class Params:
     u_max = np.array([1.5, 1, 1, 0.54])
     
     # simulation controller gains
-    tau_Kp = np.array([10.0, 10.0, 10.0, 3.0])
+    # tau_Kp = np.array([10.0, 10.0, 10.0, 3.0])
+    # tau_Ki = np.array([0.0, 0.0, 0.0, 0.0])
+    # tau_Kd = np.array([1.0, 1.0, 1.0, 0.0])
+
+    # real system gains
+    tau_Kp = np.array([2.0, 3.0, 1.0, 3.0])
     tau_Ki = np.array([0.0, 0.0, 0.0, 0.0])
-    tau_Kd = np.array([1.0, 1.0, 1.0, 0.0])
+    tau_Kd = np.array([0.0, 0.0, 0.0, 0.0])
 
     acc_Kp = np.array([40.0, 40.0, 40.0, 750.0])
     acc_Ki = np.array([0.0, 0.0, 0.0, 0.0])
     acc_Kd = np.array([7.0, 7.0, 7.0, 50.0])
 
-    # real system gains
-    # Kp = np.array([2.0, 3.0, 1.0, 3.0])
-    # Ki = np.array([0.0, 0.0, 0.0, 0.0])
-    # Kd = np.array([0.0, 0.0, 0.0, 0.0])
+
 
     grasper_kp = np.array([1000.0])
     grasper_ki = np.array([0.0])
