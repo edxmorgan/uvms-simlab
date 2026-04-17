@@ -35,7 +35,7 @@ from typing import Sequence, Dict, Callable, Any, Optional
 from control_msgs.msg import DynamicInterfaceGroupValues
 from std_msgs.msg import Float64MultiArray
 from simlab.controller_msg import FullRobotMsg
-from simlab.controllers import LowLevelPidController, LowLevelOptimalModelbasedController, OgesModelbasedController
+from simlab.controllers import DEFAULT_CONTROLLER_CLASSES
 from simlab.planner_markers import PathPlanner
 from simlab.cartesian_ruckig import VehicleCartesianRuckig
 from ruckig import Result
@@ -524,9 +524,10 @@ class Robot(Base):
         self.pose_command = [0.0]*6
         self.body_vel_command = [0.0]*6
         self.body_acc_command = [0.0]*6
-        self.ll_statefeedback_controllers = LowLevelPidController(self.node, self.n_joint)
-        self.ll_modelbased_controllers = LowLevelOptimalModelbasedController(self.node, self.n_joint)
-        self.ll_oges_modelbased_controllers = OgesModelbasedController(self.node, self.n_joint)
+        self.controller_instances = [
+            controller_class(self.node, self.n_joint)
+            for controller_class in DEFAULT_CONTROLLER_CLASSES
+        ]
         self.planner_action_client = PlannerActionClient(
             self.node,
             action_name="planner",
@@ -636,48 +637,13 @@ class Robot(Base):
 
         self.world_frame = 'world'
 
-        def wrap_arm_no_gains(fn):
-            # register with arm_fn=wrap_arm_no_gains(your_fn)
-            def _wrapped(**kwargs):
-                kwargs.pop("Kp", None)
-                kwargs.pop("Ki", None)
-                kwargs.pop("Kd", None)
-                return fn(**kwargs)
-            return _wrapped
-
-        # Register your existing controllers
-        self.register_controller(
-            name="PID",
-            vehicle_fn=self.ll_statefeedback_controllers.vehicle_controller,
-            arm_fn=self.ll_statefeedback_controllers.arm_controller,
-            arm_gains=ArmGains(
-                Kp=list(alpha_params.tau_Kp) + list(alpha_params.grasper_kp),
-                Ki=list(alpha_params.tau_Ki) + list(alpha_params.grasper_ki),
-                Kd=list(alpha_params.tau_Kd) + list(alpha_params.grasper_kd),
-            ),
-        )
-
-        self.register_controller(
-            name="InvDyn",
-            vehicle_fn=self.ll_modelbased_controllers.vehicle_controller,
-            arm_fn=self.ll_modelbased_controllers.arm_controller,
-            arm_gains=ArmGains(
-                Kp=list(alpha_params.acc_Kp) + list(alpha_params.grasper_kp),
-                Ki=list(alpha_params.acc_Ki) + list(alpha_params.grasper_ki),
-                Kd=list(alpha_params.acc_Kd) + list(alpha_params.grasper_kd),
-            ),
-        )
-
-        self.register_controller(
-            name="Ours",
-            vehicle_fn=self.ll_oges_modelbased_controllers.vehicle_controller,
-            arm_fn=self.ll_oges_modelbased_controllers.arm_controller,
-            arm_gains=ArmGains(
-                Kp=list(alpha_params.tau_Kp) + list(alpha_params.grasper_kp),
-                Ki=list(alpha_params.tau_Ki) + list(alpha_params.grasper_ki),
-                Kd=list(alpha_params.tau_Kd) + list(alpha_params.grasper_kd),
-            ),
-        )
+        for controller in self.controller_instances:
+            self.register_controller(
+                name=controller.registry_name,
+                vehicle_fn=controller.vehicle_controller,
+                arm_fn=controller.arm_controller,
+                arm_gains=self._arm_gains_for_controller(controller.arm_gain_profile),
+            )
 
         # set default controller
         self.set_controller("PID")
@@ -708,6 +674,21 @@ class Robot(Base):
             arm_fn=arm_fn,
             arm_gains=arm_gains,
         )
+
+    def _arm_gains_for_controller(self, profile: str) -> ArmGains:
+        if profile == "acc":
+            return ArmGains(
+                Kp=list(alpha_params.acc_Kp) + list(alpha_params.grasper_kp),
+                Ki=list(alpha_params.acc_Ki) + list(alpha_params.grasper_ki),
+                Kd=list(alpha_params.acc_Kd) + list(alpha_params.grasper_kd),
+            )
+        if profile == "tau":
+            return ArmGains(
+                Kp=list(alpha_params.tau_Kp) + list(alpha_params.grasper_kp),
+                Ki=list(alpha_params.tau_Ki) + list(alpha_params.grasper_ki),
+                Kd=list(alpha_params.tau_Kd) + list(alpha_params.grasper_kd),
+            )
+        raise ValueError(f"Unknown arm gain profile '{profile}'")
 
     def set_controller(self, name: str) -> None:
         spec = self._controllers[name]  # raises KeyError if missing, good fail-fast

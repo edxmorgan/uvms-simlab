@@ -103,6 +103,7 @@ ros2 launch ros2_control_blue_reach_5 robot_system_multi_interface.launch.py \
 simlab/
 ├── simlab/uvms_backend.py            # Core backend, FCL world, planners, TFs
 ├── simlab/interactive_control.py     # RViz markers + menu control
+├── simlab/controllers/               # One controller class per file
 ├── simlab/se3_ompl_planner.py        # OMPL SE(3) planning
 ├── simlab/cartesian_ruckig.py        # Ruckig trajectory generation
 ├── simlab/joystick_control.py        # PS4 teleop node
@@ -114,6 +115,70 @@ simlab/
 ├── simlab/rgb2cloudpoint.py          # RGB to pointcloud (MiDaS)
 └── resource/                         # CasADi controllers + models
 ```
+
+## Adding a controller
+
+Controllers live in `simlab/controllers/`. Each controller gets its own file and inherits `ControllerTemplate`.
+
+1. Create a controller file, for example `simlab/controllers/my_controller.py`.
+
+   ```python
+   import numpy as np
+
+   from simlab.controllers.base import ControllerTemplate
+
+
+   class MyController(ControllerTemplate):
+       registry_name = "MyController"
+       arm_gain_profile = "tau"  # use "tau" or "acc"
+
+       def vehicle_controller(self, state, target_pos, target_vel, target_acc, dt) -> np.ndarray:
+           state = self.vector(state, 12, "state")
+           target_pos = self.vector(target_pos, 6, "target_pos")
+           return np.zeros(6, dtype=float)
+
+       def arm_controller(
+           self,
+           q,
+           q_dot,
+           q_ref,
+           dq_ref,
+           ddq_ref,
+           Kp,
+           Ki,
+           Kd,
+           dt,
+           u_max,
+           u_min,
+           model_param,
+       ) -> np.ndarray:
+           q = self.arm_vector(q, "q")
+           return np.zeros(self.arm_dof + 1, dtype=float)
+   ```
+
+2. Register the class in `simlab/controllers/__init__.py`.
+
+   ```python
+   from simlab.controllers.my_controller import MyController
+
+   DEFAULT_CONTROLLER_CLASSES = [
+       LowLevelPidController,
+       LowLevelOptimalModelbasedController,
+       OgesModelbasedController,
+       MyController,
+   ]
+   ```
+
+   `Robot` reads `DEFAULT_CONTROLLER_CLASSES` and registers every class in that list. You do not need to edit `simlab/robot.py` for a normal new controller.
+
+3. Rebuild and source the workspace.
+
+   ```bash
+   colcon build --packages-select simlab
+   source install/setup.bash
+   ```
+
+The controller will appear in the RViz interactive controller menu using `registry_name`. `arm_gain_profile` selects the default arm gain pack passed by `Robot`: `tau` uses torque gains and `acc` uses acceleration gains. Only edit `simlab/robot.py` if you need a new gain profile, a different registration policy, or controller-specific wiring outside the standard `vehicle_controller()` and `arm_controller()` methods.
 
 ## Contributing
 
