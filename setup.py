@@ -26,7 +26,6 @@ setup(
         ('lib/' + package_name, [package_name+'/robot.py']),
         ('lib/' + package_name, [package_name+'/alpha_reach.py']),
         ('lib/' + package_name, [package_name+'/controller_msg.py']),
-        ('lib/' + package_name, [package_name+'/controllers.py']),
         ('lib/' + package_name, [package_name+'/mesh_utils.py']),
         ('lib/' + package_name, [package_name+'/se3_ompl_planner.py']),
         ('lib/' + package_name, [package_name+'/cartesian_ruckig.py']),
