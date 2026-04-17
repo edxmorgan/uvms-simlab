@@ -152,6 +152,12 @@ class UVMSBackendCore:
         self.initialise_target_Poses()
         self.set_robot_selected(self.robots[0].k_robot)
 
+    def close(self) -> None:
+        for robot in self.robots:
+            robot.close()
+        self.robots.clear()
+        self.robot_selected = None
+
     def publish_fcl_environment_aabb_callback(self):
         stamp_now = self.node.get_clock().now().to_msg()
         min_marker, max_marker = backend_utils.visualize_min_max_coords(self.fcl_world.min_coords,

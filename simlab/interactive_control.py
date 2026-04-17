@@ -15,6 +15,7 @@
 
 #!/usr/bin/env python3
 import time
+import gc
 
 import rclpy
 from rclpy.node import Node
@@ -533,6 +534,13 @@ class InteractiveControlsNode(Node):
 
         # no duplicate transform now, we already have pose_world
         self.sync_endeffector_world_marker_pose(pose_world, self.uvms_backend.world_frame)
+
+    def destroy_node(self):
+        if getattr(self, "uvms_backend", None) is not None:
+            self.uvms_backend.close()
+            self.uvms_backend = None
+        gc.collect()
+        return super().destroy_node()
 
 def main(args=None):
     rclpy.init(args=args)
