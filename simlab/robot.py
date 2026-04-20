@@ -64,17 +64,10 @@ class ControlMode(str, Enum):
     PLANNER = "planner"
 
 @dataclass
-class ArmGains:
-    Kp: list
-    Ki: list
-    Kd: list
-
-@dataclass
 class ControllerSpec:
     name: str
     vehicle_fn: Callable[..., Any]
     arm_fn: Callable[..., Any]
-    arm_gains: Optional[ArmGains] = None
 
 @dataclass
 class PlannerSpec:
@@ -632,7 +625,6 @@ class Robot(Base):
         # Active function pointers used by control loop
         self.vehicle_controller_fn = None
         self.arm_controller_fn = None
-        self.arm_gain_pack: Optional[ArmGains] = None
         self.controller_name = None
 
         self.world_frame = 'world'
@@ -642,7 +634,6 @@ class Robot(Base):
                 name=controller.registry_name,
                 vehicle_fn=controller.vehicle_controller,
                 arm_fn=controller.arm_controller,
-                arm_gains=self._arm_gains_for_controller(controller.arm_gain_profile),
             )
 
         # set default controller
@@ -666,35 +657,17 @@ class Robot(Base):
                 name: str,
                 vehicle_fn,
                 arm_fn,
-                arm_gains: Optional[ArmGains] = None,
             ) -> None:
         self._controllers[name] = ControllerSpec(
             name=name,
             vehicle_fn=vehicle_fn,
             arm_fn=arm_fn,
-            arm_gains=arm_gains,
         )
-
-    def _arm_gains_for_controller(self, profile: str) -> ArmGains:
-        if profile == "acc":
-            return ArmGains(
-                Kp=list(alpha_params.acc_Kp) + list(alpha_params.grasper_kp),
-                Ki=list(alpha_params.acc_Ki) + list(alpha_params.grasper_ki),
-                Kd=list(alpha_params.acc_Kd) + list(alpha_params.grasper_kd),
-            )
-        if profile == "tau":
-            return ArmGains(
-                Kp=list(alpha_params.tau_Kp) + list(alpha_params.grasper_kp),
-                Ki=list(alpha_params.tau_Ki) + list(alpha_params.grasper_ki),
-                Kd=list(alpha_params.tau_Kd) + list(alpha_params.grasper_kd),
-            )
-        raise ValueError(f"Unknown arm gain profile '{profile}'")
 
     def set_controller(self, name: str) -> None:
         spec = self._controllers[name]  # raises KeyError if missing, good fail-fast
         self.vehicle_controller_fn = spec.vehicle_fn
         self.arm_controller_fn = spec.arm_fn
-        self.arm_gain_pack = spec.arm_gains
         self.controller_name = name
         self.node.get_logger().info(f"Controller set to {name} for {self.prefix}")
 
@@ -1862,10 +1835,6 @@ class Robot(Base):
                 dt=state["dt"],
             )
 
-            g = self.arm_gain_pack
-            if g is None:
-                raise RuntimeError(f"Arm gains not set for controller {self.controller_name}")
-
             q_ref = list(self.arm.q_command) + [self.arm.grasp_command]
             dq_ref = list(self.arm.dq_command) + [0.0]
             ddq_ref = list(self.arm.ddq_command) + [0.0]
@@ -1876,13 +1845,7 @@ class Robot(Base):
                 q_ref=q_ref,
                 dq_ref=dq_ref,
                 ddq_ref=ddq_ref,
-                Kp=g.Kp,
-                Ki=g.Ki,
-                Kd=g.Kd,
                 dt=state["dt"],
-                u_max=list(alpha_params.u_max) + list(alpha_params.grasper_u_max),
-                u_min=list(alpha_params.u_min) + list(alpha_params.grasper_u_min),
-                model_param=alpha_params.sim_p,
             )
 
             self.debug_pub.publish_map_targets_and_arm_refs(

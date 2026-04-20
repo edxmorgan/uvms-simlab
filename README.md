@@ -130,7 +130,12 @@ Controllers live in `simlab/controllers/`. Each controller gets its own file and
 
    class MyController(ControllerTemplate):
        registry_name = "MyController"
-       arm_gain_profile = "tau"  # use "tau" or "acc"
+
+       def __init__(self, node, arm_dof=4):
+           super().__init__(node, arm_dof)
+           self.arm_kp = np.ones(self.arm_dof + 1, dtype=float)
+           self.arm_u_max = np.ones(self.arm_dof + 1, dtype=float)
+           self.arm_u_min = -self.arm_u_max
 
        def vehicle_controller(self, state, target_pos, target_vel, target_acc, dt) -> np.ndarray:
            state = self.vector(state, 12, "state")
@@ -144,13 +149,7 @@ Controllers live in `simlab/controllers/`. Each controller gets its own file and
            q_ref,
            dq_ref,
            ddq_ref,
-           Kp,
-           Ki,
-           Kd,
            dt,
-           u_max,
-           u_min,
-           model_param,
        ) -> np.ndarray:
            q = self.arm_vector(q, "q")
            return np.zeros(self.arm_dof + 1, dtype=float)
@@ -178,7 +177,7 @@ Controllers live in `simlab/controllers/`. Each controller gets its own file and
    source install/setup.bash
    ```
 
-The controller will appear in the RViz interactive controller menu using `registry_name`. `arm_gain_profile` selects the default arm gain pack passed by `Robot`: `tau` uses torque gains and `acc` uses acceleration gains. Only edit `simlab/robot.py` if you need a new gain profile, a different registration policy, or controller-specific wiring outside the standard `vehicle_controller()` and `arm_controller()` methods.
+The controller will appear in the RViz interactive controller menu using `registry_name`. Keep controller-specific gains, limits, and model parameters inside the controller class. `Robot` only passes state, references, and `dt` into the standard `vehicle_controller()` and `arm_controller()` methods.
 
 ## Contributing
 
