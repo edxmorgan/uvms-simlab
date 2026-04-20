@@ -8,13 +8,13 @@ from namor import (
 )
 from rclpy.node import Node
 
+from simlab.alpha_reach import Params as alpha_params
 from simlab.controllers.base import ControllerTemplate
 
 
 class OgesModelbasedController(ControllerTemplate):
     name = "OGES"
     registry_name = "Ours"
-    arm_gain_profile = "tau"
 
     def __init__(self, node: Node, arm_dof: int = 4):
         super().__init__(node, arm_dof)
@@ -71,6 +71,16 @@ class OgesModelbasedController(ControllerTemplate):
 
         self.vehicle_u_prev = np.zeros(6, dtype=float)
         self.arm_u_prev = np.zeros(self.arm_dof, dtype=float)
+        self.arm_u_min = self.arm_vector(
+            list(alpha_params.u_min) + list(alpha_params.grasper_u_min),
+            "arm_u_min",
+        )
+        self.arm_u_max = self.arm_vector(
+            list(alpha_params.u_max) + list(alpha_params.grasper_u_max),
+            "arm_u_max",
+        )
+        self.grasper_kp = float(alpha_params.grasper_kp[0])
+        self.grasper_kd = float(alpha_params.grasper_kd[0])
         self.vehicle_w_scale = 0.1
         self.arm_w_scale = 1.0
         self.vehicle_lowpass_tau = np.full(6, 0.0)
@@ -146,13 +156,7 @@ class OgesModelbasedController(ControllerTemplate):
         q_ref: np.ndarray,
         dq_ref: np.ndarray,
         ddq_ref: np.ndarray,
-        Kp: np.ndarray,
-        Ki: np.ndarray,
-        Kd: np.ndarray,
         dt: float,
-        u_max: np.ndarray,
-        u_min: np.ndarray,
-        model_param: np.ndarray,
     ) -> np.ndarray:
         dt = float(dt)
 
@@ -185,8 +189,8 @@ class OgesModelbasedController(ControllerTemplate):
             Jk,
             Jk_ref,
             self.arm_w_scale,
-            u_min[: self.arm_dof],
-            u_max[: self.arm_dof],
+            self.arm_u_min[: self.arm_dof],
+            self.arm_u_max[: self.arm_dof],
             tau_nullspace,
         ]
 
@@ -203,5 +207,5 @@ class OgesModelbasedController(ControllerTemplate):
 
         grasp_err = q_ref[-1] - q[-1]
         grasp_d_err = dq_ref[-1] - q_dot[-1]
-        grasper_tau = Kp[-1] * grasp_err + Kd[-1] * grasp_d_err
+        grasper_tau = self.grasper_kp * grasp_err + self.grasper_kd * grasp_d_err
         return np.concatenate((arm_tau, np.array([grasper_tau], dtype=float)))
