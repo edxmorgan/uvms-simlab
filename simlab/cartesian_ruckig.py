@@ -32,7 +32,9 @@ class VehicleCartesianRuckig:
         self.inp = InputParameter(dofs)
         self.out = OutputParameter(dofs, max_waypoints)
         self.active = False
-        self.yaw_finish_threshold = 0.98
+        self.yaw_finish_threshold = 0.95
+        self.last_result = None
+        self.last_yaw_blend_factor = 0.0
 
 
     def start_from_path(
@@ -74,6 +76,8 @@ class VehicleCartesianRuckig:
         self.inp.max_acceleration = max_acc.tolist()
         self.inp.max_jerk = max_jerk.tolist()
         self.active = True
+        self.last_result = None
+        self.last_yaw_blend_factor = 0.0
 
     def update(self, yaw_blend_factor):
         """Advance one control step along the current trajectory."""
@@ -84,6 +88,8 @@ class VehicleCartesianRuckig:
         pos = list(self.out.new_position)
         vel = list(self.out.new_velocity)
         acc = list(self.out.new_acceleration)
+        self.last_result = res
+        self.last_yaw_blend_factor = float(yaw_blend_factor)
 
         self.out.pass_to_input(self.inp)
 

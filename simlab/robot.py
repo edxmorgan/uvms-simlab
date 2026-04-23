@@ -1694,6 +1694,9 @@ class Robot(Base):
         self.final_goal_map_ned_6 = None
         if self.planner is not None:
             self.planner.planned_result = None
+            stamp_now = self.node.get_clock().now().to_msg()
+            self.planner.clear_path(stamp_now, self.world_frame)
+            self.planner.clear_target(stamp_now, self.world_frame)
         if self.vehicle_cart_traj is not None:
             self.vehicle_cart_traj.active = False
         self._zero_planner_commands()
