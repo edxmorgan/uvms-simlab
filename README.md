@@ -6,6 +6,7 @@ A field-ready ROS 2 lab for **Underwater Vehicle–Manipulator Systems**. `uvms_
 ## Highlights
 
 - **Direct RViz manipulation** – interactive markers drive the vehicle and arm-base targets without custom plugins.
+- **Vehicle waypoint missions** – save multiple vehicle waypoints from RViz and execute them sequentially.
 - **Collision + clearance monitoring** – FCL-backed checks visualize contacts, environment bounds, and clearance markers.
 - **SE(3) planning with live visualization** – OMPL planners + Ruckig execution stream candidate paths and waypoints to RViz.
 - **Control modes** – PS4 teleop, joint-space torque control, or direct thruster PWM via launch args.
@@ -97,13 +98,63 @@ ros2 launch ros2_control_blue_reach_5 robot_system_multi_interface.launch.py \
 | `joint` | `joint_controller` | Skeleton node for custom joint-space torque commands | Your node/scripts |
 | `direct_thrusters` | `direct_thruster_controller` | Direct PWM commands | Keyboard |
 
+## Interactive workflow
+
+In `task:=interactive`, the vehicle marker menu exposes the main planning workflow:
+
+- `Plan & Execute`
+- `Add Vehicle Waypoint`
+- `Delete Vehicle Waypoint >`
+- `Clear Vehicle Waypoints`
+- `Stop Vehicle Waypoints`
+- `Reset Simulation`
+- `Release Simulation`
+
+### Single-goal planning
+
+Move the vehicle marker to the desired pose and select `Plan & Execute`.
+
+### Vehicle waypoint missions
+
+For multi-point vehicle motion:
+
+1. Move the vehicle marker to the first target.
+2. Select `Add Vehicle Waypoint`.
+3. Repeat for each additional target.
+4. Select `Plan & Execute`.
+
+The robot plans and executes the waypoint list in order.
+
+Notes:
+
+- `Delete Vehicle Waypoint` is a dynamic submenu built from the currently saved waypoints for the selected robot.
+- `Clear Vehicle Waypoints` clears the saved waypoint queue for the selected robot.
+- `Reset Simulation` also clears the selected robot waypoint queue and its waypoint visualization.
+- Waypoint completion currently uses:
+  - position tolerance
+  - `yaw_blend_factor >= yaw_finish_threshold`
+
+### Overlay information
+
+The robot metrics overlay includes, per robot:
+
+- selected controller
+- hold/release state
+- vehicle linear speed
+- waypoint mission summary such as:
+  - `WP none`
+  - `WP queued N`
+  - `WP 2/5 TRACKING`
+
 ## Project layout
 
 ```
 simlab/
-├── simlab/uvms_backend.py            # Core backend, FCL world, planners, TFs
-├── simlab/interactive_control.py     # RViz markers + menu control
+├── simlab/uvms_backend.py            # Core backend, FCL world, planners, TFs, waypoint missions
+├── simlab/interactive_control.py     # RViz markers + menus
+├── simlab/vehicle_waypoint_mission.py# Vehicle waypoint queue state + RViz waypoint markers
 ├── simlab/controllers/               # One controller class per file
+├── simlab/uvms_parameters.py         # Shared manipulator and vehicle controller parameters
 ├── simlab/se3_ompl_planner.py        # OMPL SE(3) planning
 ├── simlab/cartesian_ruckig.py        # Ruckig trajectory generation
 ├── simlab/joystick_control.py        # PS4 teleop node
