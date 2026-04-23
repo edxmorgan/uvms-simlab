@@ -14,7 +14,7 @@
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 #!/usr/bin/env python3
-from simlab.alpha_reach import Params as alpha_params 
+from simlab.uvms_parameters import ReachParams
 import rclpy
 from rclpy.node import Node
 from simlab.fcl_checker import FCLWorld
@@ -269,9 +269,9 @@ class UVMSBackendCore:
         self.target_vehicle_pose = Pose()
         self.target_vehicle_pose.orientation.w = 1.0
         self.target_arm_base_endeffector_pose = Pose()
-        self.target_arm_base_endeffector_pose.position.x = alpha_params.endeffector_wrt_base_home[0]
-        self.target_arm_base_endeffector_pose.position.y = alpha_params.endeffector_wrt_base_home[1]
-        self.target_arm_base_endeffector_pose.position.z = alpha_params.endeffector_wrt_base_home[2]
+        self.target_arm_base_endeffector_pose.position.x = ReachParams.endeffector_wrt_base_home[0]
+        self.target_arm_base_endeffector_pose.position.y = ReachParams.endeffector_wrt_base_home[1]
+        self.target_arm_base_endeffector_pose.position.z = ReachParams.endeffector_wrt_base_home[2]
         self.target_arm_base_endeffector_pose.orientation.w = 1.0
         self.target_world_endeffector_pose = Pose()
         self.target_world_endeffector_pose.orientation.w = 1.0

@@ -5,8 +5,8 @@ import casadi as ca
 import numpy as np
 from rclpy.node import Node
 
-from simlab.alpha_reach import Params as alpha_params
 from simlab.controllers.base import ControllerTemplate
+from simlab.uvms_parameters import ReachParams, VehicleControllerParams
 
 
 class LowLevelPidController(ControllerTemplate):
@@ -23,7 +23,11 @@ class LowLevelPidController(ControllerTemplate):
         )
         self.uv_pid_controller = ca.Function.load(uv_pid_controller_path)
         self.vehicle_pid_i_buffer = np.zeros(6, dtype=float)
-        self.vehicle_i_limit = np.array([3, 3, 3, 3, 3, 3], dtype=float)
+        self.vehicle_i_limit = VehicleControllerParams.i_limit.copy()
+        self.vehicle_model_params = VehicleControllerParams.model_params.copy()
+        self.kp = VehicleControllerParams.pid_kp.copy()
+        self.ki = VehicleControllerParams.pid_ki.copy()
+        self.kd = VehicleControllerParams.pid_kd.copy()
 
         arm_pid_controller_path = os.path.join(
             package_share_directory,
@@ -32,59 +36,27 @@ class LowLevelPidController(ControllerTemplate):
         self.arm_pid_controller = ca.Function.load(arm_pid_controller_path)
         self.arm_pid_i_buffer = np.zeros(self.arm_dof + 1, dtype=float)
         self.arm_kp = self.arm_vector(
-            list(alpha_params.tau_Kp) + list(alpha_params.grasper_kp),
+            list(ReachParams.pid_kp) + list(ReachParams.grasper_kp),
             "arm_kp",
         )
         self.arm_ki = self.arm_vector(
-            list(alpha_params.tau_Ki) + list(alpha_params.grasper_ki),
+            list(ReachParams.pid_ki) + list(ReachParams.grasper_ki),
             "arm_ki",
         )
         self.arm_kd = self.arm_vector(
-            list(alpha_params.tau_Kd) + list(alpha_params.grasper_kd),
+            list(ReachParams.pid_kd) + list(ReachParams.grasper_kd),
             "arm_kd",
         )
         self.arm_u_max = self.arm_vector(
-            list(alpha_params.u_max) + list(alpha_params.grasper_u_max),
+            list(ReachParams.u_max) + list(ReachParams.grasper_u_max),
             "arm_u_max",
         )
         self.arm_u_min = self.arm_vector(
-            list(alpha_params.u_min) + list(alpha_params.grasper_u_min),
+            list(ReachParams.u_min) + list(ReachParams.grasper_u_min),
             "arm_u_min",
         )
-        self.arm_model_params = alpha_params.sim_p
+        self.arm_model_params = ReachParams.sim_p
 
-        self.vehicle_model_params = [
-                3.72028553e+01,
-                2.21828075e+01,
-                6.61734807e+01,
-                3.38909801e+00,
-                6.41362046e-01,
-                6.41362034e-01,
-                3.38909800e+00,
-                1.39646394e+00,
-                4.98032205e-01,
-                2.53118738e+00,
-                1.05000000e+02,
-                9.78296453e+01,
-                8.27479545e-01,
-                1.36822559e-01,
-                4.25841171e+00,
-                -7.36416666e+01,
-                -3.36082112e+01,
-                -8.94055107e+01,
-                -2.98736214e+00,
-                -1.57921531e+00,
-                -3.39766499e+00,
-                -1.47912104e-04,
-                -5.16373030e-04,
-                -9.85522538e+01,
-                -3.05907788e-02,
-                -1.27877517e-01,
-                -1.63514832e+00,
-            ]
-        self.kp = np.array([40.0, 40.0, 40.0, 10, 10, 10.0])
-        self.ki = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
-        self.kd = np.array([15.0, 15.0, 15.0, 2, 2, 5.0])
 
     def vehicle_controller(
         self,
