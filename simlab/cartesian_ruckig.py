@@ -19,7 +19,7 @@
 
 # cartesian_ruckig.py
 
-from ruckig import Ruckig, InputParameter, OutputParameter, Result
+from ruckig import Ruckig, InputParameter, OutputParameter, Result, RuckigError
 import numpy as np
 from rclpy.node import Node
 
@@ -35,7 +35,6 @@ class VehicleCartesianRuckig:
         self.yaw_finish_threshold = 0.95
         self.last_result = None
         self.last_yaw_blend_factor = 0.0
-
 
     def start_from_path(
         self,
@@ -84,7 +83,15 @@ class VehicleCartesianRuckig:
         if not self.active:
             return None, None, None, Result.Error
 
-        res = self.otg.update(self.inp, self.out)
+        try:
+            res = self.otg.update(self.inp, self.out)
+        except RuckigError as exc:
+            self.rclpy_node.get_logger().error(
+                f"Ruckig update failed: {exc}"
+            )
+            self.active = False
+            self.last_result = Result.Error
+            return None, None, None, Result.Error
         pos = list(self.out.new_position)
         vel = list(self.out.new_velocity)
         acc = list(self.out.new_acceleration)
