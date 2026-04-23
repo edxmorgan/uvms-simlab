@@ -8,8 +8,8 @@ from namor import (
 )
 from rclpy.node import Node
 
-from simlab.alpha_reach import Params as alpha_params
 from simlab.controllers.base import ControllerTemplate
+from simlab.uvms_parameters import ReachParams
 
 
 class OgesModelbasedController(ControllerTemplate):
@@ -72,15 +72,15 @@ class OgesModelbasedController(ControllerTemplate):
         self.vehicle_u_prev = np.zeros(6, dtype=float)
         self.arm_u_prev = np.zeros(self.arm_dof, dtype=float)
         self.arm_u_min = self.arm_vector(
-            list(alpha_params.u_min) + list(alpha_params.grasper_u_min),
+            list(ReachParams.u_min) + list(ReachParams.grasper_u_min),
             "arm_u_min",
         )
         self.arm_u_max = self.arm_vector(
-            list(alpha_params.u_max) + list(alpha_params.grasper_u_max),
+            list(ReachParams.u_max) + list(ReachParams.grasper_u_max),
             "arm_u_max",
         )
-        self.grasper_kp = float(alpha_params.grasper_kp[0])
-        self.grasper_kd = float(alpha_params.grasper_kd[0])
+        self.grasper_kp = float(ReachParams.grasper_kp[0])
+        self.grasper_kd = float(ReachParams.grasper_kd[0])
         self.vehicle_w_scale = 0.1
         self.arm_w_scale = 1.0
         self.vehicle_lowpass_tau = np.full(6, 0.0)

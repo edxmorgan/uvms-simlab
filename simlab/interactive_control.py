@@ -28,7 +28,7 @@ from interactive_markers.menu_handler import MenuHandler
 from simlab import interactive_utils as marker_util
 from geometry_msgs.msg import Pose
 import numpy as np
-from simlab.alpha_reach import Params as alpha
+from simlab.uvms_parameters import ReachParams
 from simlab.frame_utils import PoseX
 from simlab.robot import Robot, ControlSpace
 
@@ -44,8 +44,8 @@ class InteractiveControlsNode(Node):
 
         # Arm base pose wrt vehicle center
         self.arm_base_wrt_vehicle_center_Pose = PoseX.from_pose(
-                xyz=alpha.base_T0_new[0:3],
-                rot=alpha.base_T0_new[3:6],
+                xyz=ReachParams.base_T0_new[0:3],
+                rot=ReachParams.base_T0_new[3:6],
                 rot_rep="euler_xyz",
                 frame="NWU").get_pose_as_Pose_msg()
         
@@ -54,7 +54,7 @@ class InteractiveControlsNode(Node):
                                                               self.arm_base_wrt_vehicle_center_Pose,
                                                               self.vehicle_target_frame, self.arm_base_target_frame, 
                                                               self.world_frame,
-                                                              self.world_endeffector_target_frame, alpha)
+                                                              self.world_endeffector_target_frame, ReachParams)
         self.robot_metrics_overlay_pub = self.create_publisher(
             OverlayText,
             'robot_metrics_overlay_text',
