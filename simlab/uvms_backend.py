@@ -324,7 +324,7 @@ class UVMSBackendCore:
             lines.append(
                 f"{metrics['prefix']}{selected} | {hold_state} | {controller_in_use} | "
                 f"v {linear_speed_mps:.3f} m/s | payload {metrics['arm_payload_mass']:.3f} kg | "
-                f"g {metrics['arm_gravity']:.3f} | {waypoint_info} | "
+                f"g {metrics['arm_gravity']:.3f} m/s^2 | {waypoint_info} | "
                 f"E {total_energy:.2f} J | dE/dt {total_power:.2f} W"
             )
         return '\n'.join(lines)
