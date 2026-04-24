@@ -342,6 +342,7 @@ class Axis_Interface_names:
     sim_time = 'sim_time'
     sim_period = 'sim_period'
     arm_payload_mass = 'payload.mass'
+    arm_gravity = 'gravity'
     arm_control_power_abs = 'control_power_abs'
     arm_control_energy_abs = 'control_energy_abs'
     
@@ -511,6 +512,7 @@ class Robot(Base):
         self.arm_control_power = 0.0
         self.arm_control_energy = 0.0
         self.arm_payload_mass = 0.0
+        self.arm_gravity = 0.0
         self.prefix = prefix
         self.status = 'inactive'
         self.sim_time = 0.0
@@ -903,6 +905,11 @@ class Robot(Base):
             [self.arm_IOs],
             [Axis_Interface_names.arm_payload_mass]
         )[0]
+        self.arm_gravity = self.get_interface_value(
+            msg,
+            [self.arm_IOs],
+            [Axis_Interface_names.arm_gravity]
+        )[0]
    
         dynamics_sim_time = self.get_interface_value(msg,[self.floating_base_IOs],[Axis_Interface_names.sim_time])[0]
         if self.status == 'inactive':
@@ -923,6 +930,7 @@ class Robot(Base):
         xq['arm_control_power_abs'] = self.arm_control_power
         xq['arm_control_energy_abs'] = self.arm_control_energy
         xq['arm_payload_mass'] = self.arm_payload_mass
+        xq['arm_gravity'] = self.arm_gravity
         xq['status'] = self.status
         xq['sim_time'] = self.sim_time
         xq['prefix'] = self.prefix
@@ -937,6 +945,7 @@ class Robot(Base):
             'arm_control_power_abs': float(self.arm_control_power),
             'arm_control_energy_abs': float(self.arm_control_energy),
             'arm_payload_mass': float(self.arm_payload_mass),
+            'arm_gravity': float(self.arm_gravity),
         }
 
     def try_transform_pose(

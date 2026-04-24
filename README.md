@@ -141,6 +141,7 @@ The robot metrics overlay includes, per robot:
 - selected controller
 - hold/release state
 - vehicle linear speed
+- manipulator gravity
 - manipulator payload mass
 - waypoint mission summary such as:
   - `WP none`
