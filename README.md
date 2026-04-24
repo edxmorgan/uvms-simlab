@@ -147,6 +147,13 @@ The robot metrics overlay includes, per robot:
   - `WP queued N`
   - `WP 2/5 TRACKING`
 
+Simulator-side manipulator dynamics can be changed online through the combined service provided by `uvms-simulator`:
+
+```bash
+ros2 service call /robot_1_set_sim_dynamics ros2_control_blue_reach_5/srv/SetSimDynamics \
+  "{gravity: 9.81, mass: 0.15, ixx: 0.0, iyy: 0.0, izz: 0.0}"
+```
+
 ## Project layout
 
 ```
