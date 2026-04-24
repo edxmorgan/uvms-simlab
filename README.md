@@ -214,7 +214,6 @@ Controllers live in `simlab/controllers/`. Each controller gets its own file and
    DEFAULT_CONTROLLER_CLASSES = [
        LowLevelPidController,
        LowLevelOptimalModelbasedController,
-       OgesModelbasedController,
        MyController,
    ]
    ```
