@@ -9,6 +9,7 @@ A field-ready ROS 2 lab for **Underwater Vehicle–Manipulator Systems**. `uvms_
 - **Vehicle waypoint missions** – save multiple vehicle waypoints from RViz and execute them sequentially.
 - **Collision + clearance monitoring** – FCL-backed checks visualize contacts, environment bounds, and clearance markers.
 - **SE(3) planning with live visualization** – OMPL planners + Ruckig execution stream candidate paths and waypoints to RViz.
+- **Live payload metrics** – manipulator payload mass from `${prefix}_arm_IOs` is shown in the robot overlay.
 - **Control modes** – PS4 teleop, joint-space torque control, or direct thruster PWM via launch args.
 - **Mocap + viz tooling** – OptiTrack/mocap4r2 publishing, pose/path trails, workspace clouds, and voxelized bathymetry.
 - **Data logging** – rosbag2 MCAP recorder for repeatable datasets.
@@ -22,6 +23,7 @@ A field-ready ROS 2 lab for **Underwater Vehicle–Manipulator Systems**. `uvms_
 - OMPL with Python bindings (`install-ompl-ubuntu.sh --python` from Kavraki Lab works well).
 - Optional perception extras: `torch`, `torchvision`, `timm`, `opencv-python` (MiDaS RGB-to-pointcloud).
 - Optional hardware: BlueROV2 Heavy + Reach Alpha 5 + Blue Robotics A50 DVL (or any robot stack you map through the provided interfaces).
+- Optional controller dependency: `namor` is only needed for the OGES controller. If it is not installed, simlab still starts and OGES is simply omitted from the available controller list.
 
 ## Quick start
 
@@ -141,6 +143,7 @@ The robot metrics overlay includes, per robot:
 - selected controller
 - hold/release state
 - vehicle linear speed
+- manipulator payload mass
 - waypoint mission summary such as:
   - `WP none`
   - `WP queued N`
@@ -213,7 +216,7 @@ Controllers live in `simlab/controllers/`. Each controller gets its own file and
 
    DEFAULT_CONTROLLER_CLASSES = [
        LowLevelPidController,
-       LowLevelOptimalModelbasedController,
+       LowLevelInvDynController,
        MyController,
    ]
    ```

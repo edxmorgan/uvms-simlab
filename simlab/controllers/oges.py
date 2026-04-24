@@ -1,15 +1,26 @@
 import numpy as np
-from namor import OGES, build_weight_vector
-from namor import (
-    load_alpha_reach_params,
-    load_blue_rov_params,
-    load_manipulator_model_function,
-    load_uv_model_function,
-)
 from rclpy.node import Node
 
 from simlab.controllers.base import ControllerTemplate
 from simlab.uvms_parameters import ReachParams
+
+try:
+    from namor import OGES, build_weight_vector
+    from namor import (
+        load_alpha_reach_params,
+        load_blue_rov_params,
+        load_manipulator_model_function,
+        load_uv_model_function,
+    )
+    NAMOR_IMPORT_ERROR = None
+except ImportError as exc:
+    OGES = None
+    build_weight_vector = None
+    load_alpha_reach_params = None
+    load_blue_rov_params = None
+    load_manipulator_model_function = None
+    load_uv_model_function = None
+    NAMOR_IMPORT_ERROR = exc
 
 
 class OgesModelbasedController(ControllerTemplate):
@@ -18,6 +29,10 @@ class OgesModelbasedController(ControllerTemplate):
 
     def __init__(self, node: Node, arm_dof: int = 4):
         super().__init__(node, arm_dof)
+        if NAMOR_IMPORT_ERROR is not None:
+            raise ImportError(
+                "OgesModelbasedController requires the optional 'namor' dependency."
+            ) from NAMOR_IMPORT_ERROR
         self.use_vehicle_control_filter = True
         self.use_arm_control_filter = False
 
