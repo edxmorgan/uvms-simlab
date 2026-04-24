@@ -14,7 +14,7 @@
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 #!/usr/bin/env python3
-from simlab.alpha_reach import Params as alpha_params 
+from simlab.uvms_parameters import ReachParams
 import rclpy
 from rclpy.node import Node
 from simlab.fcl_checker import FCLWorld
@@ -26,7 +26,7 @@ from simlab import backend_utils
 from rclpy.qos import QoSProfile, QoSHistoryPolicy, QoSDurabilityPolicy, QoSReliabilityPolicy
 from visualization_msgs.msg import Marker
 import tf2_ros
-from typing import List
+from typing import Dict, List
 from simlab.robot import Robot, ControlMode
 from geometry_msgs.msg import Pose
 from std_msgs.msg import Header
@@ -37,6 +37,11 @@ from control_msgs.msg import DynamicJointState
 from simlab.planner_markers import PathPlanner
 from simlab.cartesian_ruckig import VehicleCartesianRuckig
 from simlab.frame_utils import PoseX
+from simlab.vehicle_waypoint_mission import (
+    VehicleWaypointMission,
+    VehicleWaypointViz,
+    pose_position_distance,
+)
 
 class UVMSBackendCore:
     def __init__(self, node: Node,
@@ -111,6 +116,8 @@ class UVMSBackendCore:
         
         self.planner_marker_publisher = self.node.create_publisher(Marker, "planned_waypoints_marker", planner_viz_qos)
         self.robots:List[Robot] = []
+        self.vehicle_waypoint_missions: Dict[int, VehicleWaypointMission] = {}
+        self.vehicle_waypoint_viz: Dict[int, VehicleWaypointViz] = {}
         self.max_cartesian_waypoints = 500
         self.robots_prefix = self.node.get_parameter('robots_prefix').value
         for k, prefix in enumerate(self.robots_prefix):
@@ -136,6 +143,12 @@ class UVMSBackendCore:
 
 
             self.robots.append(robot_k)
+            self.vehicle_waypoint_missions[k] = VehicleWaypointMission(robot_prefix=prefix)
+            self.vehicle_waypoint_viz[k] = VehicleWaypointViz(
+                self.planner_marker_publisher,
+                ns=f"vehicle_waypoints/{prefix}",
+                base_id=2000 + 10 * k,
+            )
 
         self.dynamics_states_sub = self.node.create_subscription(
             DynamicJointState,
@@ -151,12 +164,123 @@ class UVMSBackendCore:
         )
         self.initialise_target_Poses()
         self.set_robot_selected(self.robots[0].k_robot)
+        self.vehicle_waypoint_execution_timer = self.node.create_timer(
+            1.0 / 20.0,
+            self.vehicle_waypoint_execution_callback,
+        )
+        self.vehicle_waypoint_viz_timer = self.node.create_timer(
+            1.0 / 10.0,
+            self.vehicle_waypoint_viz_callback,
+        )
 
     def close(self) -> None:
         for robot in self.robots:
             robot.close()
         self.robots.clear()
         self.robot_selected = None
+
+    def selected_vehicle_waypoint_mission(self) -> VehicleWaypointMission:
+        return self.vehicle_waypoint_missions[self.robot_selected.k_robot]
+
+    def add_selected_vehicle_waypoint(self) -> int:
+        mission = self.selected_vehicle_waypoint_mission()
+        count = mission.add_waypoint(self.target_vehicle_pose)
+        self.node.get_logger().info(
+            f"Added vehicle waypoint {count} for {self.robot_selected.prefix} at "
+            f"[{self.target_vehicle_pose.position.x:.2f}, {self.target_vehicle_pose.position.y:.2f}, {self.target_vehicle_pose.position.z:.2f}]"
+        )
+        if mission.executing:
+            self.node.get_logger().info(
+                f"Extended active vehicle waypoint mission for {self.robot_selected.prefix}; "
+                f"{len(mission.waypoints)} total waypoints queued."
+            )
+        return count
+
+    def remove_last_selected_vehicle_waypoint(self) -> bool:
+        mission = self.selected_vehicle_waypoint_mission()
+        removed = mission.pop_last_waypoint()
+        if removed is None:
+            self.node.get_logger().warn(f"No vehicle waypoints to remove for {self.robot_selected.prefix}.")
+            return False
+        self.node.get_logger().info(
+            f"Removed last vehicle waypoint for {self.robot_selected.prefix}; {len(mission.waypoints)} remaining."
+        )
+        return True
+
+    def remove_vehicle_waypoint_for_robot(self, robot_k: int, waypoint_index: int) -> bool:
+        robot = self.robots[robot_k]
+        mission = self.vehicle_waypoint_missions[robot_k]
+        was_executing = mission.executing
+        removed_active_waypoint = mission.active_index == waypoint_index
+        removed = mission.pop_waypoint(waypoint_index)
+        if removed is None:
+            self.node.get_logger().warn(
+                f"No vehicle waypoint {waypoint_index + 1} to remove for {robot.prefix}."
+            )
+            return False
+        if was_executing and removed_active_waypoint:
+            mission.stop()
+            robot.abrupt_planner_stop()
+            self.node.get_logger().info(
+                f"Removed active vehicle waypoint {waypoint_index + 1} for {robot.prefix}; mission stopped."
+            )
+        else:
+            self.node.get_logger().info(
+                f"Removed vehicle waypoint {waypoint_index + 1} for {robot.prefix}; {len(mission.waypoints)} remaining."
+            )
+        return True
+
+    def remove_selected_vehicle_waypoint_at(self, waypoint_index: int) -> bool:
+        return self.remove_vehicle_waypoint_for_robot(self.robot_selected.k_robot, waypoint_index)
+
+    def clear_selected_vehicle_waypoints(self) -> None:
+        mission = self.selected_vehicle_waypoint_mission()
+        was_executing = mission.executing
+        mission.clear()
+        if was_executing:
+            self.robot_selected.abrupt_planner_stop()
+        self.node.get_logger().info(f"Cleared vehicle waypoints for {self.robot_selected.prefix}.")
+
+    def clear_vehicle_waypoints_for_robot(self, robot_k: int) -> None:
+        robot = self.robots[robot_k]
+        mission = self.vehicle_waypoint_missions[robot_k]
+        was_executing = mission.executing
+        mission.clear()
+        if was_executing:
+            robot.abrupt_planner_stop()
+        self.node.get_logger().info(f"Cleared vehicle waypoints for {robot.prefix}.")
+
+    def stop_selected_vehicle_waypoints(self) -> None:
+        mission = self.selected_vehicle_waypoint_mission()
+        if not mission.executing:
+            self.node.get_logger().info(f"No active vehicle waypoint mission for {self.robot_selected.prefix}.")
+            return
+        mission.stop()
+        self.robot_selected.abrupt_planner_stop()
+        self.node.get_logger().info(f"Stopped vehicle waypoint mission for {self.robot_selected.prefix}.")
+
+    def execute_selected_vehicle_waypoints(self) -> bool:
+        robot = self.robot_selected
+        if robot.task_based_controller:
+            self.node.get_logger().warn("Vehicle waypoint missions are available only in joint-space vehicle planning mode.")
+            return False
+
+        mission = self.selected_vehicle_waypoint_mission()
+        if mission.executing:
+            self.node.get_logger().info(
+                f"Vehicle waypoint mission already running for {robot.prefix}; "
+                f"{len(mission.waypoints) - mission.current_index} waypoint(s) remaining."
+            )
+            return False
+        if not mission.start():
+            self.node.get_logger().warn(f"No saved vehicle waypoints for {robot.prefix}.")
+            return False
+
+        self.node.get_logger().info(
+            f"Executing {len(mission.waypoints)} vehicle waypoints for {robot.prefix}."
+        )
+        robot.abrupt_planner_stop()
+        return self._dispatch_vehicle_waypoint_if_ready(robot, mission)
 
     def publish_fcl_environment_aabb_callback(self):
         stamp_now = self.node.get_clock().now().to_msg()
@@ -172,6 +296,10 @@ class UVMSBackendCore:
         lines = ['Robot Controller Energy Applied']
         for index, robot in enumerate(self.robots):
             metrics = robot.get_energy_metrics()
+            mission = self.vehicle_waypoint_missions[robot.k_robot]
+            state = robot.get_state()
+            ned_vel = np.asarray(state.get("ned_vel", [0.0] * 6), dtype=float).reshape(-1)
+            linear_speed_mps = float(np.linalg.norm(ned_vel[:3])) if ned_vel.size >= 3 else 0.0
             controller_in_use = robot.controller_name
             selected = ' *' if robot == self.robot_selected else ''
             hold_state = 'HELD' if robot.sim_reset_hold else 'RELEASED'
@@ -185,8 +313,17 @@ class UVMSBackendCore:
             )
             if index > 0:
                 lines.append('-' * 72)
+            if mission.executing:
+                active_idx = mission.active_display_index()
+                active_label = active_idx + 1 if active_idx is not None else mission.current_index + 1
+                waypoint_info = f"WP {active_label}/{len(mission.waypoints)} {mission.state.upper()}"
+            elif mission.waypoints:
+                waypoint_info = f"WP queued {len(mission.waypoints)}"
+            else:
+                waypoint_info = "WP none"
             lines.append(
                 f"{metrics['prefix']}{selected} | {hold_state} | {controller_in_use} | "
+                f"v {linear_speed_mps:.3f} m/s | {waypoint_info} | "
                 f"E {total_energy:.2f} J | dE/dt {total_power:.2f} W"
             )
         return '\n'.join(lines)
@@ -269,9 +406,9 @@ class UVMSBackendCore:
         self.target_vehicle_pose = Pose()
         self.target_vehicle_pose.orientation.w = 1.0
         self.target_arm_base_endeffector_pose = Pose()
-        self.target_arm_base_endeffector_pose.position.x = alpha_params.endeffector_wrt_base_home[0]
-        self.target_arm_base_endeffector_pose.position.y = alpha_params.endeffector_wrt_base_home[1]
-        self.target_arm_base_endeffector_pose.position.z = alpha_params.endeffector_wrt_base_home[2]
+        self.target_arm_base_endeffector_pose.position.x = ReachParams.endeffector_wrt_base_home[0]
+        self.target_arm_base_endeffector_pose.position.y = ReachParams.endeffector_wrt_base_home[1]
+        self.target_arm_base_endeffector_pose.position.z = ReachParams.endeffector_wrt_base_home[2]
         self.target_arm_base_endeffector_pose.orientation.w = 1.0
         self.target_world_endeffector_pose = Pose()
         self.target_world_endeffector_pose.orientation.w = 1.0
@@ -289,6 +426,185 @@ class UVMSBackendCore:
             time_limit=1.0,
             robot_collision_radius=float(self.fcl_world.vehicle_radius),
         )
+
+    def _dispatch_vehicle_waypoint_if_ready(
+        self,
+        robot: Robot,
+        mission: VehicleWaypointMission,
+    ) -> bool:
+        if not mission.executing:
+            return False
+        if mission.active_index is not None:
+            self.node.get_logger().debug(
+                f"Waypoint dispatch skipped for {robot.prefix}; waypoint {mission.active_index + 1} is already active."
+            )
+            return False
+        if robot.sim_reset_hold or robot.task_based_controller:
+            reason = "simulation is held after reset" if robot.sim_reset_hold else "robot is in task-based controller mode"
+            self.node.get_logger().info(
+                f"Waypoint dispatch blocked for {robot.prefix}: {reason}.",
+                throttle_duration_sec=1.0,
+            )
+            return False
+        if robot.planner_action_client.busy:
+            self.node.get_logger().info(
+                f"Waypoint dispatch blocked for {robot.prefix}: planner action is still busy.",
+                throttle_duration_sec=1.0,
+            )
+            return False
+        if robot.vehicle_cart_traj is not None and robot.vehicle_cart_traj.active:
+            self.node.get_logger().info(
+                f"Waypoint dispatch blocked for {robot.prefix}: vehicle trajectory is still active.",
+                throttle_duration_sec=1.0,
+            )
+            return False
+
+        goal_pose = mission.current_waypoint()
+        if goal_pose is None:
+            mission.stop()
+            self.node.get_logger().warn(
+                f"Waypoint dispatch stopped for {robot.prefix}: no current waypoint is available."
+            )
+            return False
+
+        sent = robot.plan_vehicle_trajectory_action(
+            goal_pose=goal_pose,
+            time_limit=1.0,
+            robot_collision_radius=float(self.fcl_world.vehicle_radius),
+        )
+        if sent:
+            mission.mark_planning()
+            self.node.get_logger().info(
+                f"Dispatched vehicle waypoint {mission.active_index + 1}/{len(mission.waypoints)} for {robot.prefix}."
+            )
+            return True
+
+        mission.stop()
+        self.node.get_logger().warn(f"Failed to dispatch vehicle waypoint mission for {robot.prefix}.")
+        return False
+
+    def _is_robot_at_waypoint(self, robot: Robot, goal_pose: Pose, tolerance_m: float) -> bool:
+        pose_now = robot._pose_from_state_in_frame(self.world_frame)
+        if pose_now is None:
+            return False
+        return pose_position_distance(pose_now, goal_pose) <= float(tolerance_m)
+
+    def _robot_waypoint_tracking_metrics(self, robot: Robot, goal_pose: Pose) -> dict | None:
+        pose_now = robot._pose_from_state_in_frame(self.world_frame)
+        if pose_now is None:
+            return None
+
+        distance_m = pose_position_distance(pose_now, goal_pose)
+        state = robot.get_state()
+        ned_vel = np.asarray(state.get("ned_vel", [0.0] * 6), dtype=float).reshape(-1)
+        linear_speed_mps = float(np.linalg.norm(ned_vel[:3])) if ned_vel.size >= 3 else 0.0
+        yaw_blend = float(getattr(robot, "yaw_blend_factor", 0.0))
+        yaw_blend_threshold = float(
+            getattr(robot.vehicle_cart_traj, "yaw_finish_threshold", 0.98)
+        ) if robot.vehicle_cart_traj is not None else 0.98
+
+        return {
+            "distance_m": distance_m,
+            "linear_speed_mps": linear_speed_mps,
+            "yaw_blend": yaw_blend,
+            "yaw_blend_threshold": yaw_blend_threshold,
+        }
+
+    def _has_robot_reached_vehicle_waypoint(
+        self,
+        robot: Robot,
+        goal_pose: Pose,
+        *,
+        position_tolerance_m: float,
+    ) -> tuple[bool, dict | None]:
+        metrics = self._robot_waypoint_tracking_metrics(robot, goal_pose)
+        if metrics is None:
+            return False, None
+
+        reached = (
+            metrics["distance_m"] <= float(position_tolerance_m)
+            and metrics["yaw_blend"] >= metrics["yaw_blend_threshold"]
+        )
+        return reached, metrics
+
+    def vehicle_waypoint_execution_callback(self) -> None:
+        for robot in self.robots:
+            mission = self.vehicle_waypoint_missions[robot.k_robot]
+            if not mission.executing:
+                continue
+            if robot.sim_reset_hold:
+                mission.stop()
+                continue
+
+            if mission.active_index is None:
+                self._dispatch_vehicle_waypoint_if_ready(robot, mission)
+                continue
+
+            goal_pose = mission.active_waypoint()
+            if goal_pose is None:
+                mission.stop()
+                continue
+
+            goal_reached_by_state, tracking_metrics = self._has_robot_reached_vehicle_waypoint(
+                robot,
+                goal_pose,
+                position_tolerance_m=mission.position_tolerance_m,
+            )
+
+            if robot.planner_action_client.busy:
+                continue
+
+            if robot.vehicle_cart_traj is not None and robot.vehicle_cart_traj.active and not goal_reached_by_state:
+                mission.mark_tracking()
+                continue
+
+            if goal_reached_by_state:
+                if robot.vehicle_cart_traj is not None:
+                    robot.vehicle_cart_traj.active = False
+                reached_index = mission.active_index
+                has_more = mission.advance()
+                self.node.get_logger().info(
+                    f"Reached vehicle waypoint {reached_index + 1}/{len(mission.waypoints)} for {robot.prefix}."
+                )
+                if has_more:
+                    self._dispatch_vehicle_waypoint_if_ready(robot, mission)
+                else:
+                    self.node.get_logger().info(f"Completed vehicle waypoint mission for {robot.prefix}.")
+            else:
+                mission.stop()
+                robot.abrupt_planner_stop()
+                if tracking_metrics is not None:
+                    self.node.get_logger().warn(
+                        f"Vehicle waypoint mission stopped for {robot.prefix}; "
+                        f"planner/trajectory ended before the waypoint was reached "
+                        f"(pos_err={tracking_metrics['distance_m']:.3f} m, "
+                        f"pos_tol={mission.position_tolerance_m:.3f} m, "
+                        f"speed={tracking_metrics['linear_speed_mps']:.3f} m/s, "
+                        f"yaw_blend={tracking_metrics['yaw_blend']:.3f}, "
+                        f"yaw_blend_threshold={tracking_metrics['yaw_blend_threshold']:.3f})."
+                    )
+                else:
+                    self.node.get_logger().warn(
+                        f"Vehicle waypoint mission stopped for {robot.prefix}; planner/trajectory ended before the waypoint was reached."
+                    )
+
+    def vehicle_waypoint_viz_callback(self) -> None:
+        if self.robot_selected is None:
+            return
+        stamp_now = self.node.get_clock().now().to_msg()
+        selected_robot = self.robot_selected
+        for robot in self.robots:
+            viz = self.vehicle_waypoint_viz[robot.k_robot]
+            if robot.k_robot != selected_robot.k_robot:
+                viz.clear(stamp_now, self.world_frame)
+                continue
+            mission = self.vehicle_waypoint_missions[robot.k_robot]
+            viz.update(
+                stamp=stamp_now,
+                frame_id=self.world_frame,
+                waypoints=mission.waypoints,
+                active_index=mission.active_display_index(),
+            )
 
     def solve_execute_inverse_kinematics_wrt_vehicle_frame(self, task_pose:Pose):
         msg = {'is_success':False,'result':None}

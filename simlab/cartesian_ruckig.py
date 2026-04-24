@@ -19,7 +19,7 @@
 
 # cartesian_ruckig.py
 
-from ruckig import Ruckig, InputParameter, OutputParameter, Result
+from ruckig import Ruckig, InputParameter, OutputParameter, Result, RuckigError
 import numpy as np
 from rclpy.node import Node
 
@@ -32,8 +32,9 @@ class VehicleCartesianRuckig:
         self.inp = InputParameter(dofs)
         self.out = OutputParameter(dofs, max_waypoints)
         self.active = False
-        self.yaw_finish_threshold = 0.98
-
+        self.yaw_finish_threshold = 0.95
+        self.last_result = None
+        self.last_yaw_blend_factor = 0.0
 
     def start_from_path(
         self,
@@ -74,16 +75,28 @@ class VehicleCartesianRuckig:
         self.inp.max_acceleration = max_acc.tolist()
         self.inp.max_jerk = max_jerk.tolist()
         self.active = True
+        self.last_result = None
+        self.last_yaw_blend_factor = 0.0
 
     def update(self, yaw_blend_factor):
         """Advance one control step along the current trajectory."""
         if not self.active:
             return None, None, None, Result.Error
 
-        res = self.otg.update(self.inp, self.out)
+        try:
+            res = self.otg.update(self.inp, self.out)
+        except RuckigError as exc:
+            self.rclpy_node.get_logger().error(
+                f"Ruckig update failed: {exc}"
+            )
+            self.active = False
+            self.last_result = Result.Error
+            return None, None, None, Result.Error
         pos = list(self.out.new_position)
         vel = list(self.out.new_velocity)
         acc = list(self.out.new_acceleration)
+        self.last_result = res
+        self.last_yaw_blend_factor = float(yaw_blend_factor)
 
         self.out.pass_to_input(self.inp)
 

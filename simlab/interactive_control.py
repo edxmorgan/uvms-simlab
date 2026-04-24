@@ -28,7 +28,7 @@ from interactive_markers.menu_handler import MenuHandler
 from simlab import interactive_utils as marker_util
 from geometry_msgs.msg import Pose
 import numpy as np
-from simlab.alpha_reach import Params as alpha
+from simlab.uvms_parameters import ReachParams
 from simlab.frame_utils import PoseX
 from simlab.robot import Robot, ControlSpace
 
@@ -44,8 +44,8 @@ class InteractiveControlsNode(Node):
 
         # Arm base pose wrt vehicle center
         self.arm_base_wrt_vehicle_center_Pose = PoseX.from_pose(
-                xyz=alpha.base_T0_new[0:3],
-                rot=alpha.base_T0_new[3:6],
+                xyz=ReachParams.base_T0_new[0:3],
+                rot=ReachParams.base_T0_new[3:6],
                 rot_rep="euler_xyz",
                 frame="NWU").get_pose_as_Pose_msg()
         
@@ -54,7 +54,7 @@ class InteractiveControlsNode(Node):
                                                               self.arm_base_wrt_vehicle_center_Pose,
                                                               self.vehicle_target_frame, self.arm_base_target_frame, 
                                                               self.world_frame,
-                                                              self.world_endeffector_target_frame, alpha)
+                                                              self.world_endeffector_target_frame, ReachParams)
         self.robot_metrics_overlay_pub = self.create_publisher(
             OverlayText,
             'robot_metrics_overlay_text',
@@ -69,6 +69,23 @@ class InteractiveControlsNode(Node):
 
         self.menu_handler = MenuHandler()
         self.execute_handle = self.menu_handler.insert("Plan & Execute", callback=self.plan_execute)
+        self.add_vehicle_waypoint_handle = self.menu_handler.insert(
+            "Add Vehicle Waypoint",
+            callback=self.add_vehicle_waypoint,
+        )
+        self.delete_vehicle_waypoint_parent_handle = self.menu_handler.insert(
+            "Delete Vehicle Waypoint",
+        )
+        self.delete_vehicle_waypoint_handles = []
+        self.delete_vehicle_waypoint_menu_map = {}
+        self.clear_vehicle_waypoints_handle = self.menu_handler.insert(
+            "Clear Vehicle Waypoints",
+            callback=self.clear_vehicle_waypoints,
+        )
+        self.stop_vehicle_waypoints_handle = self.menu_handler.insert(
+            "Stop Vehicle Waypoints",
+            callback=self.stop_vehicle_waypoints,
+        )
         self.reset_sim_handle = self.menu_handler.insert("Reset Simulation", callback=self.reset_simulation)
         self.release_sim_handle = self.menu_handler.insert("Release Simulation", callback=self.release_simulation)
 
@@ -208,9 +225,12 @@ class InteractiveControlsNode(Node):
         # Initial application of menu and markers
         self._apply_joint_control_mode(robot = self.uvms_backend.robot_selected)
         self._set_robot_submenus_visible(self.uvms_backend.robot_selected.k_robot)
+        self._refresh_vehicle_waypoint_delete_menu()
 
     def reset_simulation(self, feedback: InteractiveMarkerFeedback):
         robot = self.uvms_backend.robot_selected
+        self.uvms_backend.clear_vehicle_waypoints_for_robot(robot.k_robot)
+        self._refresh_vehicle_waypoint_delete_menu()
         robot.reset_simulation()
 
     def release_simulation(self, feedback: InteractiveMarkerFeedback):
@@ -220,7 +240,38 @@ class InteractiveControlsNode(Node):
         if self.uvms_backend.robot_selected.task_based_controller:
             self.uvms_backend.plan_task_trajectory()
             return
+        if self.uvms_backend.selected_vehicle_waypoint_mission().waypoints:
+            self.uvms_backend.execute_selected_vehicle_waypoints()
+            return
         self.uvms_backend.plan_vehicle_trajectory()
+
+    def add_vehicle_waypoint(self, feedback: InteractiveMarkerFeedback):
+        if self.uvms_backend.robot_selected.task_based_controller:
+            self.get_logger().warn("Vehicle waypoints are only available for vehicle path planning.")
+            return
+        self.uvms_backend.add_selected_vehicle_waypoint()
+        self._refresh_vehicle_waypoint_delete_menu()
+
+    def delete_vehicle_waypoint(self, feedback: InteractiveMarkerFeedback):
+        robot_k, waypoint_index = self.delete_vehicle_waypoint_menu_map.get(
+            feedback.menu_entry_id,
+            (None, None),
+        )
+        if robot_k is None or waypoint_index is None:
+            self.get_logger().warn(
+                f"No waypoint is associated with menu entry id {feedback.menu_entry_id}."
+            )
+            return
+        if not self.uvms_backend.remove_vehicle_waypoint_for_robot(robot_k, waypoint_index):
+            return
+        self._refresh_vehicle_waypoint_delete_menu()
+
+    def clear_vehicle_waypoints(self, feedback: InteractiveMarkerFeedback):
+        self.uvms_backend.clear_selected_vehicle_waypoints()
+        self._refresh_vehicle_waypoint_delete_menu()
+
+    def stop_vehicle_waypoints(self, feedback: InteractiveMarkerFeedback):
+        self.uvms_backend.stop_selected_vehicle_waypoints()
 
     def publish_robot_metrics_overlay_callback(self) -> None:
         text = self.uvms_backend.format_robot_metrics_overlay_text()
@@ -258,6 +309,26 @@ class InteractiveControlsNode(Node):
         self.menu_handler.reApply(self.server)
         self.server.applyChanges()
 
+    def _refresh_vehicle_waypoint_delete_menu(self) -> None:
+        for handle in self.delete_vehicle_waypoint_handles:
+            self.menu_handler.setVisible(handle, False)
+        self.delete_vehicle_waypoint_handles = []
+        self.delete_vehicle_waypoint_menu_map = {}
+
+        mission = self.uvms_backend.selected_vehicle_waypoint_mission()
+        robot = self.uvms_backend.robot_selected
+        for idx, pose in enumerate(mission.waypoints):
+            handle = self.menu_handler.insert(
+                f"Waypoint {idx + 1} [{pose.position.x:.2f}, {pose.position.y:.2f}, {pose.position.z:.2f}]",
+                parent=self.delete_vehicle_waypoint_parent_handle,
+                callback=self.delete_vehicle_waypoint,
+            )
+            self.delete_vehicle_waypoint_handles.append(handle)
+            self.delete_vehicle_waypoint_menu_map[handle] = (robot.k_robot, idx)
+
+        self.menu_handler.reApply(self.server)
+        self.server.applyChanges()
+
 
     # switch to robot i
     def switch_robot_in_use(self, feedback: InteractiveMarkerFeedback):
@@ -287,6 +358,7 @@ class InteractiveControlsNode(Node):
     def configure_selected_robot(self, selected_robot: Robot):
         self.uvms_backend.set_robot_selected(selected_robot.k_robot)
         self._set_robot_submenus_visible(selected_robot.k_robot)
+        self._refresh_vehicle_waypoint_delete_menu()
 
         self.get_logger().info(f"""Switched to another robot is task based 
                                {selected_robot.task_based_controller} for robot {selected_robot.prefix}.""")

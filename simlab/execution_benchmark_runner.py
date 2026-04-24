@@ -10,8 +10,8 @@ import rclpy
 from geometry_msgs.msg import Pose
 from rclpy.node import Node
 
-from simlab.alpha_reach import Params as alpha
 from simlab.frame_utils import PoseX
+from simlab.uvms_parameters import ReachParams
 from simlab.uvms_backend import UVMSBackendCore
 
 
@@ -84,8 +84,8 @@ class ExecutionBenchmarkRunner(Node):
         self.arm_base_target_frame = "arm_base_marker_frame"
         self.world_endeffector_target_frame = "world_endeffector_marker_frame"
         arm_base_pose = PoseX.from_pose(
-            xyz=alpha.base_T0_new[0:3],
-            rot=alpha.base_T0_new[3:6],
+            xyz=ReachParams.base_T0_new[0:3],
+            rot=ReachParams.base_T0_new[3:6],
             rot_rep="euler_xyz",
             frame="NWU",
         ).get_pose_as_Pose_msg()
@@ -98,7 +98,7 @@ class ExecutionBenchmarkRunner(Node):
             self.arm_base_target_frame,
             self.world_frame,
             self.world_endeffector_target_frame,
-            alpha,
+            ReachParams,
         )
         self.uvms_backend.fcl_world.set_robot_collision_radius(self.robot_collision_radius)
         self.robot = self.uvms_backend.robot_selected

@@ -24,7 +24,7 @@ setup(
             glob('resource/whole_body/*')
         ),
         ('lib/' + package_name, [package_name+'/robot.py']),
-        ('lib/' + package_name, [package_name+'/alpha_reach.py']),
+        ('lib/' + package_name, [package_name+'/uvms_parameters.py']),
         ('lib/' + package_name, [package_name+'/controller_msg.py']),
         ('lib/' + package_name, [package_name+'/mesh_utils.py']),
         ('lib/' + package_name, [package_name+'/se3_ompl_planner.py']),

@@ -39,7 +39,7 @@ from simlab.controllers import DEFAULT_CONTROLLER_CLASSES
 from simlab.planner_markers import PathPlanner
 from simlab.cartesian_ruckig import VehicleCartesianRuckig
 from ruckig import Result
-from simlab.alpha_reach import Params as alpha_params 
+from simlab.uvms_parameters import ReachParams
 from simlab.frame_utils import PoseX
 from tf2_ros import TransformException, Buffer
 from tf2_geometry_msgs import do_transform_pose, do_transform_vector3
@@ -361,7 +361,7 @@ class Manipulator(Base):
         self.joints = [self.alpha_axis_e, self.alpha_axis_d, self.alpha_axis_c, self.alpha_axis_b]
         self.grasper = [self.alpha_axis_a]
 
-        self.q_command = alpha_params.joint_home.tolist()
+        self.q_command = ReachParams.joint_home.tolist()
         self.dq_command = np.zeros((4,)).tolist()
         self.ddq_command = np.zeros((4,)).tolist()
 
@@ -371,10 +371,10 @@ class Manipulator(Base):
         self.close_grasper()
 
     def open_grasper(self):
-        self.grasp_command = alpha_params.grasper_open
+        self.grasp_command = ReachParams.grasper_open
 
     def close_grasper(self):
-        self.grasp_command = alpha_params.grasper_close
+        self.grasp_command = ReachParams.grasper_close
 
     def update_state(self, msg: DynamicJointState):
         self.q = self.get_interface_value(
@@ -1623,8 +1623,8 @@ class Robot(Base):
             w_axis,
             w_align, k_align,
             dt,
-            np.asarray(alpha_params.base_T0_new, dtype=float),
-            np.asarray(alpha_params.tipOffset, dtype=float),
+            np.asarray(ReachParams.base_T0_new, dtype=float),
+            np.asarray(ReachParams.tipOffset, dtype=float),
         )
 
         def _to_1d(arr):
@@ -1694,6 +1694,9 @@ class Robot(Base):
         self.final_goal_map_ned_6 = None
         if self.planner is not None:
             self.planner.planned_result = None
+            stamp_now = self.node.get_clock().now().to_msg()
+            self.planner.clear_path(stamp_now, self.world_frame)
+            self.planner.clear_target(stamp_now, self.world_frame)
         if self.vehicle_cart_traj is not None:
             self.vehicle_cart_traj.active = False
         self._zero_planner_commands()
@@ -1743,7 +1746,7 @@ class Robot(Base):
         self.pose_command = [0.0] * 6
         self.body_vel_command = [0.0] * 6
         self.body_acc_command = [0.0] * 6
-        self.arm.q_command = alpha_params.joint_home.tolist()
+        self.arm.q_command = ReachParams.joint_home.tolist()
         self.arm.dq_command = np.zeros((4,), dtype=float).tolist()
         self.arm.ddq_command = np.zeros((4,), dtype=float).tolist()
         self.arm.close_grasper()
