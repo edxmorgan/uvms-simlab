@@ -6,15 +6,15 @@ import numpy as np
 from rclpy.node import Node
 
 from simlab.controllers.base import ControllerTemplate
-from simlab.uvms_parameters import ReachParams, VehicleControllerParams
+from simlab.uvms_parameters import select_robot_params
 
 
 class LowLevelPidController(ControllerTemplate):
     name = "PID"
     registry_name = "PID"
 
-    def __init__(self, node: Node, arm_dof: int = 4):
-        super().__init__(node, arm_dof)
+    def __init__(self, node: Node, arm_dof: int = 4, robot_prefix: str = ""):
+        super().__init__(node, arm_dof, robot_prefix)
         package_share_directory = ament_index_python.get_package_share_directory("simlab")
 
         uv_pid_controller_path = os.path.join(
@@ -22,12 +22,13 @@ class LowLevelPidController(ControllerTemplate):
             "vehicle/uv_reg_pid_controller.casadi",
         )
         self.uv_pid_controller = ca.Function.load(uv_pid_controller_path)
+        self.arm_params, self.vehicle_params = select_robot_params(self.robot_prefix)
         self.vehicle_pid_i_buffer = np.zeros(6, dtype=float)
-        self.vehicle_i_limit = VehicleControllerParams.i_limit.copy()
-        self.vehicle_model_params = VehicleControllerParams.model_params.copy()
-        self.kp = VehicleControllerParams.pid_kp.copy()
-        self.ki = VehicleControllerParams.pid_ki.copy()
-        self.kd = VehicleControllerParams.pid_kd.copy()
+        self.vehicle_i_limit = self.vehicle_params.i_limit
+        self.vehicle_model_params = self.vehicle_params.model_params
+        self.kp = self.vehicle_params.pid_kp
+        self.ki = self.vehicle_params.pid_ki
+        self.kd = self.vehicle_params.pid_kd
 
         arm_pid_controller_path = os.path.join(
             package_share_directory,
@@ -36,26 +37,34 @@ class LowLevelPidController(ControllerTemplate):
         self.arm_pid_controller = ca.Function.load(arm_pid_controller_path)
         self.arm_pid_i_buffer = np.zeros(self.arm_dof + 1, dtype=float)
         self.arm_kp = self.arm_vector(
-            list(ReachParams.pid_kp) + list(ReachParams.grasper_kp),
+            list(self.arm_params.pid_kp) + list(self.arm_params.grasper_kp),
             "arm_kp",
         )
         self.arm_ki = self.arm_vector(
-            list(ReachParams.pid_ki) + list(ReachParams.grasper_ki),
+            list(self.arm_params.pid_ki) + list(self.arm_params.grasper_ki),
             "arm_ki",
         )
         self.arm_kd = self.arm_vector(
-            list(ReachParams.pid_kd) + list(ReachParams.grasper_kd),
+            list(self.arm_params.pid_kd) + list(self.arm_params.grasper_kd),
             "arm_kd",
         )
         self.arm_u_max = self.arm_vector(
-            list(ReachParams.u_max) + list(ReachParams.grasper_u_max),
+            list(self.arm_params.u_max) + list(self.arm_params.grasper_u_max),
             "arm_u_max",
         )
         self.arm_u_min = self.arm_vector(
-            list(ReachParams.u_min) + list(ReachParams.grasper_u_min),
+            list(self.arm_params.u_min) + list(self.arm_params.grasper_u_min),
             "arm_u_min",
         )
-        self.arm_model_params = ReachParams.sim_p
+        self.arm_model_params = self.arm_params.sim_p
+        self.node.get_logger().info(
+            f"PID params for {self.robot_prefix or 'default'}: "
+            f"arm_profile={self.arm_params.profile_name}, "
+            f"vehicle_profile={self.vehicle_params.profile_name}, "
+            f"arm_kp={self.arm_params.pid_kp.tolist()}, "
+            f"arm_ki={self.arm_params.pid_ki.tolist()}, "
+            f"arm_kd={self.arm_params.pid_kd.tolist()}"
+        )
 
     def reset_controller_state(self) -> None:
         self.vehicle_pid_i_buffer = np.zeros(6, dtype=float)

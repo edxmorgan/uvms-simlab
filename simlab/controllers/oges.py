@@ -2,7 +2,7 @@ import numpy as np
 from rclpy.node import Node
 
 from simlab.controllers.base import ControllerTemplate
-from simlab.uvms_parameters import ReachParams
+from simlab.uvms_parameters import select_robot_params
 
 try:
     from namor import OGES, build_weight_vector
@@ -27,8 +27,8 @@ class OgesModelbasedController(ControllerTemplate):
     name = "OGES"
     registry_name = "Ours"
 
-    def __init__(self, node: Node, arm_dof: int = 4):
-        super().__init__(node, arm_dof)
+    def __init__(self, node: Node, arm_dof: int = 4, robot_prefix: str = ""):
+        super().__init__(node, arm_dof, robot_prefix)
         if NAMOR_IMPORT_ERROR is not None:
             raise ImportError(
                 "OgesModelbasedController requires the optional 'namor' dependency."
@@ -72,6 +72,7 @@ class OgesModelbasedController(ControllerTemplate):
 
         self.blue = load_blue_rov_params()
         self.alpha_params = load_alpha_reach_params()
+        self.arm_params, self.vehicle_params = select_robot_params(self.robot_prefix)
 
         self.M_uv_matrix = load_uv_model_function("M_id.casadi")
         self.C_uv_mat = load_uv_model_function("C_id.casadi")
@@ -87,15 +88,15 @@ class OgesModelbasedController(ControllerTemplate):
         self.vehicle_u_prev = np.zeros(6, dtype=float)
         self.arm_u_prev = np.zeros(self.arm_dof, dtype=float)
         self.arm_u_min = self.arm_vector(
-            list(ReachParams.u_min) + list(ReachParams.grasper_u_min),
+            list(self.arm_params.u_min) + list(self.arm_params.grasper_u_min),
             "arm_u_min",
         )
         self.arm_u_max = self.arm_vector(
-            list(ReachParams.u_max) + list(ReachParams.grasper_u_max),
+            list(self.arm_params.u_max) + list(self.arm_params.grasper_u_max),
             "arm_u_max",
         )
-        self.grasper_kp = float(ReachParams.grasper_kp[0])
-        self.grasper_kd = float(ReachParams.grasper_kd[0])
+        self.grasper_kp = float(self.arm_params.grasper_kp[0])
+        self.grasper_kd = float(self.arm_params.grasper_kd[0])
         self.vehicle_w_scale = 0.1
         self.arm_w_scale = 1.0
         self.vehicle_lowpass_tau = np.full(6, 0.0)

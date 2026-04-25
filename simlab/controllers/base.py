@@ -10,9 +10,10 @@ class ControllerTemplate(ABC):
     name: str = ""
     registry_name: str = ""
 
-    def __init__(self, node: Node, arm_dof: int = 4):
+    def __init__(self, node: Node, arm_dof: int = 4, robot_prefix: str = ""):
         self.node = node
         self.arm_dof = int(arm_dof)
+        self.robot_prefix = str(robot_prefix)
 
     @staticmethod
     def vector(values, expected_size: int, label: str) -> np.ndarray:

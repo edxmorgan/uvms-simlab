@@ -478,7 +478,8 @@ class InteractiveControlsNode(Node):
         robot: Robot
         robot, controller_name = self.controller_menu_map.get(feedback.menu_entry_id)
 
-        robot.set_controller(controller_name)
+        if not robot.set_controller(controller_name):
+            return
 
         # update checkmarks
         r_i: Robot
@@ -545,6 +546,10 @@ class InteractiveControlsNode(Node):
         self.menu_handler.apply(self.server, feedback.marker_name)
         self.server.applyChanges()
         self.get_logger().info(f"Selected CmdReplay profile '{profile_name}' for {robot.prefix}.")
+        if robot.controller_name != "CmdReplay":
+            self.get_logger().info(
+                f"Choose the CmdReplay controller for {robot.prefix} before starting playback."
+            )
 
     def reset_csv_playback(self, feedback: InteractiveMarkerFeedback):
         robot, _ = self.csv_playback_menu_map.get(feedback.menu_entry_id)
@@ -552,12 +557,26 @@ class InteractiveControlsNode(Node):
         if controller is None:
             return
         if robot.controller_name != "CmdReplay":
-            robot.set_controller("CmdReplay")
-        else:
-            robot.set_control_mode(ControlMode.REPLAY)
+            self.get_logger().warn(
+                f"CmdReplay reset rejected for {robot.prefix}: choose the CmdReplay controller before playback."
+            )
+            return
+        if hasattr(controller, "has_valid_playback") and not controller.has_valid_playback():
+            controller.stop_playback()
+            robot.set_control_mode(ControlMode.TELEOP)
+            robot.publish_commands([0.0] * 6, [0.0] * 5)
+            self.get_logger().warn(
+                f"CmdReplay reset rejected for {robot.prefix}: "
+                f"profile '{getattr(controller, 'profile_name', '')}' has no valid command samples."
+            )
+            return
+        robot.set_control_mode(ControlMode.REPLAY)
         robot.publish_commands([0.0] * 6, [0.0] * 5)
         request = controller.build_reset_request()
-        controller.begin_sequence(request.hold_commands)
+        if not controller.begin_sequence(request.hold_commands):
+            robot.set_control_mode(ControlMode.TELEOP)
+            robot.publish_commands([0.0] * 6, [0.0] * 5)
+            return
 
         if hasattr(controller, "reset_mode") and controller.reset_mode() == "controller_settle":
             def _start_settle_after_dynamics():

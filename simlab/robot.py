@@ -525,7 +525,7 @@ class Robot(Base):
         self.body_vel_command = [0.0]*6
         self.body_acc_command = [0.0]*6
         self.controller_instances = [
-            controller_class(self.node, self.n_joint)
+            controller_class(self.node, self.n_joint, self.prefix)
             for controller_class in DEFAULT_CONTROLLER_CLASSES
         ]
         self.planner_action_client = PlannerActionClient(
@@ -681,11 +681,23 @@ class Robot(Base):
             arm_fn=arm_fn,
         )
 
-    def set_controller(self, name: str) -> None:
+    def set_controller(self, name: str) -> bool:
         previous_controller = self.active_controller_instance()
         if self.control_mode == ControlMode.REPLAY_SETTLE and name != "CmdReplay":
             self.cancel_replay_settle(mark_failed=True)
         spec = self._controllers[name]  # raises KeyError if missing, good fail-fast
+        next_controller = getattr(spec.arm_fn, "__self__", None)
+        if (
+            name == "CmdReplay"
+            and next_controller is not None
+            and hasattr(next_controller, "has_valid_playback")
+            and not next_controller.has_valid_playback()
+        ):
+            self.node.get_logger().warn(
+                f"Controller switch to CmdReplay rejected for {self.prefix}; "
+                f"profile '{getattr(next_controller, 'profile_name', '')}' has no valid command samples."
+            )
+            return False
         self.vehicle_controller_fn = spec.vehicle_fn
         self.arm_controller_fn = spec.arm_fn
         self.controller_name = name
@@ -696,6 +708,7 @@ class Robot(Base):
                 previous_controller.stop_playback()
             self.set_control_mode(ControlMode.PLANNER)
         self.node.get_logger().info(f"Controller set to {name} for {self.prefix}")
+        return True
 
     def active_controller_instance(self):
         return getattr(self.arm_controller_fn, "__self__", None)
@@ -752,7 +765,10 @@ class Robot(Base):
         self.body_vel_command = [0.0] * 6
         self.body_acc_command = [0.0] * 6
         self.node.get_logger().info(
-            f"Replay controller settle started for {self.prefix} using {settle_controller_name}."
+            f"Replay controller settle started for {self.prefix} using {settle_controller_name}; "
+            f"arm_pos_tol={self._replay_settle_config['position_tolerance']:.3f}, "
+            f"arm_vel_tol={self._replay_settle_config['velocity_tolerance']:.3f}, "
+            f"timeout={self._replay_settle_config['timeout_sec']:.1f}s."
         )
 
     def _clear_replay_settle(self) -> None:
