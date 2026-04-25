@@ -235,20 +235,25 @@ class UVMSBackendCore:
 
     def clear_selected_vehicle_waypoints(self) -> None:
         mission = self.selected_vehicle_waypoint_mission()
-        was_executing = mission.executing
         mission.clear()
-        if was_executing:
-            self.robot_selected.abrupt_planner_stop()
+        self.robot_selected.abrupt_planner_stop()
+        self._clear_vehicle_waypoint_viz(self.robot_selected)
         self.node.get_logger().info(f"Cleared vehicle waypoints for {self.robot_selected.prefix}.")
 
     def clear_vehicle_waypoints_for_robot(self, robot_k: int) -> None:
         robot = self.robots[robot_k]
         mission = self.vehicle_waypoint_missions[robot_k]
-        was_executing = mission.executing
         mission.clear()
-        if was_executing:
-            robot.abrupt_planner_stop()
+        robot.abrupt_planner_stop()
+        self._clear_vehicle_waypoint_viz(robot)
         self.node.get_logger().info(f"Cleared vehicle waypoints for {robot.prefix}.")
+
+    def _clear_vehicle_waypoint_viz(self, robot: Robot) -> None:
+        stamp_now = self.node.get_clock().now().to_msg()
+        self.vehicle_waypoint_viz[robot.k_robot].clear(stamp_now, self.world_frame)
+        if robot.planner is not None:
+            robot.planner.clear_path(stamp_now, robot.world_frame)
+            robot.planner.clear_target(stamp_now, robot.world_frame)
 
     def stop_selected_vehicle_waypoints(self) -> None:
         mission = self.selected_vehicle_waypoint_mission()
@@ -261,6 +266,11 @@ class UVMSBackendCore:
 
     def execute_selected_vehicle_waypoints(self) -> bool:
         robot = self.robot_selected
+        if robot.control_mode in (ControlMode.REPLAY, ControlMode.REPLAY_SETTLE):
+            self.node.get_logger().warn(
+                f"Vehicle waypoint mission ignored for {robot.prefix}; CmdReplay is active."
+            )
+            return False
         if robot.task_based_controller:
             self.node.get_logger().warn("Vehicle waypoint missions are available only in joint-space vehicle planning mode.")
             return False
@@ -279,6 +289,7 @@ class UVMSBackendCore:
         self.node.get_logger().info(
             f"Executing {len(mission.waypoints)} vehicle waypoints for {robot.prefix}."
         )
+        robot.set_control_mode(ControlMode.PLANNER)
         robot.abrupt_planner_stop()
         return self._dispatch_vehicle_waypoint_if_ready(robot, mission)
 
@@ -421,6 +432,13 @@ class UVMSBackendCore:
         )
 
     def plan_vehicle_trajectory(self):
+        if self.robot_selected.control_mode in (ControlMode.REPLAY, ControlMode.REPLAY_SETTLE):
+            self.robot_selected.abrupt_planner_stop()
+            self.node.get_logger().warn(
+                f"Planner request ignored for {self.robot_selected.prefix}; CmdReplay is active."
+            )
+            return False
+        self.robot_selected.set_control_mode(ControlMode.PLANNER)
         goal_pose = self.target_vehicle_pose
         return self.robot_selected.plan_vehicle_trajectory_action(
             goal_pose=goal_pose,
@@ -434,6 +452,13 @@ class UVMSBackendCore:
         mission: VehicleWaypointMission,
     ) -> bool:
         if not mission.executing:
+            return False
+        if robot.control_mode in (ControlMode.REPLAY, ControlMode.REPLAY_SETTLE):
+            mission.stop()
+            robot.abrupt_planner_stop()
+            self.node.get_logger().info(
+                f"Waypoint dispatch stopped for {robot.prefix}; CmdReplay is active."
+            )
             return False
         if mission.active_index is not None:
             self.node.get_logger().debug(
@@ -468,6 +493,7 @@ class UVMSBackendCore:
             )
             return False
 
+        robot.set_control_mode(ControlMode.PLANNER)
         sent = robot.plan_vehicle_trajectory_action(
             goal_pose=goal_pose,
             time_limit=1.0,
@@ -532,6 +558,13 @@ class UVMSBackendCore:
         for robot in self.robots:
             mission = self.vehicle_waypoint_missions[robot.k_robot]
             if not mission.executing:
+                continue
+            if robot.control_mode in (ControlMode.REPLAY, ControlMode.REPLAY_SETTLE):
+                mission.stop()
+                robot.abrupt_planner_stop()
+                self.node.get_logger().info(
+                    f"Stopped vehicle waypoint mission for {robot.prefix}; CmdReplay is active."
+                )
                 continue
             if robot.sim_reset_hold:
                 mission.stop()

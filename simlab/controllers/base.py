@@ -24,6 +24,10 @@ class ControllerTemplate(ABC):
     def arm_vector(self, values, label: str) -> np.ndarray:
         return self.vector(values, self.arm_dof + 1, label)
 
+    def reset_controller_state(self) -> None:
+        """Clear controller memory before a new independent control segment."""
+        return
+
     @abstractmethod
     def vehicle_controller(
         self,

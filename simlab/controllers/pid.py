@@ -57,6 +57,9 @@ class LowLevelPidController(ControllerTemplate):
         )
         self.arm_model_params = ReachParams.sim_p
 
+    def reset_controller_state(self) -> None:
+        self.vehicle_pid_i_buffer = np.zeros(6, dtype=float)
+        self.arm_pid_i_buffer = np.zeros(self.arm_dof + 1, dtype=float)
 
     def vehicle_controller(
         self,

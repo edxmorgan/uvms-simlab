@@ -30,7 +30,7 @@ from geometry_msgs.msg import Pose
 import numpy as np
 from simlab.uvms_parameters import ReachParams
 from simlab.frame_utils import PoseX
-from simlab.robot import Robot, ControlSpace
+from simlab.robot import Robot, ControlMode, ControlSpace
 
 class InteractiveControlsNode(Node):
     def __init__(self):
@@ -75,6 +75,7 @@ class InteractiveControlsNode(Node):
         )
         self.delete_vehicle_waypoint_parent_handle = self.menu_handler.insert(
             "Delete Vehicle Waypoint",
+            callback=self.noop_menu_callback,
         )
         self.delete_vehicle_waypoint_handles = []
         self.delete_vehicle_waypoint_menu_map = {}
@@ -94,8 +95,10 @@ class InteractiveControlsNode(Node):
         self.grasp_menu_map = {}
         self.controller_menu_map = {}
         self.planner_menu_map = {}
+        self.csv_playback_menu_map = {}
+        self.csv_profile_menu_map = {}
         self.robot_menu_parents = {}  # k_robot -> dict of submenu parent handles
-        robot_select_menu_handle = self.menu_handler.insert("Robots")
+        robot_select_menu_handle = self.menu_handler.insert("Robots", callback=self.noop_menu_callback)
 
         for robot in self.uvms_backend.robots:
             robot_handle = self.menu_handler.insert(
@@ -109,7 +112,7 @@ class InteractiveControlsNode(Node):
                                              MenuHandler.CHECKED if self.uvms_backend.robot_selected.k_robot == robot.k_robot else MenuHandler.UNCHECKED)
 
             # control space submenu per robot
-            cs_parent = self.menu_handler.insert("Control Space")
+            cs_parent = self.menu_handler.insert("Control Space", callback=self.noop_menu_callback)
             for cs_name in robot.list_control_spaces():
                 mid = self.menu_handler.insert(
                     cs_name,
@@ -119,7 +122,7 @@ class InteractiveControlsNode(Node):
                 self.control_space_menu_map[mid] = (robot, cs_name)
                 self.menu_handler.setCheckState(mid, MenuHandler.CHECKED if robot.control_space == cs_name else MenuHandler.UNCHECKED)
                 
-            controller_parent = self.menu_handler.insert('Controller')
+            controller_parent = self.menu_handler.insert('Controller', callback=self.noop_menu_callback)
 
             for controller_name in robot.list_controllers():
                 controller_handle = self.menu_handler.insert(
@@ -131,7 +134,7 @@ class InteractiveControlsNode(Node):
                 self.menu_handler.setCheckState(controller_handle,
                                                  MenuHandler.CHECKED if robot.controller_name == controller_name else MenuHandler.UNCHECKED)
                 
-            path_planner_parent = self.menu_handler.insert('Path Planner')
+            path_planner_parent = self.menu_handler.insert('Path Planner', callback=self.noop_menu_callback)
             for path_planner_name in robot.list_planners():
                 path_planner_handle = self.menu_handler.insert(
                     f"{path_planner_name}",
@@ -141,8 +144,42 @@ class InteractiveControlsNode(Node):
                 self.planner_menu_map[path_planner_handle] = (robot, path_planner_name)
                 self.menu_handler.setCheckState(path_planner_handle,
                                                  MenuHandler.CHECKED if robot.planner_name == path_planner_name else MenuHandler.UNCHECKED)
+
+            csv_playback_parent = self.menu_handler.insert("Cmd Replay", callback=self.noop_menu_callback)
+            csv_profiles_parent = self.menu_handler.insert(
+                "Profiles",
+                parent=csv_playback_parent,
+                callback=self.noop_menu_callback,
+            )
+            cmd_replay_controller = robot.controller_instance("CmdReplay")
+            if cmd_replay_controller is not None and hasattr(cmd_replay_controller, "list_profiles"):
+                for profile_name in cmd_replay_controller.list_profiles():
+                    profile_handle = self.menu_handler.insert(
+                        profile_name,
+                        parent=csv_profiles_parent,
+                        callback=self.switch_csv_playback_profile,
+                    )
+                    self.csv_profile_menu_map[profile_handle] = (robot, profile_name)
+                    self.menu_handler.setCheckState(
+                        profile_handle,
+                        MenuHandler.CHECKED
+                        if getattr(cmd_replay_controller, "profile_name", None) == profile_name
+                        else MenuHandler.UNCHECKED,
+                    )
+            csv_reset_handle = self.menu_handler.insert(
+                "Reset Robot + Playback",
+                parent=csv_playback_parent,
+                callback=self.reset_csv_playback,
+            )
+            csv_stop_handle = self.menu_handler.insert(
+                "Stop",
+                parent=csv_playback_parent,
+                callback=self.stop_csv_playback,
+            )
+            self.csv_playback_menu_map[csv_reset_handle] = (robot, "reset")
+            self.csv_playback_menu_map[csv_stop_handle] = (robot, "stop")
                 
-            ik_settings_parent = self.menu_handler.insert("IK Settings")
+            ik_settings_parent = self.menu_handler.insert("IK Settings", callback=self.noop_menu_callback)
             x_axis_align_target_task_space_handle = self.menu_handler.insert(
                 'x-axis align',
                 parent=ik_settings_parent,
@@ -177,7 +214,7 @@ class InteractiveControlsNode(Node):
             self.menu_handler.setCheckState(align_tool_axis_handle, MenuHandler.CHECKED)
             robot.ik_base_align_w = 1
 
-            grasper_parent = self.menu_handler.insert('Grasper')
+            grasper_parent = self.menu_handler.insert('Grasper', callback=self.noop_menu_callback)
             self.open_grasper_handle = self.menu_handler.insert('Open', parent=grasper_parent, callback=self.grasper_callback)
             self.close_grasper_handle = self.menu_handler.insert('Close', parent=grasper_parent, callback=self.grasper_callback)
             self.grasp_menu_map[self.open_grasper_handle] = (robot, 'open')
@@ -192,6 +229,7 @@ class InteractiveControlsNode(Node):
                 "ik": ik_settings_parent,
                 "grasper": grasper_parent,
                 "planner": path_planner_parent,
+                "csv": csv_playback_parent,
             }
            
 
@@ -329,6 +367,8 @@ class InteractiveControlsNode(Node):
         self.menu_handler.reApply(self.server)
         self.server.applyChanges()
 
+    def noop_menu_callback(self, feedback: InteractiveMarkerFeedback):
+        return
 
     # switch to robot i
     def switch_robot_in_use(self, feedback: InteractiveMarkerFeedback):
@@ -464,6 +504,94 @@ class InteractiveControlsNode(Node):
                                             MenuHandler.CHECKED if feedback.menu_entry_id == mid else MenuHandler.UNCHECKED)
         self.menu_handler.apply(self.server, feedback.marker_name)
         self.server.applyChanges()
+
+    def _csv_playback_controller(self, robot: Robot):
+        controller = robot.controller_instance("CmdReplay")
+        if controller is None or not hasattr(controller, "start_playback"):
+            self.get_logger().warn(
+                f"{robot.prefix} has no CmdReplay controller."
+            )
+            return None
+        return controller
+
+    def stop_csv_playback(self, feedback: InteractiveMarkerFeedback):
+        robot, _ = self.csv_playback_menu_map.get(feedback.menu_entry_id)
+        controller = self._csv_playback_controller(robot)
+        if controller is None:
+            return
+        if hasattr(robot, "cancel_replay_settle"):
+            robot.cancel_replay_settle(mark_failed=False)
+        controller.stop_playback()
+        robot.set_control_mode(ControlMode.TELEOP)
+        robot.publish_commands([0.0] * 6, [0.0] * 5)
+        self.get_logger().info(f"Stopped CSV playback for {robot.prefix}.")
+
+    def switch_csv_playback_profile(self, feedback: InteractiveMarkerFeedback):
+        robot, profile_name = self.csv_profile_menu_map.get(feedback.menu_entry_id)
+        controller = robot.controller_instance("CmdReplay")
+        if controller is None or not hasattr(controller, "load_profile"):
+            self.get_logger().warn(f"{robot.prefix} has no CmdReplay controller.")
+            return
+        if not controller.load_profile(profile_name):
+            return
+
+        for mid, (r_i, candidate_profile) in self.csv_profile_menu_map.items():
+            if r_i.k_robot != robot.k_robot:
+                continue
+            self.menu_handler.setCheckState(
+                mid,
+                MenuHandler.CHECKED if candidate_profile == profile_name else MenuHandler.UNCHECKED,
+            )
+        self.menu_handler.apply(self.server, feedback.marker_name)
+        self.server.applyChanges()
+        self.get_logger().info(f"Selected CmdReplay profile '{profile_name}' for {robot.prefix}.")
+
+    def reset_csv_playback(self, feedback: InteractiveMarkerFeedback):
+        robot, _ = self.csv_playback_menu_map.get(feedback.menu_entry_id)
+        controller = self._csv_playback_controller(robot)
+        if controller is None:
+            return
+        if robot.controller_name != "CmdReplay":
+            robot.set_controller("CmdReplay")
+        else:
+            robot.set_control_mode(ControlMode.REPLAY)
+        robot.publish_commands([0.0] * 6, [0.0] * 5)
+        request = controller.build_reset_request()
+        controller.begin_sequence(request.hold_commands)
+
+        if hasattr(controller, "reset_mode") and controller.reset_mode() == "controller_settle":
+            def _start_settle_after_dynamics():
+                robot.start_replay_controller_settle(controller)
+                self.get_logger().info(
+                    f"CmdReplay controller-settle reset requested for {robot.prefix}; playback starts after settle."
+                )
+
+            robot.apply_sim_dynamics_from_reset_request(
+                request,
+                on_success=_start_settle_after_dynamics,
+                on_failure=controller.mark_reset_failed,
+            )
+            return
+
+        def _start_after_reset():
+            robot.set_control_mode(ControlMode.REPLAY)
+            controller.mark_reset_succeeded()
+            self.get_logger().info(f"CmdReplay armed for {robot.prefix}; playback starts on the next eligible control tick.")
+
+        robot.reset_simulation_with_state(
+            request,
+            on_success=_start_after_reset,
+            on_failure=controller.mark_reset_failed,
+        )
+        next_step = (
+            "Playback will auto-start after reset succeeds."
+            if not request.hold_commands
+            else "Use Release Simulation; playback will start from the next control tick."
+        )
+        self.get_logger().info(
+            f"Reset CmdReplay timer and requested config-conditioned simulation reset for {robot.prefix}. "
+            f"{next_step}"
+        )
 
     def grasper_callback(self, feedback: InteractiveMarkerFeedback):
         robot: Robot

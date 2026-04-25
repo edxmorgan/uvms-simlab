@@ -39,9 +39,14 @@ class ReachParams:
     u_min = np.array([-1.5, -1.0, -1.0, -0.54])
     u_max = np.array([1.5, 1.0, 1.0, 0.54])
 
-    pid_kp = np.array([2.0, 3.0, 1.0, 3.0])
+    pid_kp = np.array([10.0, 10.0, 10.0, 3.0])
     pid_ki = np.array([0.0, 0.0, 0.0, 0.0])
-    pid_kd = np.array([0.0, 0.0, 0.0, 0.0])
+    pid_kd = np.array([1.0, 1.0, 1.0, 0.0])
+
+    # real robot pid gains
+    # pid_kp = np.array([2.0, 3.0, 1.0, 3.0])
+    # pid_ki = np.array([0.0, 0.0, 0.0, 0.0])
+    # pid_kd = np.array([0.0, 0.0, 0.0, 0.0])
 
     invdyn_kp = np.array([40.0, 40.0, 40.0, 750.0])
     invdyn_ki = np.array([0.0, 0.0, 0.0, 0.0])

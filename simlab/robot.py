@@ -27,6 +27,7 @@ from geometry_msgs.msg import PoseStamped, Pose, TwistStamped, AccelStamped
 from rclpy.qos import QoSProfile, QoSHistoryPolicy
 import copy
 from std_msgs.msg import Float32
+from ros2_control_blue_reach_5.srv import ResetSimUvms, SetSimDynamics
 from std_srvs.srv import Trigger
 from pyPS4Controller.controller import Controller
 import threading
@@ -62,6 +63,8 @@ class ControlSpace(str, Enum):
 class ControlMode(str, Enum):
     TELEOP = "teleop"
     PLANNER = "planner"
+    REPLAY = "replay"
+    REPLAY_SETTLE = "replay_settle"
 
 @dataclass
 class ControllerSpec:
@@ -558,8 +561,12 @@ class Robot(Base):
             qos_profile
         )
         self.reset_sim_uvms_client = self.node.create_client(
-            Trigger,
+            ResetSimUvms,
             f"/{self.prefix}reset_sim_uvms",
+        )
+        self.set_sim_dynamics_client = self.node.create_client(
+            SetSimDynamics,
+            f"/{self.prefix}set_sim_dynamics",
         )
         self.release_sim_uvms_client = self.node.create_client(
             Trigger,
@@ -567,6 +574,12 @@ class Robot(Base):
         )
 
         self.control_mode = ControlMode.TELEOP
+        self._mode_before_replay = ControlMode.TELEOP
+        self._replay_settle_controller = None
+        self._replay_settle_started_sim_time = None
+        self._replay_settle_config = {}
+        self._replay_settle_arm_target = None
+        self._replay_settle_vehicle_target = None
         self.sim_reset_hold = False
 
         # inverse IK tool axis and alignment weight CONFIGURATIONS
@@ -669,11 +682,123 @@ class Robot(Base):
         )
 
     def set_controller(self, name: str) -> None:
+        previous_controller = self.active_controller_instance()
+        if self.control_mode == ControlMode.REPLAY_SETTLE and name != "CmdReplay":
+            self.cancel_replay_settle(mark_failed=True)
         spec = self._controllers[name]  # raises KeyError if missing, good fail-fast
         self.vehicle_controller_fn = spec.vehicle_fn
         self.arm_controller_fn = spec.arm_fn
         self.controller_name = name
+        if self._active_controller_is_replay():
+            self.set_control_mode(ControlMode.REPLAY)
+        else:
+            if previous_controller is not None and hasattr(previous_controller, "stop_playback"):
+                previous_controller.stop_playback()
+            self.set_control_mode(ControlMode.PLANNER)
         self.node.get_logger().info(f"Controller set to {name} for {self.prefix}")
+
+    def active_controller_instance(self):
+        return getattr(self.arm_controller_fn, "__self__", None)
+
+    def controller_instance(self, name: str):
+        spec = self._controllers.get(name)
+        if spec is None:
+            return None
+        return getattr(spec.arm_fn, "__self__", None)
+
+    def _controller_is_replay(self, controller) -> bool:
+        return bool(controller is not None and hasattr(controller, "start_playback"))
+
+    def _active_controller_is_replay(self) -> bool:
+        return self._controller_is_replay(self.active_controller_instance())
+
+    def _replay_is_active(self) -> bool:
+        return self.control_mode in (ControlMode.REPLAY, ControlMode.REPLAY_SETTLE) or self._active_controller_is_replay()
+
+    def start_replay_controller_settle(self, replay_controller) -> None:
+        regular_names = [name for name in self.list_controllers() if name != "CmdReplay"]
+        if not regular_names:
+            self.node.get_logger().error(f"No regular controller available for replay settle on {self.prefix}.")
+            replay_controller.mark_reset_failed()
+            return
+
+        self._replay_settle_config = replay_controller.controller_settle_config()
+        requested_controller = str(self._replay_settle_config.get("controller", "PID"))
+        if requested_controller in regular_names:
+            settle_controller_name = requested_controller
+        else:
+            settle_controller_name = "PID" if "PID" in regular_names else regular_names[0]
+            self.node.get_logger().warn(
+                f"Replay settle controller '{requested_controller}' is not available for {self.prefix}; "
+                f"using {settle_controller_name}."
+            )
+        spec = self._controllers[settle_controller_name]
+        self.vehicle_controller_fn = spec.vehicle_fn
+        self.arm_controller_fn = spec.arm_fn
+        self.controller_name = settle_controller_name
+        settle_controller = self.active_controller_instance()
+        if settle_controller is not None and hasattr(settle_controller, "reset_controller_state"):
+            settle_controller.reset_controller_state()
+        self._replay_settle_controller = replay_controller
+        self._replay_settle_started_sim_time = None
+        self._replay_settle_arm_target = np.asarray(replay_controller.initial_manipulator_position(), dtype=float)
+        self._replay_settle_vehicle_target = np.asarray(replay_controller.initial_vehicle_pose(), dtype=float)
+
+        self.set_control_mode(ControlMode.REPLAY_SETTLE)
+        self.arm.q_command = self._replay_settle_arm_target[:4].tolist()
+        self.arm.dq_command = np.zeros((4,), dtype=float).tolist()
+        self.arm.ddq_command = np.zeros((4,), dtype=float).tolist()
+        self.pose_command = self._replay_settle_vehicle_target.tolist()
+        self.body_vel_command = [0.0] * 6
+        self.body_acc_command = [0.0] * 6
+        self.node.get_logger().info(
+            f"Replay controller settle started for {self.prefix} using {settle_controller_name}."
+        )
+
+    def _clear_replay_settle(self) -> None:
+        self._replay_settle_controller = None
+        self._replay_settle_started_sim_time = None
+        self._replay_settle_config = {}
+        self._replay_settle_arm_target = None
+        self._replay_settle_vehicle_target = None
+
+    def cancel_replay_settle(self, mark_failed: bool = False) -> None:
+        replay_controller = self._replay_settle_controller
+        if mark_failed and replay_controller is not None and hasattr(replay_controller, "mark_reset_failed"):
+            replay_controller.mark_reset_failed()
+        self._clear_replay_settle()
+
+    def _replay_settle_is_done(self, state: Dict) -> tuple[bool, str]:
+        cfg = self._replay_settle_config
+        arm_target = self._replay_settle_arm_target
+        vehicle_target = self._replay_settle_vehicle_target
+        if arm_target is None or vehicle_target is None:
+            return False, "missing settle target"
+
+        q = np.asarray(list(state["q"]) + list(state["grasper_q"]), dtype=float)
+        dq = np.asarray(list(state["dq"]) + list(state["grasper_qdot"]), dtype=float)
+        pose = np.asarray(state["pose"], dtype=float)
+        body_vel = np.asarray(state["body_vel"], dtype=float)
+
+        arm_errors = np.abs(q[:4] - arm_target[:4])
+        arm_position_error = float(np.max(arm_errors))
+        arm_error_index = int(np.argmax(arm_errors))
+        arm_velocity = float(np.max(np.abs(dq[:4])))
+        vehicle_position_error = float(np.linalg.norm(pose[:3] - vehicle_target[:3]))
+        vehicle_velocity = float(np.linalg.norm(body_vel[:3]))
+
+        settled = (
+            arm_position_error <= cfg["position_tolerance"]
+            and arm_velocity <= cfg["velocity_tolerance"]
+            and vehicle_position_error <= cfg["vehicle_position_tolerance"]
+            and vehicle_velocity <= cfg["vehicle_velocity_tolerance"]
+        )
+        detail = (
+            f"arm_err={arm_position_error:.4f} at joint {arm_error_index}, "
+            f"arm_errors={np.round(arm_errors, 4).tolist()}, arm_vel={arm_velocity:.4f}, "
+            f"vehicle_err={vehicle_position_error:.4f}, vehicle_vel={vehicle_velocity:.4f}"
+        )
+        return settled, detail
 
     def list_controllers(self) -> list:
         return sorted(list(self._controllers.keys()))
@@ -1293,7 +1418,7 @@ class Robot(Base):
         )
 
     def _on_planner_action_result(self, plan_result: Dict[str, Any]) -> None:
-        if self.sim_reset_hold or not self._accept_planner_results:
+        if self.sim_reset_hold or self._replay_is_active() or not self._accept_planner_results:
             if self.planner is not None:
                 self.planner.planned_result = None
             if self.vehicle_cart_traj is not None:
@@ -1335,6 +1460,12 @@ class Robot(Base):
         time_limit: float = 1.0,
         robot_collision_radius: float = 0.4,
     ) -> bool:
+        if self._replay_is_active():
+            self.abrupt_planner_stop()
+            self.node.get_logger().warn(
+                f"Planner request ignored for {self.prefix}; CmdReplay is active."
+            )
+            return False
         if self.sim_reset_hold:
             self.node.get_logger().warn(
                 f"Planner request ignored for {self.prefix}; simulation is held after reset."
@@ -1701,6 +1832,16 @@ class Robot(Base):
     def set_control_mode(self, mode: ControlMode):
         if mode == self.control_mode:
             return
+        if mode == ControlMode.PLANNER and (
+            self.control_mode == ControlMode.REPLAY_SETTLE or self._active_controller_is_replay()
+        ):
+            self.node.get_logger().warn(
+                f"Planner mode ignored for {self.prefix}; CmdReplay uses replay mode."
+            )
+            return
+
+        if mode == ControlMode.REPLAY and self.control_mode != ControlMode.REPLAY:
+            self._mode_before_replay = self.control_mode
 
         self.control_mode = mode
         self._zero_teleop_commands()
@@ -1735,13 +1876,74 @@ class Robot(Base):
         self.ps4_controller = None
 
     def reset_simulation(self) -> None:
-        self.sim_reset_hold = True
+        request = ResetSimUvms.Request()
+        request.reset_manipulator = True
+        request.reset_vehicle = True
+        request.hold_commands = True
+        request.use_manipulator_state = False
+        request.use_vehicle_state = False
+        self.reset_simulation_with_state(request)
+
+    def reset_simulation_with_state(self, request: ResetSimUvms.Request, on_success=None, on_failure=None) -> None:
+        self.sim_reset_hold = bool(request.hold_commands)
         self._reset_local_command_state()
-        self._call_uvms_service(
-            client=self.reset_sim_uvms_client,
+        self._call_reset_state_service(
+            request=request,
             service_name=f"/{self.prefix}reset_sim_uvms",
-            log_label=f"[{self.prefix}] reset",
+            log_label=f"[{self.prefix}] state reset",
+            on_success=on_success,
+            on_failure=on_failure,
         )
+
+    def apply_sim_dynamics_from_reset_request(
+        self,
+        request: ResetSimUvms.Request,
+        on_success=None,
+        on_failure=None,
+    ) -> None:
+        dynamics_request = SetSimDynamics.Request()
+        dynamics_request.gravity = float(request.gravity)
+        dynamics_request.mass = float(request.payload_mass)
+        dynamics_request.ixx = float(request.payload_ixx)
+        dynamics_request.iyy = float(request.payload_iyy)
+        dynamics_request.izz = float(request.payload_izz)
+
+        service_name = f"/{self.prefix}set_sim_dynamics"
+        if not self.set_sim_dynamics_client.wait_for_service(timeout_sec=0.2):
+            self.node.get_logger().warn(
+                f"[{self.prefix}] sim dynamics service {service_name} is not ready; "
+                "continuing controller-settle without simulator dynamics update."
+            )
+            if on_success is not None:
+                on_success()
+            return
+
+        future = self.set_sim_dynamics_client.call_async(dynamics_request)
+
+        def _done_callback(done_future) -> None:
+            try:
+                response = done_future.result()
+            except Exception as exc:
+                self.node.get_logger().error(f"[{self.prefix}] sim dynamics update failed: {exc}")
+                if on_failure is not None:
+                    on_failure()
+                return
+
+            if response is not None and response.success:
+                self.node.get_logger().info(
+                    f"[{self.prefix}] sim dynamics updated before controller-settle: {response.message}"
+                )
+                if on_success is not None:
+                    on_success()
+            else:
+                message = "" if response is None else response.message
+                self.node.get_logger().warn(
+                    f"[{self.prefix}] sim dynamics update rejected before controller-settle: {message}"
+                )
+                if on_failure is not None:
+                    on_failure()
+
+        future.add_done_callback(_done_callback)
 
     def release_simulation(self) -> None:
         self.sim_reset_hold = False
@@ -1802,6 +2004,41 @@ class Robot(Base):
 
         future.add_done_callback(_done_callback)
 
+    def _call_reset_state_service(
+        self,
+        request: ResetSimUvms.Request,
+        service_name: str,
+        log_label: str,
+        on_success=None,
+        on_failure=None,
+    ) -> None:
+        if not self.reset_sim_uvms_client.wait_for_service(timeout_sec=0.5):
+            self.node.get_logger().warn(f"{log_label} skipped, service {service_name} is not ready.")
+            if on_failure is not None:
+                on_failure()
+            return
+
+        future = self.reset_sim_uvms_client.call_async(request)
+
+        def _done_callback(done_future) -> None:
+            try:
+                response = done_future.result()
+            except Exception as exc:
+                self.node.get_logger().error(f"{log_label} failed: {exc}")
+                if on_failure is not None:
+                    on_failure()
+                return
+            if response.success:
+                self.node.get_logger().info(f"{log_label} accepted: {response.message}")
+                if on_success is not None:
+                    on_success()
+            else:
+                self.node.get_logger().warn(f"{log_label} rejected: {response.message}")
+                if on_failure is not None:
+                    on_failure()
+
+        future.add_done_callback(_done_callback)
+
 
     def _zero_teleop_commands(self):
         if hasattr(self, "controller_lock"):
@@ -1840,7 +2077,169 @@ class Robot(Base):
             self.publish_commands(wrench, arm)
             return
 
+        if self.control_mode == ControlMode.REPLAY_SETTLE:
+            replay_controller = self._replay_settle_controller
+            arm_target = self._replay_settle_arm_target
+            vehicle_target = self._replay_settle_vehicle_target
+            if replay_controller is None or arm_target is None or vehicle_target is None:
+                self.node.get_logger().warn(
+                    f"Replay controller settle missing target/controller for {self.prefix}; returning to teleop."
+                )
+                if replay_controller is not None and hasattr(replay_controller, "mark_reset_failed"):
+                    replay_controller.mark_reset_failed()
+                self._clear_replay_settle()
+                self.set_control_mode(ControlMode.TELEOP)
+                self.publish_commands([0.0] * 6, [0.0] * 5)
+                return
+
+            sim_time = float(state["sim_time"])
+            if self._replay_settle_started_sim_time is None:
+                self._replay_settle_started_sim_time = sim_time
+
+            timeout_sec = float(self._replay_settle_config.get("timeout_sec", 20.0))
+            elapsed_sec = max(0.0, sim_time - self._replay_settle_started_sim_time)
+            settled, detail = self._replay_settle_is_done(state)
+            if settled:
+                spec = self._controllers.get("CmdReplay")
+                if spec is None:
+                    self.node.get_logger().error(f"CmdReplay controller missing for {self.prefix}.")
+                    replay_controller.mark_reset_failed()
+                    self._clear_replay_settle()
+                    self.set_control_mode(ControlMode.TELEOP)
+                    self.publish_commands([0.0] * 6, [0.0] * 5)
+                    return
+
+                self.vehicle_controller_fn = spec.vehicle_fn
+                self.arm_controller_fn = spec.arm_fn
+                self.controller_name = "CmdReplay"
+                self.set_control_mode(ControlMode.REPLAY)
+                replay_controller.mark_reset_succeeded()
+                self._clear_replay_settle()
+                self.node.get_logger().info(
+                    f"Replay controller settle complete for {self.prefix}; {detail}."
+                )
+                self.publish_commands([0.0] * 6, [0.0] * 5)
+                return
+
+            if elapsed_sec >= timeout_sec:
+                replay_controller.mark_reset_failed()
+                self._clear_replay_settle()
+                self.set_control_mode(ControlMode.TELEOP)
+                self.node.get_logger().warn(
+                    f"Replay controller settle timed out for {self.prefix} after {elapsed_sec:.2f}s; {detail}."
+                )
+                self.publish_commands([0.0] * 6, [0.0] * 5)
+                return
+
+            active_controller = self.active_controller_instance()
+            if active_controller is not None and hasattr(active_controller, "set_sim_time"):
+                active_controller.set_sim_time(sim_time)
+
+            self.pose_command = np.asarray(vehicle_target, dtype=float).tolist()
+            self.body_vel_command = [0.0] * 6
+            self.body_acc_command = [0.0] * 6
+            self.arm.q_command = np.asarray(arm_target[:4], dtype=float).tolist()
+            self.arm.dq_command = [0.0] * 4
+            self.arm.ddq_command = [0.0] * 4
+
+            veh_state_vec = np.array(list(state["pose"]) + list(state["body_vel"]), dtype=float)
+            target_ned_pose = np.asarray(self.pose_command, dtype=float)
+            target_body_vel = np.asarray(self.body_vel_command, dtype=float)
+            target_body_acc = np.asarray(self.body_acc_command, dtype=float)
+            q_ref = np.asarray(arm_target, dtype=float).tolist()
+            dq_ref = [0.0] * 5
+            ddq_ref = [0.0] * 5
+
+            cmd_body_wrench = self.vehicle_controller_fn(
+                state=veh_state_vec,
+                target_pos=target_ned_pose,
+                target_vel=target_body_vel,
+                target_acc=target_body_acc,
+                dt=state["dt"],
+            )
+            cmd_arm_tau = self.arm_controller_fn(
+                q=list(state["q"]) + list(state["grasper_q"]),
+                q_dot=list(state["dq"]) + list(state["grasper_qdot"]),
+                q_ref=q_ref,
+                dq_ref=dq_ref,
+                ddq_ref=ddq_ref,
+                dt=state["dt"],
+            )
+
+            self.publish_commands(
+                np.asarray(cmd_body_wrench, float).tolist(),
+                np.asarray(cmd_arm_tau, float).tolist(),
+            )
+            return
+
+        if self.control_mode == ControlMode.REPLAY:
+            active_controller = self.active_controller_instance()
+            if active_controller is None or not hasattr(active_controller, "set_sim_time"):
+                self.publish_commands([0.0] * 6, [0.0] * 5)
+                return
+
+            active_controller.set_sim_time(state["sim_time"])
+            if (
+                hasattr(active_controller, "has_pending_auto_start")
+                and active_controller.has_pending_auto_start()
+                and hasattr(active_controller, "start_playback")
+            ):
+                active_controller.start_playback(sim_time_sec=state["sim_time"])
+
+            cmd_body_wrench = self.vehicle_controller_fn(
+                state=np.array(list(state["pose"]) + list(state["body_vel"]), dtype=float),
+                target_pos=np.zeros(6, dtype=float),
+                target_vel=np.zeros(6, dtype=float),
+                target_acc=np.zeros(6, dtype=float),
+                dt=state["dt"],
+            )
+            cmd_arm_tau = self.arm_controller_fn(
+                q=list(state["q"]) + list(state["grasper_q"]),
+                q_dot=list(state["dq"]) + list(state["grasper_qdot"]),
+                q_ref=[0.0] * 5,
+                dq_ref=[0.0] * 5,
+                ddq_ref=[0.0] * 5,
+                dt=state["dt"],
+            )
+            if (
+                hasattr(active_controller, "needs_repeat_reset")
+                and active_controller.needs_repeat_reset()
+                and hasattr(active_controller, "consume_repeat_reset_request")
+            ):
+                active_controller.consume_repeat_reset_request()
+                request = active_controller.build_reset_request()
+                if hasattr(active_controller, "reset_mode") and active_controller.reset_mode() == "controller_settle":
+                    self.apply_sim_dynamics_from_reset_request(
+                        request,
+                        on_success=lambda: self.start_replay_controller_settle(active_controller),
+                        on_failure=active_controller.mark_reset_failed,
+                    )
+                    self.publish_commands([0.0] * 6, [0.0] * 5)
+                    return
+
+                def _arm_next_pass():
+                    self.set_control_mode(ControlMode.REPLAY)
+                    active_controller.mark_reset_succeeded()
+
+                self.reset_simulation_with_state(
+                    request,
+                    on_success=_arm_next_pass,
+                    on_failure=active_controller.mark_reset_failed,
+                )
+                self.publish_commands([0.0] * 6, [0.0] * 5)
+                return
+
+            self.publish_commands(
+                np.asarray(cmd_body_wrench, float).tolist(),
+                np.asarray(cmd_arm_tau, float).tolist(),
+            )
+            return
+
         if self.control_mode == ControlMode.PLANNER:
+            active_controller = self.active_controller_instance()
+            if active_controller is not None and hasattr(active_controller, "set_sim_time"):
+                active_controller.set_sim_time(state["sim_time"])
+
             # compute model based commands and publish
             veh_state_vec = np.array(list(state["pose"]) + list(state["body_vel"]), dtype=float)
 

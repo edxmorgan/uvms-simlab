@@ -61,6 +61,9 @@ class LowLevelInvDynController(ControllerTemplate):
         self.kd = VehicleControllerParams.invdyn_kd.copy()
         self.v_c = VehicleControllerParams.v_c.copy()
 
+    def reset_controller_state(self) -> None:
+        self.arm_pid_i_buffer = np.zeros(self.arm_dof + 1, dtype=float)
+
     def vehicle_controller(
         self,
         state: np.ndarray,

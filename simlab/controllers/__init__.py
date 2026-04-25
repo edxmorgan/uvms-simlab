@@ -1,4 +1,5 @@
 from simlab.controllers.base import ControllerTemplate
+from simlab.controllers.cmd_replay import CmdReplayController
 from simlab.controllers.invDyn import LowLevelInvDynController
 from simlab.controllers.pid import LowLevelPidController
 
@@ -11,12 +12,14 @@ except ImportError:
 DEFAULT_CONTROLLER_CLASSES = [
     LowLevelPidController,
     LowLevelInvDynController,
+    CmdReplayController,
 ]
 
 if OgesModelbasedController is not None and NAMOR_IMPORT_ERROR is None:
     DEFAULT_CONTROLLER_CLASSES.append(OgesModelbasedController)
 
 __all__ = [
+    "CmdReplayController",
     "ControllerTemplate",
     "DEFAULT_CONTROLLER_CLASSES",
     "LowLevelInvDynController",

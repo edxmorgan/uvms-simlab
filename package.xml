@@ -18,6 +18,8 @@
   <exec_depend>std_msgs</exec_depend>
   <exec_depend>python3-collada</exec_depend>
   <exec_depend>simlab_msgs</exec_depend>
+  <exec_depend>ros2_control_blue_reach_5</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
   <exec_depend>tf2_geometry_msgs</exec_depend>
 

@@ -1,7 +1,18 @@
 from setuptools import find_packages, setup
 from glob import glob
+from pathlib import Path
 
 package_name = 'simlab'
+
+
+def csv_playback_data_files():
+    data_files = []
+    root = Path('resource/csv_playback')
+    for path in sorted(root.rglob('*')):
+        if path.is_file():
+            destination = 'share/' + package_name + '/' + str(path.parent.relative_to('resource'))
+            data_files.append((destination, [str(path)]))
+    return data_files
 
 setup(
     name=package_name,
@@ -23,6 +34,7 @@ setup(
             'share/' + package_name + '/whole_body',
             glob('resource/whole_body/*')
         ),
+        *csv_playback_data_files(),
         ('lib/' + package_name, [package_name+'/robot.py']),
         ('lib/' + package_name, [package_name+'/uvms_parameters.py']),
         ('lib/' + package_name, [package_name+'/controller_msg.py']),
@@ -49,6 +61,7 @@ setup(
                       'trimesh',
                       'pycollada',
                       'python-fcl',
+                      'PyYAML',
                       ],
     zip_safe=True,
     maintainer='mr-robot',

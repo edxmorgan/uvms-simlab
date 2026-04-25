@@ -1,0 +1,3 @@
+time_sec,vehicle_fx,vehicle_fy,vehicle_fz,vehicle_tx,vehicle_ty,vehicle_tz,tau_axis_e,tau_axis_d,tau_axis_c,tau_axis_b,tau_axis_a
+0.0,10.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+20.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
