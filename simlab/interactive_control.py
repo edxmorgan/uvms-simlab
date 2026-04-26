@@ -523,6 +523,8 @@ class InteractiveControlsNode(Node):
         if hasattr(robot, "cancel_replay_settle"):
             robot.cancel_replay_settle(mark_failed=False)
         controller.stop_playback()
+        if hasattr(robot, "_stop_replay_session_recording"):
+            robot._stop_replay_session_recording("stopped")
         robot.set_control_mode(ControlMode.TELEOP)
         robot.publish_commands([0.0] * 6, [0.0] * 5)
         self.get_logger().info(f"Stopped CSV playback for {robot.prefix}.")
@@ -617,10 +619,8 @@ class InteractiveControlsNode(Node):
         robot, grasp_state_name = self.grasp_menu_map.get(feedback.menu_entry_id)
 
         if grasp_state_name in ['open','close']:
-            if grasp_state_name == 'open':
-                robot.arm.open_grasper()
-            elif grasp_state_name == 'close':
-                robot.arm.close_grasper()
+            if not robot.command_grasper_from_menu(grasp_state_name):
+                return
 
             r_i: Robot
             for mid, (r_i, gsn) in self.grasp_menu_map.items():

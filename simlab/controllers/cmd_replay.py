@@ -30,6 +30,9 @@ class CmdReplayController(ControllerTemplate):
     DEFAULT_TIME_COLUMN = "time_sec"
     DEFAULT_VEHICLE_COLUMNS = "vehicle_fx,vehicle_fy,vehicle_fz,vehicle_tx,vehicle_ty,vehicle_tz"
     DEFAULT_ARM_COLUMNS = "tau_axis_e,tau_axis_d,tau_axis_c,tau_axis_b,tau_axis_a"
+    REAL_SETTLE_POSITION_TOLERANCE = 0.40
+    REAL_SETTLE_VELOCITY_TOLERANCE = 0.05
+    REAL_SETTLE_TIMEOUT_SEC = 60.0
 
     def __init__(self, node: Node, arm_dof: int = 4, robot_prefix: str = ""):
         super().__init__(node, arm_dof, robot_prefix)
@@ -273,9 +276,9 @@ class CmdReplayController(ControllerTemplate):
             "timeout_sec": float(settle.get("timeout_sec", 20.0)),
         }
         if "real" in self.robot_prefix:
-            config["position_tolerance"] = max(config["position_tolerance"], 0.30)
-            config["velocity_tolerance"] = max(config["velocity_tolerance"], 0.05)
-            config["timeout_sec"] = max(config["timeout_sec"], 45.0)
+            config["position_tolerance"] = max(config["position_tolerance"], self.REAL_SETTLE_POSITION_TOLERANCE)
+            config["velocity_tolerance"] = max(config["velocity_tolerance"], self.REAL_SETTLE_VELOCITY_TOLERANCE)
+            config["timeout_sec"] = max(config["timeout_sec"], self.REAL_SETTLE_TIMEOUT_SEC)
         return config
 
     def initial_manipulator_position(self) -> list[float]:

@@ -13,6 +13,10 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
+import csv
+from datetime import datetime
+from pathlib import Path as FilePath
+
 import numpy as np
 from typing import Dict
 from control_msgs.msg import DynamicJointState
@@ -581,6 +585,29 @@ class Robot(Base):
         self._replay_settle_arm_target = None
         self._replay_settle_vehicle_target = None
         self.sim_reset_hold = False
+        if not self.node.has_parameter("cmd_replay_record_dir"):
+            self.node.declare_parameter("cmd_replay_record_dir", "~/ros_ws/replay_sessions")
+        self.cmd_replay_record_dir = FilePath(
+            os.path.expanduser(str(self.node.get_parameter("cmd_replay_record_dir").value))
+        )
+        self._replay_record_handle = None
+        self._replay_record_writer = None
+        self._replay_record_path = None
+        self._replay_record_controller = None
+        self._replay_last_cmd_body_wrench = [0.0] * 6
+        self._replay_last_cmd_arm_tau = [0.0] * 5
+        self._replay_last_recorded_sim_time = None
+        if not self.node.has_parameter("grasper_menu_open_effort"):
+            self.node.declare_parameter("grasper_menu_open_effort", 1.0)
+        if not self.node.has_parameter("grasper_menu_close_effort"):
+            self.node.declare_parameter("grasper_menu_close_effort", -1.0)
+        if not self.node.has_parameter("grasper_menu_effort_duration"):
+            self.node.declare_parameter("grasper_menu_effort_duration", 1.0)
+        self.grasper_menu_open_effort = float(self.node.get_parameter("grasper_menu_open_effort").value)
+        self.grasper_menu_close_effort = float(self.node.get_parameter("grasper_menu_close_effort").value)
+        self.grasper_menu_effort_duration = float(self.node.get_parameter("grasper_menu_effort_duration").value)
+        self._menu_grasper_effort = 0.0
+        self._menu_grasper_until_sec = 0.0
 
         # inverse IK tool axis and alignment weight CONFIGURATIONS
         self.ik_tool_axis = np.array([0.0, 0.0, 1.0], dtype=float)
@@ -1369,10 +1396,81 @@ class Robot(Base):
         self.vehicle_effort_command_publisher.publish(veh_msg)
         self.manipulator_effort_command_publisher.publish(arm_msg)
     
+    def _now_sec(self) -> float:
+        return self.node.get_clock().now().nanoseconds * 1e-9
+
+    def _clear_menu_grasper_effort(self) -> None:
+        if hasattr(self, "controller_lock"):
+            with self.controller_lock:
+                self._menu_grasper_effort = 0.0
+                self._menu_grasper_until_sec = 0.0
+        else:
+            self._menu_grasper_effort = 0.0
+            self._menu_grasper_until_sec = 0.0
+
+    def command_grasper_from_menu(self, action: str) -> bool:
+        if self.control_mode != ControlMode.PLANNER or self._active_controller_is_replay():
+            self._clear_menu_grasper_effort()
+            self.node.get_logger().warn(
+                f"Grasper menu {action} rejected for {self.prefix}; "
+                "select a regular controller such as PID or InvDyn first."
+            )
+            return False
+
+        if action == "open":
+            self.arm.open_grasper()
+            effort = self.grasper_menu_open_effort
+        elif action == "close":
+            self.arm.close_grasper()
+            effort = self.grasper_menu_close_effort
+        else:
+            return False
+
+        until_sec = self._now_sec() + max(0.0, self.grasper_menu_effort_duration)
+        if hasattr(self, "controller_lock"):
+            with self.controller_lock:
+                self._menu_grasper_effort = effort
+                self._menu_grasper_until_sec = until_sec
+        else:
+            self._menu_grasper_effort = effort
+            self._menu_grasper_until_sec = until_sec
+        self.node.get_logger().info(
+            f"Grasper menu {action} requested for {self.prefix}; "
+            f"applying axis_a effort {effort:.3f} for {self.grasper_menu_effort_duration:.2f}s."
+        )
+        return True
+
+    def _apply_menu_grasper_effort(self, arm_effort_5: Sequence[float]) -> list:
+        arm_effort = list(arm_effort_5)
+        if len(arm_effort) < 5:
+            arm_effort.extend([0.0] * (5 - len(arm_effort)))
+        if self.control_mode != ControlMode.PLANNER or self._active_controller_is_replay():
+            self._clear_menu_grasper_effort()
+            return arm_effort
+
+        now_sec = self._now_sec()
+        if hasattr(self, "controller_lock"):
+            with self.controller_lock:
+                effort = self._menu_grasper_effort
+                active = now_sec < self._menu_grasper_until_sec
+                if not active:
+                    self._menu_grasper_effort = 0.0
+                    self._menu_grasper_until_sec = 0.0
+        else:
+            effort = self._menu_grasper_effort
+            active = now_sec < self._menu_grasper_until_sec
+            if not active:
+                self._menu_grasper_effort = 0.0
+                self._menu_grasper_until_sec = 0.0
+
+        if active:
+            arm_effort[4] = effort
+        return arm_effort
+
     # ForwardCommandController
     def publish_commands(self, wrench_body_6: Sequence[float], arm_effort_5: Sequence[float]):
         # Vehicle, DynamicInterfaceGroupValues payload
-        self.publish_vehicle_and_arm(wrench_body_6, arm_effort_5)
+        self.publish_vehicle_and_arm(wrench_body_6, self._apply_menu_grasper_effort(arm_effort_5))
 
     def publish_vehicle_pwms(self,
                              pwm_thruster_8: Sequence[float]):
@@ -1848,6 +1946,8 @@ class Robot(Base):
     def set_control_mode(self, mode: ControlMode):
         if mode == self.control_mode:
             return
+        if self.control_mode == ControlMode.REPLAY and mode != ControlMode.REPLAY:
+            self._stop_replay_session_recording("mode_exit")
         if mode == ControlMode.PLANNER and (
             self.control_mode == ControlMode.REPLAY_SETTLE or self._active_controller_is_replay()
         ):
@@ -1862,6 +1962,166 @@ class Robot(Base):
         self.control_mode = mode
         self._zero_teleop_commands()
         self.abrupt_planner_stop()
+
+    @staticmethod
+    def _safe_filename_token(value: str) -> str:
+        token = "".join(ch if ch.isalnum() or ch in ("-", "_", ".") else "_" for ch in str(value))
+        return token.strip("_") or "unknown"
+
+    def _start_replay_session_recording(self, replay_controller, state: Dict) -> None:
+        if self._replay_record_handle is not None:
+            return
+
+        profile_name = self._safe_filename_token(getattr(replay_controller, "profile_name", "profile"))
+        robot_name = self._safe_filename_token(self.prefix)
+        pass_index = int(getattr(replay_controller, "_current_pass", 0)) + 1
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.cmd_replay_record_dir.mkdir(parents=True, exist_ok=True)
+        path = self.cmd_replay_record_dir / f"{timestamp}_{robot_name}_{profile_name}_pass{pass_index}.csv"
+
+        fieldnames = [
+            "wall_time_sec",
+            "sim_time_sec",
+            "replay_time_sec",
+            "profile",
+            "pass_index",
+            "q_alpha_axis_e",
+            "q_alpha_axis_d",
+            "q_alpha_axis_c",
+            "q_alpha_axis_b",
+            "dq_alpha_axis_e",
+            "dq_alpha_axis_d",
+            "dq_alpha_axis_c",
+            "dq_alpha_axis_b",
+            "effort_alpha_axis_e",
+            "effort_alpha_axis_d",
+            "effort_alpha_axis_c",
+            "effort_alpha_axis_b",
+            "cmd_tau_axis_e",
+            "cmd_tau_axis_d",
+            "cmd_tau_axis_c",
+            "cmd_tau_axis_b",
+            "cmd_tau_axis_a",
+            "vehicle_x",
+            "vehicle_y",
+            "vehicle_z",
+            "vehicle_roll",
+            "vehicle_pitch",
+            "vehicle_yaw",
+            "vehicle_u",
+            "vehicle_v",
+            "vehicle_w",
+            "vehicle_p",
+            "vehicle_q",
+            "vehicle_r",
+            "cmd_vehicle_fx",
+            "cmd_vehicle_fy",
+            "cmd_vehicle_fz",
+            "cmd_vehicle_tx",
+            "cmd_vehicle_ty",
+            "cmd_vehicle_tz",
+            "payload_mass",
+            "gravity",
+        ]
+
+        self._replay_record_handle = path.open("w", encoding="utf-8", newline="")
+        self._replay_record_writer = csv.DictWriter(self._replay_record_handle, fieldnames=fieldnames)
+        self._replay_record_writer.writeheader()
+        self._replay_record_path = path
+        self._replay_record_controller = replay_controller
+        self._replay_last_cmd_body_wrench = [0.0] * 6
+        self._replay_last_cmd_arm_tau = [0.0] * 5
+        self._replay_last_recorded_sim_time = None
+        self.node.get_logger().info(f"Recording CmdReplay session for {self.prefix} to {path}.")
+
+    def _record_replay_sample(
+        self,
+        replay_controller,
+        state: Dict,
+        cmd_body_wrench: Sequence[float],
+        cmd_arm_tau: Sequence[float],
+    ) -> None:
+        if self._replay_record_writer is None:
+            return
+        if replay_controller is not self._replay_record_controller:
+            return
+        sim_time = float(state.get("sim_time", 0.0))
+        if self._replay_last_recorded_sim_time is not None and sim_time <= self._replay_last_recorded_sim_time:
+            return
+        self._replay_last_recorded_sim_time = sim_time
+
+        q = list(state.get("q", []))
+        dq = list(state.get("dq", []))
+        effort = list(state.get("arm_effort", []))
+        pose = list(state.get("pose", []))
+        body_vel = list(state.get("body_vel", []))
+        arm_cmd = list(cmd_arm_tau)
+        vehicle_cmd = list(cmd_body_wrench)
+
+        def at(values, index, default=0.0):
+            return float(values[index]) if index < len(values) else float(default)
+
+        self._replay_record_writer.writerow(
+            {
+                "wall_time_sec": self.node.get_clock().now().nanoseconds * 1e-9,
+                "sim_time_sec": sim_time,
+                "replay_time_sec": float(getattr(replay_controller, "_sample_time_sec", 0.0)),
+                "profile": getattr(replay_controller, "profile_name", ""),
+                "pass_index": int(getattr(replay_controller, "_current_pass", 0)) + 1,
+                "q_alpha_axis_e": at(q, 0),
+                "q_alpha_axis_d": at(q, 1),
+                "q_alpha_axis_c": at(q, 2),
+                "q_alpha_axis_b": at(q, 3),
+                "dq_alpha_axis_e": at(dq, 0),
+                "dq_alpha_axis_d": at(dq, 1),
+                "dq_alpha_axis_c": at(dq, 2),
+                "dq_alpha_axis_b": at(dq, 3),
+                "effort_alpha_axis_e": at(effort, 0),
+                "effort_alpha_axis_d": at(effort, 1),
+                "effort_alpha_axis_c": at(effort, 2),
+                "effort_alpha_axis_b": at(effort, 3),
+                "cmd_tau_axis_e": at(arm_cmd, 0),
+                "cmd_tau_axis_d": at(arm_cmd, 1),
+                "cmd_tau_axis_c": at(arm_cmd, 2),
+                "cmd_tau_axis_b": at(arm_cmd, 3),
+                "cmd_tau_axis_a": at(arm_cmd, 4),
+                "vehicle_x": at(pose, 0),
+                "vehicle_y": at(pose, 1),
+                "vehicle_z": at(pose, 2),
+                "vehicle_roll": at(pose, 3),
+                "vehicle_pitch": at(pose, 4),
+                "vehicle_yaw": at(pose, 5),
+                "vehicle_u": at(body_vel, 0),
+                "vehicle_v": at(body_vel, 1),
+                "vehicle_w": at(body_vel, 2),
+                "vehicle_p": at(body_vel, 3),
+                "vehicle_q": at(body_vel, 4),
+                "vehicle_r": at(body_vel, 5),
+                "cmd_vehicle_fx": at(vehicle_cmd, 0),
+                "cmd_vehicle_fy": at(vehicle_cmd, 1),
+                "cmd_vehicle_fz": at(vehicle_cmd, 2),
+                "cmd_vehicle_tx": at(vehicle_cmd, 3),
+                "cmd_vehicle_ty": at(vehicle_cmd, 4),
+                "cmd_vehicle_tz": at(vehicle_cmd, 5),
+                "payload_mass": float(state.get("arm_payload_mass", 0.0)),
+                "gravity": float(state.get("arm_gravity", 0.0)),
+            }
+        )
+
+    def _stop_replay_session_recording(self, reason: str) -> None:
+        if self._replay_record_handle is None:
+            return
+        path = self._replay_record_path
+        self._replay_record_handle.flush()
+        self._replay_record_handle.close()
+        self._replay_record_handle = None
+        self._replay_record_writer = None
+        self._replay_record_path = None
+        self._replay_record_controller = None
+        self._replay_last_cmd_body_wrench = [0.0] * 6
+        self._replay_last_cmd_arm_tau = [0.0] * 5
+        self._replay_last_recorded_sim_time = None
+        self.node.get_logger().info(f"Saved CmdReplay session ({reason}) to {path}.")
     
     def abrupt_planner_stop(self):
         self._accept_planner_results = False
@@ -1880,6 +2140,7 @@ class Robot(Base):
         self.publish_commands([0.0]*6, [0.0]*5)
 
     def close(self) -> None:
+        self._stop_replay_session_recording("shutdown")
         self._accept_planner_results = False
         if self.vehicle_cart_traj is not None:
             self.vehicle_cart_traj.close()
@@ -1979,6 +2240,8 @@ class Robot(Base):
         self._zero_teleop_commands()
         self.teleop_wrench_body_6 = [0.0] * 6
         self.teleop_arm_effort_5 = [0.0] * 5
+        self._menu_grasper_effort = 0.0
+        self._menu_grasper_until_sec = 0.0
         self.pose_command = [0.0] * 6
         self.body_vel_command = [0.0] * 6
         self.body_acc_command = [0.0] * 6
@@ -2062,6 +2325,8 @@ class Robot(Base):
                 self.rov_surge = self.rov_sway = self.rov_z = 0.0
                 self.rov_roll = self.rov_pitch = self.rov_yaw = 0.0
                 self.jointe = self.jointd = self.jointc = self.jointb = self.jointa = 0.0
+                self._menu_grasper_effort = 0.0
+                self._menu_grasper_until_sec = 0.0
 
     def _zero_planner_commands(self):
         if self.control_mode == ControlMode.PLANNER:
@@ -2200,7 +2465,16 @@ class Robot(Base):
                 and active_controller.has_pending_auto_start()
                 and hasattr(active_controller, "start_playback")
             ):
-                active_controller.start_playback(sim_time_sec=state["sim_time"])
+                if active_controller.start_playback(sim_time_sec=state["sim_time"]):
+                    self._start_replay_session_recording(active_controller, state)
+
+            if getattr(active_controller, "enabled", False):
+                self._record_replay_sample(
+                    active_controller,
+                    state,
+                    self._replay_last_cmd_body_wrench,
+                    self._replay_last_cmd_arm_tau,
+                )
 
             cmd_body_wrench = self.vehicle_controller_fn(
                 state=np.array(list(state["pose"]) + list(state["body_vel"]), dtype=float),
@@ -2222,6 +2496,7 @@ class Robot(Base):
                 and active_controller.needs_repeat_reset()
                 and hasattr(active_controller, "consume_repeat_reset_request")
             ):
+                self._stop_replay_session_recording("pass_complete")
                 active_controller.consume_repeat_reset_request()
                 request = active_controller.build_reset_request()
                 if hasattr(active_controller, "reset_mode") and active_controller.reset_mode() == "controller_settle":
@@ -2249,6 +2524,16 @@ class Robot(Base):
                 np.asarray(cmd_body_wrench, float).tolist(),
                 np.asarray(cmd_arm_tau, float).tolist(),
             )
+            if getattr(active_controller, "enabled", False):
+                self._replay_last_cmd_body_wrench = np.asarray(cmd_body_wrench, float).tolist()
+                self._replay_last_cmd_arm_tau = np.asarray(cmd_arm_tau, float).tolist()
+            if hasattr(active_controller, "playback_status") and active_controller.playback_status() in (
+                "complete",
+                "error",
+                "stopped",
+                "no_csv",
+            ):
+                self._stop_replay_session_recording(active_controller.playback_status())
             return
 
         if self.control_mode == ControlMode.PLANNER:
