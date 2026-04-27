@@ -58,6 +58,7 @@ from enum import Enum
 from dataclasses import dataclass
 from simlab.debug_targets import DebugTargetPublisher
 from simlab.planner_action_client import PlannerActionClient
+from simlab.planners import visible_planner_names
 
 class ControlSpace(str, Enum):
     JOINT_SPACE = "joint_space"
@@ -601,6 +602,7 @@ class Robot(Base):
         )
 
         self.control_mode = ControlMode.TELEOP
+        self._planner_output_enabled = False
         self._mode_before_replay = ControlMode.TELEOP
         self._replay_settle_controller = None
         self._replay_settle_started_sim_time = None
@@ -709,13 +711,8 @@ class Robot(Base):
         # Active path planner
         self.planner_name = None
 
-        self.register_planner(
-            name='RRTstar'
-        )
-
-        self.register_planner(
-            name='Bitstar'
-        )
+        for planner_name in visible_planner_names():
+            self.register_planner(name=planner_name)
 
         self.set_planner("Bitstar")
 
@@ -1466,6 +1463,7 @@ class Robot(Base):
         else:
             return False
 
+        self.enable_planner_output()
         until_sec = self._now_sec() + max(0.0, self.grasper_menu_effort_duration)
         if hasattr(self, "controller_lock"):
             with self.controller_lock:
@@ -1592,6 +1590,7 @@ class Robot(Base):
     
             path_xyz = np.asarray(self.planner.planned_result["xyz"], dtype=float)
             self._start_vehicle_cartesian_ruckig(self.start_xyz, self.start_quat_wxyz, path_xyz)
+            self.enable_planner_output()
         else:
             self.node.get_logger().warn(
                 f"Planner action failed for {self.prefix}, "
@@ -2003,6 +2002,12 @@ class Robot(Base):
         self._zero_teleop_commands()
         self.abrupt_planner_stop()
 
+    def enable_planner_output(self) -> None:
+        self._planner_output_enabled = True
+
+    def disable_planner_output(self) -> None:
+        self._planner_output_enabled = False
+
     @staticmethod
     def _safe_filename_token(value: str) -> str:
         token = "".join(ch if ch.isalnum() or ch in ("-", "_", ".") else "_" for ch in str(value))
@@ -2186,6 +2191,7 @@ class Robot(Base):
         self.node.get_logger().info(f"Saved CmdReplay session ({reason}) to {path}.")
     
     def abrupt_planner_stop(self):
+        self.disable_planner_output()
         self._accept_planner_results = False
         self.planner_action_client.cancel_active_goal()
         self.final_goal_map_ned_6 = None
@@ -2685,6 +2691,9 @@ class Robot(Base):
             return
 
         if self.control_mode == ControlMode.PLANNER:
+            if not getattr(self, "_planner_output_enabled", False):
+                self.publish_commands([0.0] * 6, [0.0] * 5)
+                return
             active_controller = self.active_controller_instance()
             if active_controller is not None and hasattr(active_controller, "set_sim_time"):
                 active_controller.set_sim_time(state["sim_time"])

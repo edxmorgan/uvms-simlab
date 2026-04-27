@@ -664,6 +664,7 @@ class UVMSBackendCore:
             )
             return
         if self.robot_selected.task_based_controller and self.robot_selected.task_pose_in_world:
+            self.robot_selected.enable_planner_output()
             self.robot_selected.solve_inverse_kinematics_wrt_world_frame(self.target_world_endeffector_pose)
             self.node.get_logger().info(f"task trajectory plan & control", throttle_duration_sec=2.0)
             self.node.get_logger().info(f"{self.robot_selected.task_pose_in_world} robot.", throttle_duration_sec=2.0)

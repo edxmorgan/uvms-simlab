@@ -18,7 +18,6 @@
 A ROS 2 node that constantly publishes a neutral command on 
 /forward_pwm_controller/commands and modifies individual channels 
 based on keyboard key press/release events.
-# se3_ompl_planner.py
 Mapping:
     u -> channel 0
     i -> channel 1

@@ -8,8 +8,8 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 import tf2_ros
 from simlab.fcl_checker import FCLWorld
-from simlab.se3_ompl_planner import OmplPlanner
 from simlab.shutdown import install_signal_shutdown_handler, spin_until_shutdown
+from simlab.planners import DEFAULT_PLANNER_CLASSES
 
 class PlannerActionServer(Node):
 
@@ -40,10 +40,11 @@ class PlannerActionServer(Node):
 
         self.fcl_update_timer = self.create_timer(1.0 / 50.0, self._fcl_update_callback)
 
-        self._planner_map = {
-            "RRTstar": ("se3_ompl", "RRTstar"),
-            "Bitstar": ("se3_ompl", "Bitstar"),
-            "se3_ompl": ("se3_ompl", "RRTstar"),
+        self.safety_margin: float = 1e-2
+        self.env_bounds = tuple(float(v) for v in self.fcl_world.env_xyz_bounds)
+        self._planners = {
+            planner_cls.registry_name: planner_cls(self)
+            for planner_cls in DEFAULT_PLANNER_CLASSES
         }
 
         self._goal_handle = None
@@ -57,12 +58,6 @@ class PlannerActionServer(Node):
             handle_accepted_callback=self.handle_accepted_callback,
             cancel_callback=self.cancel_callback,
             callback_group=ReentrantCallbackGroup())
-        
-        self.safety_margin: float = 1e-2
-        self.env_bounds = tuple(float(v) for v in self.fcl_world.env_xyz_bounds)
-        self.ompl_planner = OmplPlanner(self,
-                                        safety_margin=float(self.safety_margin),
-                                        env_bounds=self.env_bounds,)
 
     def goal_callback(self, goal_request):
         """Accept or reject a client request to begin an action."""
@@ -72,7 +67,7 @@ class PlannerActionServer(Node):
             and len(goal_request.goal_xyz) == 3
             and len(goal_request.goal_quat_wxyz) == 4
             and goal_request.robot_collision_radius > 0.0
-            and goal_request.planner_name in self._planner_map
+            and goal_request.planner_name in self._planners
         )
         if not valid:
             self.get_logger().warn(
@@ -162,20 +157,19 @@ class PlannerActionServer(Node):
         result.path_length_cost = float("nan")
         result.geom_length = float("nan")
         result.message = "Planner did not run."
-        planner_kind, planner_variant = self._planner_map[req.planner_name]
+        planner = self._planners[req.planner_name]
         try:
             feedback_msg.stage = "planning"
             goal_handle.publish_feedback(feedback_msg)
 
-            if planner_kind == "se3_ompl":
-                plan = self.ompl_planner.plan_se3_path(
-                    start_xyz=req.start_xyz,
-                    start_quat_wxyz=req.start_quat_wxyz,
-                    goal_xyz=req.goal_xyz,
-                    goal_quat_wxyz=req.goal_quat_wxyz,
-                    time_limit=float(req.time_limit),
-                    planner_type=str(planner_variant),
-                )
+            plan = planner.plan_vehicle(
+                start_xyz=req.start_xyz,
+                start_quat_wxyz=req.start_quat_wxyz,
+                goal_xyz=req.goal_xyz,
+                goal_quat_wxyz=req.goal_quat_wxyz,
+                time_limit=float(req.time_limit),
+                robot_collision_radius=float(req.robot_collision_radius),
+            )
         except Exception as ex:
             goal_handle.abort()
             result.success = False

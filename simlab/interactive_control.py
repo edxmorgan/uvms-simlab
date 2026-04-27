@@ -168,31 +168,24 @@ class InteractiveControlsNode(Node):
                 self.menu_handler.setCheckState(controller_handle,
                                                  MenuHandler.CHECKED if robot.controller_name == controller_name else MenuHandler.UNCHECKED)
                 
-            path_planner_parent = self.menu_handler.insert(
-                f"{robot.prefix}",
-                parent=path_planner_root,
-                callback=self.noop_menu_callback,
-            )
+            path_planner_handles = []
             for path_planner_name in robot.list_planners():
                 path_planner_handle = self.menu_handler.insert(
                     f"{path_planner_name}",
-                    parent=path_planner_parent,
+                    parent=path_planner_root,
                     callback=self.switch_planner_type,
                 )
+                path_planner_handles.append(path_planner_handle)
                 self.planner_menu_map[path_planner_handle] = (robot, path_planner_name)
                 self.menu_handler.setCheckState(path_planner_handle,
                                                  MenuHandler.CHECKED if robot.planner_name == path_planner_name else MenuHandler.UNCHECKED)
 
-            csv_playback_parent = self.menu_handler.insert(
-                f"{robot.prefix}",
+            csv_profiles_parent = self.menu_handler.insert(
+                "Profiles",
                 parent=csv_playback_root,
                 callback=self.noop_menu_callback,
             )
-            csv_profiles_parent = self.menu_handler.insert(
-                "Profiles",
-                parent=csv_playback_parent,
-                callback=self.noop_menu_callback,
-            )
+            csv_playback_handles = [csv_profiles_parent]
             cmd_replay_controller = robot.controller_instance("CmdReplay")
             if cmd_replay_controller is not None and hasattr(cmd_replay_controller, "list_profiles"):
                 for profile_name in cmd_replay_controller.list_profiles():
@@ -208,16 +201,18 @@ class InteractiveControlsNode(Node):
                         if getattr(cmd_replay_controller, "profile_name", None) == profile_name
                         else MenuHandler.UNCHECKED,
                     )
+                    csv_playback_handles.append(profile_handle)
             csv_reset_handle = self.menu_handler.insert(
                 "Reset Robot + Playback",
-                parent=csv_playback_parent,
+                parent=csv_playback_root,
                 callback=self.reset_csv_playback,
             )
             csv_stop_handle = self.menu_handler.insert(
                 "Stop",
-                parent=csv_playback_parent,
+                parent=csv_playback_root,
                 callback=self.stop_csv_playback,
             )
+            csv_playback_handles.extend([csv_reset_handle, csv_stop_handle])
             self.csv_playback_menu_map[csv_reset_handle] = (robot, "reset")
             self.csv_playback_menu_map[csv_stop_handle] = (robot, "stop")
                 
@@ -260,17 +255,13 @@ class InteractiveControlsNode(Node):
             self.menu_handler.setCheckState(align_tool_axis_handle, MenuHandler.CHECKED)
             robot.ik_base_align_w = 1
 
-            grasper_parent = self.menu_handler.insert(
-                f"{robot.prefix}",
-                parent=grasper_root,
-                callback=self.noop_menu_callback,
-            )
-            self.open_grasper_handle = self.menu_handler.insert('Open', parent=grasper_parent, callback=self.grasper_callback)
-            self.close_grasper_handle = self.menu_handler.insert('Close', parent=grasper_parent, callback=self.grasper_callback)
-            self.grasp_menu_map[self.open_grasper_handle] = (robot, 'open')
-            self.grasp_menu_map[self.close_grasper_handle] = (robot, 'close')
-            self.menu_handler.setCheckState(self.open_grasper_handle, MenuHandler.UNCHECKED)
-            self.menu_handler.setCheckState(self.close_grasper_handle, MenuHandler.CHECKED)
+            open_grasper_handle = self.menu_handler.insert('Open', parent=grasper_root, callback=self.grasper_callback)
+            close_grasper_handle = self.menu_handler.insert('Close', parent=grasper_root, callback=self.grasper_callback)
+            grasper_handles = [open_grasper_handle, close_grasper_handle]
+            self.grasp_menu_map[open_grasper_handle] = (robot, 'open')
+            self.grasp_menu_map[close_grasper_handle] = (robot, 'close')
+            self.menu_handler.setCheckState(open_grasper_handle, MenuHandler.UNCHECKED)
+            self.menu_handler.setCheckState(close_grasper_handle, MenuHandler.CHECKED)
 
             # remember parents so visibility can be toggled per robot
             self.robot_menu_parents[robot.k_robot] = {
@@ -278,9 +269,9 @@ class InteractiveControlsNode(Node):
                 "cs": cs_parent,
                 "controller": controller_parent,
                 "ik": ik_settings_parent,
-                "grasper": grasper_parent,
-                "planner": path_planner_parent,
-                "csv": csv_playback_parent,
+                "grasper": grasper_handles,
+                "planner": path_planner_handles,
+                "csv": csv_playback_handles,
             }
            
 
@@ -413,7 +404,11 @@ class InteractiveControlsNode(Node):
             visible = (r.k_robot == selected_k_robot)
             parents = self.robot_menu_parents.get(r.k_robot, {})
             for h in parents.values():
-                self.menu_handler.setVisible(h, visible)
+                if isinstance(h, (list, tuple)):
+                    for handle in h:
+                        self.menu_handler.setVisible(handle, visible)
+                else:
+                    self.menu_handler.setVisible(h, visible)
 
         # push updated menu state to all markers that have menus
         self.menu_handler.reApply(self.server)

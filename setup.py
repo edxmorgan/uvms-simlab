@@ -39,7 +39,6 @@ setup(
         ('lib/' + package_name, [package_name+'/uvms_parameters.py']),
         ('lib/' + package_name, [package_name+'/controller_msg.py']),
         ('lib/' + package_name, [package_name+'/mesh_utils.py']),
-        ('lib/' + package_name, [package_name+'/se3_ompl_planner.py']),
         ('lib/' + package_name, [package_name+'/cartesian_ruckig.py']),
         ('lib/' + package_name, [package_name+'/fcl_checker.py']),
         ('lib/' + package_name, [package_name+'/interactive_utils.py']),
