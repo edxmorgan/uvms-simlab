@@ -304,7 +304,7 @@ class UVMSBackendCore:
         self.env_aabb_pub.publish(max_marker)
 
     def format_robot_metrics_overlay_text(self) -> str:
-        lines = ['Robot Controller Energy Applied']
+        lines = ['Robot Control Status']
         for index, robot in enumerate(self.robots):
             metrics = robot.get_energy_metrics()
             mission = self.vehicle_waypoint_missions[robot.k_robot]

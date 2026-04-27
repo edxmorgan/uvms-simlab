@@ -26,7 +26,7 @@ class CmdReplayController(ControllerTemplate):
     name = "CmdReplay"
     registry_name = "CmdReplay"
 
-    DEFAULT_PROFILE = "phase1_payload_0p0kg"
+    DEFAULT_PROFILE = ""
     DEFAULT_TIME_COLUMN = "time_sec"
     DEFAULT_VEHICLE_COLUMNS = "vehicle_fx,vehicle_fy,vehicle_fz,vehicle_tx,vehicle_ty,vehicle_tz"
     DEFAULT_ARM_COLUMNS = "tau_axis_e,tau_axis_d,tau_axis_c,tau_axis_b,tau_axis_a"
@@ -37,7 +37,7 @@ class CmdReplayController(ControllerTemplate):
     def __init__(self, node: Node, arm_dof: int = 4, robot_prefix: str = ""):
         super().__init__(node, arm_dof, robot_prefix)
         self.profiles_root = Path(ament_index_python.get_package_share_directory("simlab")) / "csv_playback"
-        self.profile_name = str(self._get_or_declare_parameter("cmd_replay_profile", self.DEFAULT_PROFILE))
+        self.profile_name = str(self._get_or_declare_parameter("cmd_replay_profile", self.DEFAULT_PROFILE)).strip()
         self.csv_path = ""
         self.config_path = ""
         self.time_column = self.DEFAULT_TIME_COLUMN
@@ -58,7 +58,7 @@ class CmdReplayController(ControllerTemplate):
         self._auto_start_pending = False
         self._warned_time_jump = False
         self.lifecycle_state = CmdReplayState.PLAYING if self.enabled else CmdReplayState.STOPPED
-        self._reset_hold_commands = True
+        self._reset_requires_release_after_reset = True
         self._current_pass = 0
         self._repeat_reset_requested = False
         self.times_sec = np.array([], dtype=float)
@@ -66,8 +66,12 @@ class CmdReplayController(ControllerTemplate):
         self.arm_commands = np.zeros((0, self.arm_dof + 1), dtype=float)
         self.duration_sec = 0.0
         self.reset_config = self._default_reset_config()
+        self.control_policy = self._default_control_policy()
 
-        self.load_profile(self.profile_name)
+        if self.profile_name:
+            self.load_profile(self.profile_name)
+        else:
+            self.node.get_logger().info("CmdReplay has no selected profile; choose a Cmd Replay profile before playback.")
 
     def _get_or_declare_parameter(self, name: str, default_value, legacy_name: str = None):
         if legacy_name and self.node.has_parameter(legacy_name):
@@ -124,6 +128,7 @@ class CmdReplayController(ControllerTemplate):
 
         playback = manifest.get("playback", {})
         columns = manifest.get("columns", {})
+        control_policy = manifest.get("control_policy", {})
         csv_name = str(manifest.get("csv", "commands.csv"))
 
         self.stop_playback()
@@ -141,6 +146,8 @@ class CmdReplayController(ControllerTemplate):
         )
         self.repeats = max(1, int(playback.get("repeats", 1)))
         self.loop = bool(playback.get("loop", False))
+        self.control_policy = self._merge_control_policy(self._default_control_policy(), control_policy)
+        self._warned_invalid_stabilizing_controller = False
         self.reset_config = self._merge_reset_config(
             self._default_reset_config(),
             manifest.get("reset", {}),
@@ -158,7 +165,7 @@ class CmdReplayController(ControllerTemplate):
         return {
             "reset_manipulator": True,
             "reset_vehicle": True,
-            "hold_commands": True,
+            "require_release_after_reset": True,
             "manipulator": {
                 "enabled": True,
                 "position": [0.0] * (self.arm_dof + 1),
@@ -176,6 +183,46 @@ class CmdReplayController(ControllerTemplate):
                 "payload_inertia": [0.0, 0.0, 0.0],
             },
         }
+
+    def _default_control_policy(self) -> dict:
+        return {
+            "vehicle": "replay",
+            "manipulator": "replay",
+            "stabilizing_controller": "PID",
+        }
+
+    def _merge_control_policy(self, base: dict, override: dict) -> dict:
+        if not isinstance(override, dict):
+            override = {}
+        policy = dict(base)
+        for key in ("vehicle", "manipulator"):
+            value = str(override.get(key, policy[key])).strip().lower()
+            if value not in ("replay", "hold", "zero"):
+                self.node.get_logger().warn(
+                    f"CmdReplay invalid control_policy.{key}='{value}'; using '{policy[key]}'."
+                )
+                continue
+            policy[key] = value
+        stabilizing_controller = str(
+            override.get("stabilizing_controller", policy["stabilizing_controller"])
+        ).strip()
+        if not stabilizing_controller:
+            self.node.get_logger().warn(
+                f"CmdReplay invalid control_policy.stabilizing_controller='{stabilizing_controller}'; "
+                f"using '{policy['stabilizing_controller']}'."
+            )
+        else:
+            policy["stabilizing_controller"] = stabilizing_controller
+        return policy
+
+    def vehicle_policy(self) -> str:
+        return str(self.control_policy.get("vehicle", "replay"))
+
+    def manipulator_policy(self) -> str:
+        return str(self.control_policy.get("manipulator", "replay"))
+
+    def stabilizing_controller_name(self) -> str:
+        return str(self.control_policy.get("stabilizing_controller", "PID"))
 
     def _load_reset_config(self, config_path: str) -> None:
         path = Path(os.path.expanduser(config_path))
@@ -242,7 +289,7 @@ class CmdReplayController(ControllerTemplate):
         request = ResetSimUvms.Request()
         request.reset_manipulator = bool(config.get("reset_manipulator", True))
         request.reset_vehicle = bool(config.get("reset_vehicle", True))
-        request.hold_commands = bool(config.get("hold_commands", True))
+        request.hold_commands = bool(config.get("require_release_after_reset", True))
         request.use_manipulator_state = bool(manipulator.get("enabled", True))
         request.manipulator_position = self._vector(manipulator.get("position"), 5)
         request.manipulator_velocity = self._vector(manipulator.get("velocity"), 5)
@@ -261,10 +308,10 @@ class CmdReplayController(ControllerTemplate):
         return request
 
     def reset_mode(self) -> str:
-        return str(self.reset_config.get("mode", "sim_state"))
+        return "controller_settle" if "real" in self.robot_prefix else "sim_state"
 
     def controller_settle_config(self) -> dict:
-        settle = self.reset_config.get("settle", {})
+        settle = self.reset_config.get("hardware_settle", {})
         if not isinstance(settle, dict):
             settle = {}
         config = {
@@ -394,26 +441,34 @@ class CmdReplayController(ControllerTemplate):
 
     def has_valid_playback(self) -> bool:
         return (
+            bool(self.profile_name)
+            and
             self.times_sec.size > 0
             and self.duration_sec > 0.0
             and self.vehicle_commands.shape[0] == self.times_sec.size
             and self.arm_commands.shape[0] == self.times_sec.size
         )
 
-    def request_reset(self, hold_commands: bool) -> bool:
+    def has_selected_profile(self) -> bool:
+        return bool(self.profile_name)
+
+    def request_reset(self, require_release_after_reset: bool) -> bool:
         if not self.has_valid_playback():
             self.enabled = False
             self._auto_start_pending = False
             self._repeat_reset_requested = False
             self.lifecycle_state = CmdReplayState.ERROR
-            self.node.get_logger().error(
-                f"CmdReplay profile '{self.profile_name}' has no valid command samples; reset/playback rejected."
-            )
+            if not self.has_selected_profile():
+                self.node.get_logger().error("CmdReplay has no selected profile; reset/playback rejected.")
+            else:
+                self.node.get_logger().error(
+                    f"CmdReplay profile '{self.profile_name}' has no valid command samples; reset/playback rejected."
+                )
             return False
         self.enabled = False
         self._auto_start_pending = False
         self._repeat_reset_requested = False
-        self._reset_hold_commands = bool(hold_commands)
+        self._reset_requires_release_after_reset = bool(require_release_after_reset)
         self.reset_playback()
         self.lifecycle_state = CmdReplayState.RESETTING
         self.node.get_logger().info("CmdReplay reset requested.")
@@ -451,9 +506,12 @@ class CmdReplayController(ControllerTemplate):
             self.enabled = False
             self._auto_start_pending = False
             self.lifecycle_state = CmdReplayState.ERROR
-            self.node.get_logger().error(
-                f"CmdReplay profile '{self.profile_name}' has no valid command samples; start rejected."
-            )
+            if not self.has_selected_profile():
+                self.node.get_logger().error("CmdReplay has no selected profile; start rejected.")
+            else:
+                self.node.get_logger().error(
+                    f"CmdReplay profile '{self.profile_name}' has no valid command samples; start rejected."
+                )
             return False
         self.reset_playback()
         if sim_time_sec is not None:
@@ -478,9 +536,9 @@ class CmdReplayController(ControllerTemplate):
         self.lifecycle_state = CmdReplayState.STOPPED
         self.node.get_logger().info("CmdReplay stopped.")
 
-    def begin_sequence(self, hold_commands: bool) -> bool:
+    def begin_sequence(self, require_release_after_reset: bool) -> bool:
         self._current_pass = 0
-        return self.request_reset(hold_commands)
+        return self.request_reset(require_release_after_reset)
 
     def needs_repeat_reset(self) -> bool:
         return self._repeat_reset_requested
@@ -489,7 +547,7 @@ class CmdReplayController(ControllerTemplate):
         if not self._repeat_reset_requested:
             return False
         self._repeat_reset_requested = False
-        self.request_reset(self._reset_hold_commands)
+        self.request_reset(self._reset_requires_release_after_reset)
         return True
 
     def playback_status(self) -> str:
@@ -547,7 +605,7 @@ class CmdReplayController(ControllerTemplate):
         index = self._current_sample_index()
         if index is None:
             return np.zeros(6, dtype=float)
-        return self.vehicle_commands[index].copy()
+        return self.vehicle_command_at(index)
 
     def arm_controller(
         self,
@@ -567,7 +625,20 @@ class CmdReplayController(ControllerTemplate):
                 self._warned_missing = True
             return np.zeros(self.arm_dof + 1, dtype=float)
 
-        return self.arm_commands[index].copy()
+        return self.arm_command_at(index)
+
+    def current_sample_index(self):
+        return self._current_sample_index()
+
+    def vehicle_command_at(self, index) -> np.ndarray:
+        if index is None:
+            return np.zeros(6, dtype=float)
+        return self.vehicle_commands[int(index)].copy()
+
+    def arm_command_at(self, index) -> np.ndarray:
+        if index is None:
+            return np.zeros(self.arm_dof + 1, dtype=float)
+        return self.arm_commands[int(index)].copy()
 
     def _current_sample_index(self):
         if not self.enabled:

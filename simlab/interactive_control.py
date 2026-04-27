@@ -68,27 +68,47 @@ class InteractiveControlsNode(Node):
         self.server = InteractiveMarkerServer(self, "uvms_interactive_controls")
 
         self.menu_handler = MenuHandler()
-        self.execute_handle = self.menu_handler.insert("Plan & Execute", callback=self.plan_execute)
+        planning_parent = self.menu_handler.insert("Planning", callback=self.noop_menu_callback)
+        waypoints_parent = self.menu_handler.insert("Waypoints", callback=self.noop_menu_callback)
+        simulation_parent = self.menu_handler.insert("Simulation", callback=self.noop_menu_callback)
+
+        self.execute_handle = self.menu_handler.insert(
+            "Plan & Execute",
+            parent=planning_parent,
+            callback=self.plan_execute,
+        )
         self.add_vehicle_waypoint_handle = self.menu_handler.insert(
-            "Add Vehicle Waypoint",
+            "Add Vehicle",
+            parent=waypoints_parent,
             callback=self.add_vehicle_waypoint,
         )
         self.delete_vehicle_waypoint_parent_handle = self.menu_handler.insert(
-            "Delete Vehicle Waypoint",
+            "Delete Vehicle",
+            parent=waypoints_parent,
             callback=self.noop_menu_callback,
         )
         self.delete_vehicle_waypoint_handles = []
         self.delete_vehicle_waypoint_menu_map = {}
         self.clear_vehicle_waypoints_handle = self.menu_handler.insert(
-            "Clear Vehicle Waypoints",
+            "Clear Vehicle",
+            parent=waypoints_parent,
             callback=self.clear_vehicle_waypoints,
         )
         self.stop_vehicle_waypoints_handle = self.menu_handler.insert(
-            "Stop Vehicle Waypoints",
+            "Stop Vehicle",
+            parent=waypoints_parent,
             callback=self.stop_vehicle_waypoints,
         )
-        self.reset_sim_handle = self.menu_handler.insert("Reset Simulation", callback=self.reset_simulation)
-        self.release_sim_handle = self.menu_handler.insert("Release Simulation", callback=self.release_simulation)
+        self.reset_sim_handle = self.menu_handler.insert(
+            "Reset",
+            parent=simulation_parent,
+            callback=self.reset_simulation,
+        )
+        self.release_sim_handle = self.menu_handler.insert(
+            "Release",
+            parent=simulation_parent,
+            callback=self.release_simulation,
+        )
 
         self.control_space_menu_map = {}  # mid -> (k_robot, control_space_name)
         self.axis_menu_map = {}
@@ -111,8 +131,17 @@ class InteractiveControlsNode(Node):
             self.menu_handler.setCheckState(robot_handle,
                                              MenuHandler.CHECKED if self.uvms_backend.robot_selected.k_robot == robot.k_robot else MenuHandler.UNCHECKED)
 
+            robot_control_parent = self.menu_handler.insert(
+                f"{robot.prefix} Control",
+                callback=self.noop_menu_callback,
+            )
+
             # control space submenu per robot
-            cs_parent = self.menu_handler.insert("Control Space", callback=self.noop_menu_callback)
+            cs_parent = self.menu_handler.insert(
+                "Control Space",
+                parent=robot_control_parent,
+                callback=self.noop_menu_callback,
+            )
             for cs_name in robot.list_control_spaces():
                 mid = self.menu_handler.insert(
                     cs_name,
@@ -122,7 +151,11 @@ class InteractiveControlsNode(Node):
                 self.control_space_menu_map[mid] = (robot, cs_name)
                 self.menu_handler.setCheckState(mid, MenuHandler.CHECKED if robot.control_space == cs_name else MenuHandler.UNCHECKED)
                 
-            controller_parent = self.menu_handler.insert('Controller', callback=self.noop_menu_callback)
+            controller_parent = self.menu_handler.insert(
+                "Controller",
+                parent=robot_control_parent,
+                callback=self.noop_menu_callback,
+            )
 
             for controller_name in robot.list_controllers():
                 controller_handle = self.menu_handler.insert(
@@ -134,7 +167,11 @@ class InteractiveControlsNode(Node):
                 self.menu_handler.setCheckState(controller_handle,
                                                  MenuHandler.CHECKED if robot.controller_name == controller_name else MenuHandler.UNCHECKED)
                 
-            path_planner_parent = self.menu_handler.insert('Path Planner', callback=self.noop_menu_callback)
+            path_planner_parent = self.menu_handler.insert(
+                "Path Planner",
+                parent=robot_control_parent,
+                callback=self.noop_menu_callback,
+            )
             for path_planner_name in robot.list_planners():
                 path_planner_handle = self.menu_handler.insert(
                     f"{path_planner_name}",
@@ -145,7 +182,11 @@ class InteractiveControlsNode(Node):
                 self.menu_handler.setCheckState(path_planner_handle,
                                                  MenuHandler.CHECKED if robot.planner_name == path_planner_name else MenuHandler.UNCHECKED)
 
-            csv_playback_parent = self.menu_handler.insert("Cmd Replay", callback=self.noop_menu_callback)
+            csv_playback_parent = self.menu_handler.insert(
+                "Cmd Replay",
+                parent=robot_control_parent,
+                callback=self.noop_menu_callback,
+            )
             csv_profiles_parent = self.menu_handler.insert(
                 "Profiles",
                 parent=csv_playback_parent,
@@ -179,7 +220,11 @@ class InteractiveControlsNode(Node):
             self.csv_playback_menu_map[csv_reset_handle] = (robot, "reset")
             self.csv_playback_menu_map[csv_stop_handle] = (robot, "stop")
                 
-            ik_settings_parent = self.menu_handler.insert("IK Settings", callback=self.noop_menu_callback)
+            ik_settings_parent = self.menu_handler.insert(
+                "IK Settings",
+                parent=robot_control_parent,
+                callback=self.noop_menu_callback,
+            )
             x_axis_align_target_task_space_handle = self.menu_handler.insert(
                 'x-axis align',
                 parent=ik_settings_parent,
@@ -214,7 +259,11 @@ class InteractiveControlsNode(Node):
             self.menu_handler.setCheckState(align_tool_axis_handle, MenuHandler.CHECKED)
             robot.ik_base_align_w = 1
 
-            grasper_parent = self.menu_handler.insert('Grasper', callback=self.noop_menu_callback)
+            grasper_parent = self.menu_handler.insert(
+                "Grasper",
+                parent=robot_control_parent,
+                callback=self.noop_menu_callback,
+            )
             self.open_grasper_handle = self.menu_handler.insert('Open', parent=grasper_parent, callback=self.grasper_callback)
             self.close_grasper_handle = self.menu_handler.insert('Close', parent=grasper_parent, callback=self.grasper_callback)
             self.grasp_menu_map[self.open_grasper_handle] = (robot, 'open')
@@ -224,6 +273,7 @@ class InteractiveControlsNode(Node):
 
             # remember parents so visibility can be toggled per robot
             self.robot_menu_parents[robot.k_robot] = {
+                "control": robot_control_parent,
                 "cs": cs_parent,
                 "controller": controller_parent,
                 "ik": ik_settings_parent,
@@ -525,7 +575,6 @@ class InteractiveControlsNode(Node):
         controller.stop_playback()
         if hasattr(robot, "_stop_replay_session_recording"):
             robot._stop_replay_session_recording("stopped")
-        robot.set_control_mode(ControlMode.TELEOP)
         robot.publish_commands([0.0] * 6, [0.0] * 5)
         self.get_logger().info(f"Stopped CSV playback for {robot.prefix}.")
 
@@ -535,6 +584,12 @@ class InteractiveControlsNode(Node):
         if controller is None or not hasattr(controller, "load_profile"):
             self.get_logger().warn(f"{robot.prefix} has no CmdReplay controller.")
             return
+        if hasattr(robot, "cancel_replay_settle"):
+            robot.cancel_replay_settle(mark_failed=False)
+        if hasattr(robot, "_stop_replay_session_recording"):
+            robot._stop_replay_session_recording("profile_changed")
+        if robot.controller_name == "CmdReplay":
+            robot.publish_commands([0.0] * 6, [0.0] * 5)
         if not controller.load_profile(profile_name):
             return
 
@@ -565,20 +620,27 @@ class InteractiveControlsNode(Node):
             return
         if hasattr(controller, "has_valid_playback") and not controller.has_valid_playback():
             controller.stop_playback()
-            robot.set_control_mode(ControlMode.TELEOP)
             robot.publish_commands([0.0] * 6, [0.0] * 5)
-            self.get_logger().warn(
-                f"CmdReplay reset rejected for {robot.prefix}: "
-                f"profile '{getattr(controller, 'profile_name', '')}' has no valid command samples."
-            )
+            if hasattr(controller, "has_selected_profile") and not controller.has_selected_profile():
+                self.get_logger().warn(
+                    f"CmdReplay reset rejected for {robot.prefix}: no replay profile selected."
+                )
+            else:
+                self.get_logger().warn(
+                    f"CmdReplay reset rejected for {robot.prefix}: "
+                    f"profile '{getattr(controller, 'profile_name', '')}' has no valid command samples."
+                )
             return
         robot.set_control_mode(ControlMode.REPLAY)
         robot.publish_commands([0.0] * 6, [0.0] * 5)
         request = controller.build_reset_request()
         if not controller.begin_sequence(request.hold_commands):
-            robot.set_control_mode(ControlMode.TELEOP)
             robot.publish_commands([0.0] * 6, [0.0] * 5)
             return
+
+        def _fail_replay_reset():
+            controller.mark_reset_failed()
+            robot.publish_commands([0.0] * 6, [0.0] * 5)
 
         if hasattr(controller, "reset_mode") and controller.reset_mode() == "controller_settle":
             def _start_settle_after_dynamics():
@@ -590,7 +652,7 @@ class InteractiveControlsNode(Node):
             robot.apply_sim_dynamics_from_reset_request(
                 request,
                 on_success=_start_settle_after_dynamics,
-                on_failure=controller.mark_reset_failed,
+                on_failure=_fail_replay_reset,
             )
             return
 
@@ -602,7 +664,7 @@ class InteractiveControlsNode(Node):
         robot.reset_simulation_with_state(
             request,
             on_success=_start_after_reset,
-            on_failure=controller.mark_reset_failed,
+            on_failure=_fail_replay_reset,
         )
         next_step = (
             "Playback will auto-start after reset succeeds."
@@ -634,6 +696,11 @@ class InteractiveControlsNode(Node):
     def switch_control_space_type(self, feedback: InteractiveMarkerFeedback):
         robot: Robot
         robot, control_space_name = self.control_space_menu_map.get(feedback.menu_entry_id)
+        if robot.control_mode in (ControlMode.REPLAY, ControlMode.REPLAY_SETTLE):
+            self.get_logger().warn(
+                f"Control-space switch rejected for {robot.prefix}; CmdReplay is active."
+            )
+            return
 
         # set on the robot that owns this menu entry
         robot.set_control_space(control_space_name)

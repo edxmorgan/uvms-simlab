@@ -22,9 +22,13 @@
     "repeats": 3,
     "loop": false
   },
+  "control_policy": {
+    "vehicle": "hold",
+    "manipulator": "replay",
+    "stabilizing_controller": "PID"
+  },
   "reset": {
-    "mode": "controller_settle",
-    "settle": {
+    "hardware_settle": {
       "controller": "PID",
       "position_tolerance": 0.18,
       "velocity_tolerance": 0.03,
@@ -34,7 +38,7 @@
     },
     "reset_manipulator": true,
     "reset_vehicle": true,
-    "hold_commands": false,
+    "require_release_after_reset": false,
     "manipulator": {
       "enabled": true,
       "position": [
@@ -81,7 +85,7 @@
     },
     "dynamics": {
       "gravity": 9.81,
-      "payload_mass": 0.76,
+      "payload_mass": 0.38,
       "payload_inertia": [
         0.0,
         0.0,

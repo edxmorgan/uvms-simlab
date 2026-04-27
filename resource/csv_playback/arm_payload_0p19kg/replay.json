@@ -19,12 +19,12 @@
     ]
   },
   "playback": {
-    "repeats": 1,
+    "repeats": 3,
     "loop": false
   },
   "control_policy": {
-    "vehicle": "replay",
-    "manipulator": "hold",
+    "vehicle": "hold",
+    "manipulator": "replay",
     "stabilizing_controller": "PID"
   },
   "reset": {
@@ -85,7 +85,7 @@
     },
     "dynamics": {
       "gravity": 9.81,
-      "payload_mass": 0.0,
+      "payload_mass": 0.19,
       "payload_inertia": [
         0.0,
         0.0,

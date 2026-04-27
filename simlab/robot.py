@@ -337,6 +337,14 @@ class Axis_Interface_names:
     floating_pitch_vel = 'angular_velocity.y'
     floating_yaw_vel = 'angular_velocity.z'
 
+    floating_du = 'linear_acceleration.x'
+    floating_dv = 'linear_acceleration.y'
+    floating_dw = 'linear_acceleration.z'
+
+    floating_dp = 'angular_acceleration.x'
+    floating_dq = 'angular_acceleration.y'
+    floating_dr = 'angular_acceleration.z'
+
     floating_force_x = 'force.x'
     floating_force_y = 'force.y'
     floating_force_z = 'force.z'
@@ -359,6 +367,7 @@ class Manipulator(Base):
         self.n_joint = n_joint
         self.q = [0]*n_joint
         self.dq = [0]*n_joint
+        self.ddq = [0]*n_joint
         self.sim_period = [0.0]
         self.effort = [0]*n_joint
         self.alpha_axis_a = f'{prefix}_axis_a'
@@ -377,6 +386,7 @@ class Manipulator(Base):
         # Initialize grasper state so get_state() is safe before first update.
         self.grasper_q = [0.0]
         self.grasper_q_dot = [0.0]
+        self.grasper_q_ddot = [0.0]
         self.close_grasper()
 
     def open_grasper(self):
@@ -395,6 +405,11 @@ class Manipulator(Base):
             msg,
             self.joints,
             [Axis_Interface_names.manipulator_velocity] * 4
+        )
+        self.ddq = self.get_interface_value(
+            msg,
+            self.joints,
+            [Axis_Interface_names.manipulator_estimation_acceleration] * 4
         )
         self.effort = self.get_interface_value(
             msg,
@@ -416,13 +431,20 @@ class Manipulator(Base):
             self.grasper,
             [Axis_Interface_names.manipulator_velocity]
         )
+        self.grasper_q_ddot = self.get_interface_value(
+            msg,
+            self.grasper,
+            [Axis_Interface_names.manipulator_estimation_acceleration]
+        )
     def get_state(self) -> Dict[str, np.ndarray]:
         return {
             'arm_effort':self.effort,
             'grasper_q': self.grasper_q,
             'grasper_qdot': self.grasper_q_dot,
+            'grasper_qddot': self.grasper_q_ddot,
             'q':self.q,
             'dq':self.dq,
+            'ddq':self.ddq,
             'dt':self.sim_period[0]
         }
 
@@ -512,6 +534,7 @@ class Robot(Base):
         self.arm = Manipulator(node, n_joint, prefix)
         self.ned_pose = [0] * 6
         self.body_vel = [0] * 6
+        self.body_acc = [0] * 6
         self.ned_vel = [0] * 6
         self.body_forces = [0] * 6
         self.vehicle_control_power = 0.0
@@ -712,19 +735,9 @@ class Robot(Base):
         previous_controller = self.active_controller_instance()
         if self.control_mode == ControlMode.REPLAY_SETTLE and name != "CmdReplay":
             self.cancel_replay_settle(mark_failed=True)
+            self.control_mode = ControlMode.PLANNER
         spec = self._controllers[name]  # raises KeyError if missing, good fail-fast
         next_controller = getattr(spec.arm_fn, "__self__", None)
-        if (
-            name == "CmdReplay"
-            and next_controller is not None
-            and hasattr(next_controller, "has_valid_playback")
-            and not next_controller.has_valid_playback()
-        ):
-            self.node.get_logger().warn(
-                f"Controller switch to CmdReplay rejected for {self.prefix}; "
-                f"profile '{getattr(next_controller, 'profile_name', '')}' has no valid command samples."
-            )
-            return False
         self.vehicle_controller_fn = spec.vehicle_fn
         self.arm_controller_fn = spec.arm_fn
         self.controller_name = name
@@ -753,7 +766,7 @@ class Robot(Base):
         return self._controller_is_replay(self.active_controller_instance())
 
     def _replay_is_active(self) -> bool:
-        return self.control_mode in (ControlMode.REPLAY, ControlMode.REPLAY_SETTLE) or self._active_controller_is_replay()
+        return self.control_mode in (ControlMode.REPLAY, ControlMode.REPLAY_SETTLE)
 
     def start_replay_controller_settle(self, replay_controller) -> None:
         regular_names = [name for name in self.list_controllers() if name != "CmdReplay"]
@@ -810,6 +823,16 @@ class Robot(Base):
         if mark_failed and replay_controller is not None and hasattr(replay_controller, "mark_reset_failed"):
             replay_controller.mark_reset_failed()
         self._clear_replay_settle()
+
+    def _return_to_replay_after_settle_failure(self, replay_controller=None) -> None:
+        spec = self._controllers.get("CmdReplay")
+        if spec is not None:
+            self.vehicle_controller_fn = spec.vehicle_fn
+            self.arm_controller_fn = spec.arm_fn
+            self.controller_name = "CmdReplay"
+            self.set_control_mode(ControlMode.REPLAY)
+        if replay_controller is not None and hasattr(replay_controller, "mark_reset_failed"):
+            replay_controller.mark_reset_failed()
 
     def _replay_settle_is_done(self, state: Dict) -> tuple[bool, str]:
         cfg = self._replay_settle_config
@@ -1031,6 +1054,19 @@ class Robot(Base):
             ]
         )
 
+        self.body_acc = self.get_interface_value(
+            msg,
+            [self.floating_base_IOs] * 6,
+            [
+                Axis_Interface_names.floating_du,
+                Axis_Interface_names.floating_dv,
+                Axis_Interface_names.floating_dw,
+                Axis_Interface_names.floating_dp,
+                Axis_Interface_names.floating_dq,
+                Axis_Interface_names.floating_dr
+            ]
+        )
+
         self.J_UV = self.vehicle_J(self.ned_pose[3:6]).full()
 
         self.ned_vel = self.to_ned_velocity(self.J_UV, self.body_vel)
@@ -1091,6 +1127,7 @@ class Robot(Base):
         xq['name'] = self.prefix
         xq['pose'] = self.ned_pose
         xq['body_vel'] = self.body_vel
+        xq['body_acc'] = self.body_acc
         xq['ned_vel'] = self.ned_vel
         xq['body_forces'] = self.body_forces
         xq['vehicle_control_power_abs'] = self.vehicle_control_power
@@ -1948,9 +1985,7 @@ class Robot(Base):
             return
         if self.control_mode == ControlMode.REPLAY and mode != ControlMode.REPLAY:
             self._stop_replay_session_recording("mode_exit")
-        if mode == ControlMode.PLANNER and (
-            self.control_mode == ControlMode.REPLAY_SETTLE or self._active_controller_is_replay()
-        ):
+        if mode == ControlMode.PLANNER and self.control_mode == ControlMode.REPLAY_SETTLE:
             self.node.get_logger().warn(
                 f"Planner mode ignored for {self.prefix}; CmdReplay uses replay mode."
             )
@@ -1960,6 +1995,8 @@ class Robot(Base):
             self._mode_before_replay = self.control_mode
 
         self.control_mode = mode
+        if mode == ControlMode.PLANNER and not self.sim_reset_hold:
+            self._path_recording_enabled = True
         self._zero_teleop_commands()
         self.abrupt_planner_stop()
 
@@ -1993,6 +2030,10 @@ class Robot(Base):
             "dq_alpha_axis_d",
             "dq_alpha_axis_c",
             "dq_alpha_axis_b",
+            "ddq_alpha_axis_e",
+            "ddq_alpha_axis_d",
+            "ddq_alpha_axis_c",
+            "ddq_alpha_axis_b",
             "effort_alpha_axis_e",
             "effort_alpha_axis_d",
             "effort_alpha_axis_c",
@@ -2014,6 +2055,12 @@ class Robot(Base):
             "vehicle_p",
             "vehicle_q",
             "vehicle_r",
+            "vehicle_du",
+            "vehicle_dv",
+            "vehicle_dw",
+            "vehicle_dp",
+            "vehicle_dq",
+            "vehicle_dr",
             "cmd_vehicle_fx",
             "cmd_vehicle_fy",
             "cmd_vehicle_fz",
@@ -2052,9 +2099,11 @@ class Robot(Base):
 
         q = list(state.get("q", []))
         dq = list(state.get("dq", []))
+        ddq = list(state.get("ddq", []))
         effort = list(state.get("arm_effort", []))
         pose = list(state.get("pose", []))
         body_vel = list(state.get("body_vel", []))
+        body_acc = list(state.get("body_acc", []))
         arm_cmd = list(cmd_arm_tau)
         vehicle_cmd = list(cmd_body_wrench)
 
@@ -2076,6 +2125,10 @@ class Robot(Base):
                 "dq_alpha_axis_d": at(dq, 1),
                 "dq_alpha_axis_c": at(dq, 2),
                 "dq_alpha_axis_b": at(dq, 3),
+                "ddq_alpha_axis_e": at(ddq, 0),
+                "ddq_alpha_axis_d": at(ddq, 1),
+                "ddq_alpha_axis_c": at(ddq, 2),
+                "ddq_alpha_axis_b": at(ddq, 3),
                 "effort_alpha_axis_e": at(effort, 0),
                 "effort_alpha_axis_d": at(effort, 1),
                 "effort_alpha_axis_c": at(effort, 2),
@@ -2097,6 +2150,12 @@ class Robot(Base):
                 "vehicle_p": at(body_vel, 3),
                 "vehicle_q": at(body_vel, 4),
                 "vehicle_r": at(body_vel, 5),
+                "vehicle_du": at(body_acc, 0),
+                "vehicle_dv": at(body_acc, 1),
+                "vehicle_dw": at(body_acc, 2),
+                "vehicle_dp": at(body_acc, 3),
+                "vehicle_dq": at(body_acc, 4),
+                "vehicle_dr": at(body_acc, 5),
                 "cmd_vehicle_fx": at(vehicle_cmd, 0),
                 "cmd_vehicle_fy": at(vehicle_cmd, 1),
                 "cmd_vehicle_fz": at(vehicle_cmd, 2),
@@ -2162,14 +2221,27 @@ class Robot(Base):
         self.reset_simulation_with_state(request)
 
     def reset_simulation_with_state(self, request: ResetSimUvms.Request, on_success=None, on_failure=None) -> None:
+        previous_hold = self.sim_reset_hold
         self.sim_reset_hold = bool(request.hold_commands)
         self._reset_local_command_state()
+
+        def _on_reset_success():
+            if not self.sim_reset_hold:
+                self._path_recording_enabled = True
+            if on_success is not None:
+                on_success()
+
+        def _on_reset_failure():
+            self.sim_reset_hold = previous_hold
+            if on_failure is not None:
+                on_failure()
+
         self._call_reset_state_service(
             request=request,
             service_name=f"/{self.prefix}reset_sim_uvms",
             log_label=f"[{self.prefix}] state reset",
-            on_success=on_success,
-            on_failure=on_failure,
+            on_success=_on_reset_success,
+            on_failure=_on_reset_failure,
         )
 
     def apply_sim_dynamics_from_reset_request(
@@ -2223,12 +2295,21 @@ class Robot(Base):
         future.add_done_callback(_done_callback)
 
     def release_simulation(self) -> None:
-        self.sim_reset_hold = False
-        self._path_recording_enabled = True
+        previous_hold = self.sim_reset_hold
+
+        def _on_release_success():
+            self.sim_reset_hold = False
+            self._path_recording_enabled = True
+
+        def _on_release_failure():
+            self.sim_reset_hold = previous_hold
+
         self._call_uvms_service(
             client=self.release_sim_uvms_client,
             service_name=f"/{self.prefix}release_sim_uvms",
             log_label=f"[{self.prefix}] release",
+            on_success=_on_release_success,
+            on_failure=_on_release_failure,
         )
 
     def _reset_local_command_state(self) -> None:
@@ -2258,9 +2339,11 @@ class Robot(Base):
         clear_msg.header.frame_id = self.map_frame
         self.trajectory_path_publisher.publish(clear_msg)
 
-    def _call_uvms_service(self, client, service_name: str, log_label: str) -> None:
+    def _call_uvms_service(self, client, service_name: str, log_label: str, on_success=None, on_failure=None) -> None:
         if not client.wait_for_service(timeout_sec=0.5):
             self.node.get_logger().warn(f"{log_label} skipped, service {service_name} is not ready.")
+            if on_failure is not None:
+                on_failure()
             return
 
         future = client.call_async(Trigger.Request())
@@ -2270,16 +2353,24 @@ class Robot(Base):
                 response = done_future.result()
             except Exception as exc:
                 self.node.get_logger().error(f"{log_label} failed: {exc}")
+                if on_failure is not None:
+                    on_failure()
                 return
 
             if response is None:
                 self.node.get_logger().error(f"{log_label} failed: empty response from {service_name}")
+                if on_failure is not None:
+                    on_failure()
                 return
 
             if response.success:
                 self.node.get_logger().info(f"{log_label} ok: {response.message}")
+                if on_success is not None:
+                    on_success()
             else:
                 self.node.get_logger().warn(f"{log_label} rejected: {response.message}")
+                if on_failure is not None:
+                    on_failure()
 
         future.add_done_callback(_done_callback)
 
@@ -2364,12 +2455,10 @@ class Robot(Base):
             vehicle_target = self._replay_settle_vehicle_target
             if replay_controller is None or arm_target is None or vehicle_target is None:
                 self.node.get_logger().warn(
-                    f"Replay controller settle missing target/controller for {self.prefix}; returning to teleop."
+                    f"Replay controller settle missing target/controller for {self.prefix}; returning to replay idle."
                 )
-                if replay_controller is not None and hasattr(replay_controller, "mark_reset_failed"):
-                    replay_controller.mark_reset_failed()
                 self._clear_replay_settle()
-                self.set_control_mode(ControlMode.TELEOP)
+                self._return_to_replay_after_settle_failure(replay_controller)
                 self.publish_commands([0.0] * 6, [0.0] * 5)
                 return
 
@@ -2384,9 +2473,8 @@ class Robot(Base):
                 spec = self._controllers.get("CmdReplay")
                 if spec is None:
                     self.node.get_logger().error(f"CmdReplay controller missing for {self.prefix}.")
-                    replay_controller.mark_reset_failed()
                     self._clear_replay_settle()
-                    self.set_control_mode(ControlMode.TELEOP)
+                    self._return_to_replay_after_settle_failure(replay_controller)
                     self.publish_commands([0.0] * 6, [0.0] * 5)
                     return
 
@@ -2403,9 +2491,8 @@ class Robot(Base):
                 return
 
             if elapsed_sec >= timeout_sec:
-                replay_controller.mark_reset_failed()
                 self._clear_replay_settle()
-                self.set_control_mode(ControlMode.TELEOP)
+                self._return_to_replay_after_settle_failure(replay_controller)
                 self.node.get_logger().warn(
                     f"Replay controller settle timed out for {self.prefix} after {elapsed_sec:.2f}s; {detail}."
                 )
@@ -2468,29 +2555,69 @@ class Robot(Base):
                 if active_controller.start_playback(sim_time_sec=state["sim_time"]):
                     self._start_replay_session_recording(active_controller, state)
 
-            if getattr(active_controller, "enabled", False):
-                self._record_replay_sample(
-                    active_controller,
-                    state,
-                    self._replay_last_cmd_body_wrench,
-                    self._replay_last_cmd_arm_tau,
-                )
+            if not getattr(active_controller, "enabled", False):
+                self.publish_commands([0.0] * 6, [0.0] * 5)
+                return
 
-            cmd_body_wrench = self.vehicle_controller_fn(
-                state=np.array(list(state["pose"]) + list(state["body_vel"]), dtype=float),
-                target_pos=np.zeros(6, dtype=float),
-                target_vel=np.zeros(6, dtype=float),
-                target_acc=np.zeros(6, dtype=float),
-                dt=state["dt"],
+            sample_index = (
+                active_controller.current_sample_index()
+                if hasattr(active_controller, "current_sample_index")
+                else None
             )
-            cmd_arm_tau = self.arm_controller_fn(
-                q=list(state["q"]) + list(state["grasper_q"]),
-                q_dot=list(state["dq"]) + list(state["grasper_qdot"]),
-                q_ref=[0.0] * 5,
-                dq_ref=[0.0] * 5,
-                ddq_ref=[0.0] * 5,
-                dt=state["dt"],
+            stabilizing_controller_name = (
+                active_controller.stabilizing_controller_name()
+                if hasattr(active_controller, "stabilizing_controller_name")
+                else "PID"
             )
+            stabilizing_spec = self._controllers.get(stabilizing_controller_name)
+            if stabilizing_spec is None and stabilizing_controller_name != "PID":
+                if not getattr(active_controller, "_warned_invalid_stabilizing_controller", False):
+                    self.node.get_logger().warn(
+                        f"CmdReplay stabilizing controller '{stabilizing_controller_name}' is not available for "
+                        f"{self.robot_name}; falling back to PID."
+                    )
+                    active_controller._warned_invalid_stabilizing_controller = True
+                stabilizing_spec = self._controllers.get("PID")
+
+            vehicle_policy = (
+                active_controller.vehicle_policy()
+                if hasattr(active_controller, "vehicle_policy")
+                else "replay"
+            )
+            manipulator_policy = (
+                active_controller.manipulator_policy()
+                if hasattr(active_controller, "manipulator_policy")
+                else "replay"
+            )
+
+            veh_state_vec = np.array(list(state["pose"]) + list(state["body_vel"]), dtype=float)
+            if vehicle_policy == "replay":
+                cmd_body_wrench = active_controller.vehicle_command_at(sample_index)
+            elif vehicle_policy == "hold" and stabilizing_spec is not None:
+                cmd_body_wrench = stabilizing_spec.vehicle_fn(
+                    state=veh_state_vec,
+                    target_pos=np.asarray(active_controller.initial_vehicle_pose(), dtype=float),
+                    target_vel=np.zeros(6, dtype=float),
+                    target_acc=np.zeros(6, dtype=float),
+                    dt=state["dt"],
+                )
+            else:
+                cmd_body_wrench = np.zeros(6, dtype=float)
+
+            if manipulator_policy == "replay":
+                cmd_arm_tau = active_controller.arm_command_at(sample_index)
+            elif manipulator_policy == "hold" and stabilizing_spec is not None:
+                q_ref = active_controller.initial_manipulator_position()
+                cmd_arm_tau = stabilizing_spec.arm_fn(
+                    q=list(state["q"]) + list(state["grasper_q"]),
+                    q_dot=list(state["dq"]) + list(state["grasper_qdot"]),
+                    q_ref=q_ref,
+                    dq_ref=[0.0] * 5,
+                    ddq_ref=[0.0] * 5,
+                    dt=state["dt"],
+                )
+            else:
+                cmd_arm_tau = np.zeros(5, dtype=float)
             if (
                 hasattr(active_controller, "needs_repeat_reset")
                 and active_controller.needs_repeat_reset()
@@ -2499,11 +2626,15 @@ class Robot(Base):
                 self._stop_replay_session_recording("pass_complete")
                 active_controller.consume_repeat_reset_request()
                 request = active_controller.build_reset_request()
+                def _fail_repeat_reset():
+                    active_controller.mark_reset_failed()
+                    self.publish_commands([0.0] * 6, [0.0] * 5)
+
                 if hasattr(active_controller, "reset_mode") and active_controller.reset_mode() == "controller_settle":
                     self.apply_sim_dynamics_from_reset_request(
                         request,
                         on_success=lambda: self.start_replay_controller_settle(active_controller),
-                        on_failure=active_controller.mark_reset_failed,
+                        on_failure=_fail_repeat_reset,
                     )
                     self.publish_commands([0.0] * 6, [0.0] * 5)
                     return
@@ -2515,7 +2646,7 @@ class Robot(Base):
                 self.reset_simulation_with_state(
                     request,
                     on_success=_arm_next_pass,
-                    on_failure=active_controller.mark_reset_failed,
+                    on_failure=_fail_repeat_reset,
                 )
                 self.publish_commands([0.0] * 6, [0.0] * 5)
                 return
@@ -2525,6 +2656,12 @@ class Robot(Base):
                 np.asarray(cmd_arm_tau, float).tolist(),
             )
             if getattr(active_controller, "enabled", False):
+                self._record_replay_sample(
+                    active_controller,
+                    state,
+                    cmd_body_wrench,
+                    cmd_arm_tau,
+                )
                 self._replay_last_cmd_body_wrench = np.asarray(cmd_body_wrench, float).tolist()
                 self._replay_last_cmd_arm_tau = np.asarray(cmd_arm_tau, float).tolist()
             if hasattr(active_controller, "playback_status") and active_controller.playback_status() in (
