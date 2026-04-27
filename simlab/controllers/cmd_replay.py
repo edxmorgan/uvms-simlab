@@ -67,6 +67,7 @@ class CmdReplayController(ControllerTemplate):
         self.duration_sec = 0.0
         self.reset_config = self._default_reset_config()
         self.control_policy = self._default_control_policy()
+        self.recording_config = self._default_recording_config()
 
         if self.profile_name:
             self.load_profile(self.profile_name)
@@ -129,6 +130,7 @@ class CmdReplayController(ControllerTemplate):
         playback = manifest.get("playback", {})
         columns = manifest.get("columns", {})
         control_policy = manifest.get("control_policy", {})
+        recording = manifest.get("recording", {})
         csv_name = str(manifest.get("csv", "commands.csv"))
 
         self.stop_playback()
@@ -147,6 +149,7 @@ class CmdReplayController(ControllerTemplate):
         self.repeats = max(1, int(playback.get("repeats", 1)))
         self.loop = bool(playback.get("loop", False))
         self.control_policy = self._merge_control_policy(self._default_control_policy(), control_policy)
+        self.recording_config = self._merge_recording_config(self._default_recording_config(), recording)
         self._warned_invalid_stabilizing_controller = False
         self.reset_config = self._merge_reset_config(
             self._default_reset_config(),
@@ -190,6 +193,21 @@ class CmdReplayController(ControllerTemplate):
             "manipulator": "replay",
             "stabilizing_controller": "PID",
         }
+
+    def _default_recording_config(self) -> dict:
+        return {
+            "enabled": False,
+        }
+
+    def _merge_recording_config(self, base: dict, override: dict) -> dict:
+        if not isinstance(override, dict):
+            override = {}
+        config = dict(base)
+        config["enabled"] = bool(override.get("enabled", config["enabled"]))
+        return config
+
+    def recording_enabled(self) -> bool:
+        return bool(self.recording_config.get("enabled", False))
 
     def _merge_control_policy(self, base: dict, override: dict) -> dict:
         if not isinstance(override, dict):

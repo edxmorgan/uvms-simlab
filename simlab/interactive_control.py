@@ -68,45 +68,46 @@ class InteractiveControlsNode(Node):
         self.server = InteractiveMarkerServer(self, "uvms_interactive_controls")
 
         self.menu_handler = MenuHandler()
-        planning_parent = self.menu_handler.insert("Planning", callback=self.noop_menu_callback)
         waypoints_parent = self.menu_handler.insert("Waypoints", callback=self.noop_menu_callback)
-        simulation_parent = self.menu_handler.insert("Simulation", callback=self.noop_menu_callback)
+        self.reset_manager_parent = self.menu_handler.insert("Reset Manager", callback=self.noop_menu_callback)
+        path_planner_root = self.menu_handler.insert("Path Planner", callback=self.noop_menu_callback)
+        csv_playback_root = self.menu_handler.insert("Cmd Replay", callback=self.noop_menu_callback)
+        grasper_root = self.menu_handler.insert("Grasper", callback=self.noop_menu_callback)
 
         self.execute_handle = self.menu_handler.insert(
             "Plan & Execute",
-            parent=planning_parent,
             callback=self.plan_execute,
         )
         self.add_vehicle_waypoint_handle = self.menu_handler.insert(
-            "Add Vehicle",
+            "Add",
             parent=waypoints_parent,
             callback=self.add_vehicle_waypoint,
         )
         self.delete_vehicle_waypoint_parent_handle = self.menu_handler.insert(
-            "Delete Vehicle",
+            "Delete",
             parent=waypoints_parent,
             callback=self.noop_menu_callback,
         )
         self.delete_vehicle_waypoint_handles = []
         self.delete_vehicle_waypoint_menu_map = {}
         self.clear_vehicle_waypoints_handle = self.menu_handler.insert(
-            "Clear Vehicle",
+            "Clear",
             parent=waypoints_parent,
             callback=self.clear_vehicle_waypoints,
         )
         self.stop_vehicle_waypoints_handle = self.menu_handler.insert(
-            "Stop Vehicle",
+            "Stop",
             parent=waypoints_parent,
             callback=self.stop_vehicle_waypoints,
         )
         self.reset_sim_handle = self.menu_handler.insert(
             "Reset",
-            parent=simulation_parent,
+            parent=self.reset_manager_parent,
             callback=self.reset_simulation,
         )
         self.release_sim_handle = self.menu_handler.insert(
             "Release",
-            parent=simulation_parent,
+            parent=self.reset_manager_parent,
             callback=self.release_simulation,
         )
 
@@ -168,8 +169,8 @@ class InteractiveControlsNode(Node):
                                                  MenuHandler.CHECKED if robot.controller_name == controller_name else MenuHandler.UNCHECKED)
                 
             path_planner_parent = self.menu_handler.insert(
-                "Path Planner",
-                parent=robot_control_parent,
+                f"{robot.prefix}",
+                parent=path_planner_root,
                 callback=self.noop_menu_callback,
             )
             for path_planner_name in robot.list_planners():
@@ -183,8 +184,8 @@ class InteractiveControlsNode(Node):
                                                  MenuHandler.CHECKED if robot.planner_name == path_planner_name else MenuHandler.UNCHECKED)
 
             csv_playback_parent = self.menu_handler.insert(
-                "Cmd Replay",
-                parent=robot_control_parent,
+                f"{robot.prefix}",
+                parent=csv_playback_root,
                 callback=self.noop_menu_callback,
             )
             csv_profiles_parent = self.menu_handler.insert(
@@ -260,8 +261,8 @@ class InteractiveControlsNode(Node):
             robot.ik_base_align_w = 1
 
             grasper_parent = self.menu_handler.insert(
-                "Grasper",
-                parent=robot_control_parent,
+                f"{robot.prefix}",
+                parent=grasper_root,
                 callback=self.noop_menu_callback,
             )
             self.open_grasper_handle = self.menu_handler.insert('Open', parent=grasper_parent, callback=self.grasper_callback)
@@ -317,15 +318,29 @@ class InteractiveControlsNode(Node):
 
     def reset_simulation(self, feedback: InteractiveMarkerFeedback):
         robot = self.uvms_backend.robot_selected
+        if "real" in robot.prefix:
+            self.get_logger().warn(f"Reset Manager is disabled for real robot {robot.prefix}.")
+            return
         self.uvms_backend.clear_vehicle_waypoints_for_robot(robot.k_robot)
         self._refresh_vehicle_waypoint_delete_menu()
         robot.reset_simulation()
 
     def release_simulation(self, feedback: InteractiveMarkerFeedback):
-        self.uvms_backend.robot_selected.release_simulation()
+        robot = self.uvms_backend.robot_selected
+        if "real" in robot.prefix:
+            self.get_logger().warn(f"Reset Manager is disabled for real robot {robot.prefix}.")
+            return
+        robot.release_simulation()
 
     def plan_execute(self, feedback: InteractiveMarkerFeedback):
-        if self.uvms_backend.robot_selected.task_based_controller:
+        robot = self.uvms_backend.robot_selected
+        if robot.controller_name == "CmdReplay":
+            self.get_logger().warn("Plan & Execute requires a regular controller; choose PID/InvDyn/OGES first.")
+            return
+        if robot.control_mode != ControlMode.PLANNER:
+            robot.set_controller(robot.controller_name)
+
+        if robot.task_based_controller:
             self.uvms_backend.plan_task_trajectory()
             return
         if self.uvms_backend.selected_vehicle_waypoint_mission().waypoints:
@@ -387,6 +402,13 @@ class InteractiveControlsNode(Node):
         self.robot_metrics_overlay_pub.publish(msg)
 
     def _set_robot_submenus_visible(self, selected_k_robot: int) -> None:
+        selected_robot = next(
+            (robot for robot in self.uvms_backend.robots if robot.k_robot == selected_k_robot),
+            None,
+        )
+        if selected_robot is not None:
+            self.menu_handler.setVisible(self.reset_manager_parent, "real" not in selected_robot.prefix)
+
         for r in self.uvms_backend.robots:
             visible = (r.k_robot == selected_k_robot)
             parents = self.robot_menu_parents.get(r.k_robot, {})

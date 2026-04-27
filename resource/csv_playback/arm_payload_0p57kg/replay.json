@@ -92,5 +92,8 @@
         0.0
       ]
     }
+  },
+  "recording": {
+    "enabled": false
   }
 }

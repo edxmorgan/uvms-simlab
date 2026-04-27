@@ -703,8 +703,8 @@ class Robot(Base):
                 arm_fn=controller.arm_controller,
             )
 
-        # set default controller
-        self.set_controller("PID")
+        # Bind the default controller without activating closed-loop publishing.
+        self.set_controller("PID", activate=False)
 
         # Active path planner
         self.planner_name = None
@@ -731,9 +731,9 @@ class Robot(Base):
             arm_fn=arm_fn,
         )
 
-    def set_controller(self, name: str) -> bool:
+    def set_controller(self, name: str, activate: bool = True) -> bool:
         previous_controller = self.active_controller_instance()
-        if self.control_mode == ControlMode.REPLAY_SETTLE and name != "CmdReplay":
+        if activate and self.control_mode == ControlMode.REPLAY_SETTLE and name != "CmdReplay":
             self.cancel_replay_settle(mark_failed=True)
             self.control_mode = ControlMode.PLANNER
         spec = self._controllers[name]  # raises KeyError if missing, good fail-fast
@@ -741,6 +741,9 @@ class Robot(Base):
         self.vehicle_controller_fn = spec.vehicle_fn
         self.arm_controller_fn = spec.arm_fn
         self.controller_name = name
+        if not activate:
+            self.node.get_logger().info(f"Controller set to {name} for {self.prefix} (idle)")
+            return True
         if self._active_controller_is_replay():
             self.set_control_mode(ControlMode.REPLAY)
         else:
@@ -2553,7 +2556,11 @@ class Robot(Base):
                 and hasattr(active_controller, "start_playback")
             ):
                 if active_controller.start_playback(sim_time_sec=state["sim_time"]):
-                    self._start_replay_session_recording(active_controller, state)
+                    if (
+                        hasattr(active_controller, "recording_enabled")
+                        and active_controller.recording_enabled()
+                    ):
+                        self._start_replay_session_recording(active_controller, state)
 
             if not getattr(active_controller, "enabled", False):
                 self.publish_commands([0.0] * 6, [0.0] * 5)
@@ -2655,7 +2662,11 @@ class Robot(Base):
                 np.asarray(cmd_body_wrench, float).tolist(),
                 np.asarray(cmd_arm_tau, float).tolist(),
             )
-            if getattr(active_controller, "enabled", False):
+            if (
+                getattr(active_controller, "enabled", False)
+                and hasattr(active_controller, "recording_enabled")
+                and active_controller.recording_enabled()
+            ):
                 self._record_replay_sample(
                     active_controller,
                     state,
