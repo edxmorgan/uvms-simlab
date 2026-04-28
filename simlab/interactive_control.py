@@ -326,7 +326,7 @@ class InteractiveControlsNode(Node):
     def plan_execute(self, feedback: InteractiveMarkerFeedback):
         robot = self.uvms_backend.robot_selected
         if robot.controller_name == "CmdReplay":
-            self.get_logger().warn("Plan & Execute requires a regular controller; choose PID/InvDyn/OGES first.")
+            self.get_logger().warn("Plan & Execute requires a feedback controller; choose PID/InvDyn/OGES first.")
             return
         if robot.control_mode != ControlMode.PLANNER:
             robot.set_controller(robot.controller_name)

@@ -769,18 +769,18 @@ class Robot(Base):
         return self.control_mode in (ControlMode.REPLAY, ControlMode.REPLAY_SETTLE)
 
     def start_replay_controller_settle(self, replay_controller) -> None:
-        regular_names = [name for name in self.list_controllers() if name != "CmdReplay"]
-        if not regular_names:
-            self.node.get_logger().error(f"No regular controller available for replay settle on {self.prefix}.")
+        feedback_controller_names = [name for name in self.list_controllers() if name != "CmdReplay"]
+        if not feedback_controller_names:
+            self.node.get_logger().error(f"No feedback controller available for replay settle on {self.prefix}.")
             replay_controller.mark_reset_failed()
             return
 
         self._replay_settle_config = replay_controller.controller_settle_config()
         requested_controller = str(self._replay_settle_config.get("controller", "PID"))
-        if requested_controller in regular_names:
+        if requested_controller in feedback_controller_names:
             settle_controller_name = requested_controller
         else:
-            settle_controller_name = "PID" if "PID" in regular_names else regular_names[0]
+            settle_controller_name = "PID" if "PID" in feedback_controller_names else feedback_controller_names[0]
             self.node.get_logger().warn(
                 f"Replay settle controller '{requested_controller}' is not available for {self.prefix}; "
                 f"using {settle_controller_name}."
@@ -1450,7 +1450,7 @@ class Robot(Base):
             self._clear_menu_grasper_effort()
             self.node.get_logger().warn(
                 f"Grasper menu {action} rejected for {self.prefix}; "
-                "select a regular controller such as PID or InvDyn first."
+                "select a feedback controller such as PID or InvDyn first."
             )
             return False
 
@@ -1627,12 +1627,13 @@ class Robot(Base):
         self.node.get_logger().info(
             f"Planning motion with {self.planner_name} for {self.prefix} to target pose..."
         )
-        self.abrupt_planner_stop()
-        self._accept_planner_results = True
         pose_now = self._pose_from_state_in_frame(self.world_frame)
         if pose_now is None:
             self.node.get_logger().warn("Planner action request was not sent, current pose unavailable.")
             return False
+        self.abrupt_planner_stop(publish_zero=False)
+        self._accept_planner_results = True
+        self.hold_current_state_with_feedback()
 
         self.start_xyz, self.start_quat_wxyz = self._pose_to_xyz_quat_wxyz(pose_now)
 
@@ -1791,8 +1792,10 @@ class Robot(Base):
             if target_pose_map_ned is not None and tw6_map_ned is not None and acc6_map_ned is not None:
                 p_cmd_ned, rpy_cmd_ned = target_pose_map_ned
 
-                # Blend yaw between velocity-based and target waypoint
-                rpy_cmd_ned[2] = (1 - self.yaw_blend_factor) * adjusted_yaw + self.yaw_blend_factor * rpy_cmd_ned[2]
+                # Blend on the unwrapped shortest yaw arc. Directly averaging
+                # angles near +/-pi can command a full turn through zero.
+                target_yaw = self.normalize_angle(float(rpy_cmd_ned[2]), adjusted_yaw)
+                rpy_cmd_ned[2] = adjusted_yaw + self.yaw_blend_factor * (target_yaw - adjusted_yaw)
 
                 cmd_J_UV = self.vehicle_J(rpy_cmd_ned).full()
                 self.node.get_logger().debug(f"v_cmd_ned {tw6_map_ned} : active.")
@@ -2190,7 +2193,7 @@ class Robot(Base):
         self._replay_last_recorded_sim_time = None
         self.node.get_logger().info(f"Saved CmdReplay session ({reason}) to {path}.")
     
-    def abrupt_planner_stop(self):
+    def abrupt_planner_stop(self, *, publish_zero: bool = True):
         self.disable_planner_output()
         self._accept_planner_results = False
         self.planner_action_client.cancel_active_goal()
@@ -2204,8 +2207,8 @@ class Robot(Base):
             self.vehicle_cart_traj.active = False
         self._zero_planner_commands()
 
-        # publish zeros once immediately
-        self.publish_commands([0.0]*6, [0.0]*5)
+        if publish_zero:
+            self.publish_commands([0.0]*6, [0.0]*5)
 
     def close(self) -> None:
         self._stop_replay_session_recording("shutdown")
@@ -2441,6 +2444,21 @@ class Robot(Base):
             self.pose_command = [0.0]*6
         self.body_vel_command = [0.0]*6
         self.body_acc_command = [0.0]*6
+
+    def hold_current_state_with_feedback(self) -> None:
+        """Hold the measured state with the selected feedback controller."""
+        st = self.get_state()
+        pose = np.asarray(st["pose"], dtype=float).copy()
+        if pose.size >= 5:
+            pose[3] = 0.0  # roll
+            pose[4] = 0.0  # pitch
+        self.pose_command = pose.tolist()
+        self.body_vel_command = [0.0] * 6
+        self.body_acc_command = [0.0] * 6
+        self.arm.q_command = np.asarray(st["q"], dtype=float)[:4].tolist()
+        self.arm.dq_command = np.zeros((4,), dtype=float).tolist()
+        self.arm.ddq_command = np.zeros((4,), dtype=float).tolist()
+        self.enable_planner_output()
         
 
     def control_loop_callback(self):
