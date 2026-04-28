@@ -68,16 +68,17 @@ class InteractiveControlsNode(Node):
         self.server = InteractiveMarkerServer(self, "uvms_interactive_controls")
 
         self.menu_handler = MenuHandler()
-        waypoints_parent = self.menu_handler.insert("Waypoints", callback=self.noop_menu_callback)
-        self.reset_manager_parent = self.menu_handler.insert("Reset Manager", callback=self.noop_menu_callback)
-        path_planner_root = self.menu_handler.insert("Path Planner", callback=self.noop_menu_callback)
-        csv_playback_root = self.menu_handler.insert("Cmd Replay", callback=self.noop_menu_callback)
-        grasper_root = self.menu_handler.insert("Grasper", callback=self.noop_menu_callback)
-
         self.execute_handle = self.menu_handler.insert(
             "Plan & Execute",
             callback=self.plan_execute,
         )
+        robot_select_menu_handle = self.menu_handler.insert("Robots", callback=self.noop_menu_callback)
+        waypoints_parent = self.menu_handler.insert("Waypoints", callback=self.noop_menu_callback)
+        path_planner_root = self.menu_handler.insert("Path Planner", callback=self.noop_menu_callback)
+        csv_playback_root = self.menu_handler.insert("Cmd Replay", callback=self.noop_menu_callback)
+        grasper_root = self.menu_handler.insert("Grasper", callback=self.noop_menu_callback)
+        self.reset_manager_parent = self.menu_handler.insert("Reset Manager", callback=self.noop_menu_callback)
+
         self.add_vehicle_waypoint_handle = self.menu_handler.insert(
             "Add",
             parent=waypoints_parent,
@@ -119,7 +120,6 @@ class InteractiveControlsNode(Node):
         self.csv_playback_menu_map = {}
         self.csv_profile_menu_map = {}
         self.robot_menu_parents = {}  # k_robot -> dict of submenu parent handles
-        robot_select_menu_handle = self.menu_handler.insert("Robots", callback=self.noop_menu_callback)
 
         for robot in self.uvms_backend.robots:
             robot_handle = self.menu_handler.insert(
