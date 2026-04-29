@@ -91,8 +91,6 @@ setup(
             'bag_recorder_node = simlab.bag_recorder:main',
             'env_obstacles_node = simlab.env_obstacles:main',
             'planner_action_server_node = simlab.planner_action_server:main',
-            'planner_benchmark_runner = simlab.planner_benchmark_runner:main',
-            'execution_benchmark_runner = simlab.execution_benchmark_runner:main',
         ],
     },
 )
