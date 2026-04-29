@@ -41,6 +41,12 @@ from control_msgs.msg import DynamicInterfaceGroupValues
 from std_msgs.msg import Float64MultiArray
 from simlab.controller_msg import FullRobotMsg
 from simlab.controllers import DEFAULT_CONTROLLER_CLASSES
+from simlab.dynamics_profiles import (
+    is_valid_robot_dynamics_profile,
+    list_robot_dynamics_profiles,
+    load_robot_dynamics_profile,
+    set_dynamics_request_from_profile,
+)
 from simlab.planner_markers import PathPlanner
 from simlab.cartesian_ruckig import VehicleCartesianRuckig
 from ruckig import Result
@@ -497,12 +503,12 @@ class Robot(Base):
     
         package_share_directory = ament_index_python.get_package_share_directory(
                 'simlab')
-        fk_path = os.path.join(package_share_directory, 'manipulator/fk_eval.casadi')
-        ik_path = os.path.join(package_share_directory, 'manipulator/ik_eval.casadi')
+        fk_path = os.path.join(package_share_directory, 'model_functions/arm/fk_eval.casadi')
+        ik_path = os.path.join(package_share_directory, 'model_functions/arm/ik_eval.casadi')
 
-        vehicle_J_path = os.path.join(package_share_directory, 'vehicle/J_uv.casadi')
-        vehicle_ned2body_acc_path = os.path.join(package_share_directory, 'vehicle/ned2body_acc.casadi')
-        vehicle_ned2body_vel_path = os.path.join(package_share_directory, 'vehicle/ned2body_vel.casadi')
+        vehicle_J_path = os.path.join(package_share_directory, 'model_functions/vehicle/J_uv.casadi')
+        vehicle_ned2body_acc_path = os.path.join(package_share_directory, 'model_functions/vehicle/ned2body_acc.casadi')
+        vehicle_ned2body_vel_path = os.path.join(package_share_directory, 'model_functions/vehicle/ned2body_vel.casadi')
         ik_wb_path = os.path.join(package_share_directory, 'whole_body/ik.so')
 
         self.fk_eval = ca.Function.load(fk_path) #  forward kinematics
@@ -594,12 +600,13 @@ class Robot(Base):
         )
         self.set_sim_dynamics_client = self.node.create_client(
             SetSimDynamics,
-            f"/{self.prefix}set_sim_dynamics",
+            f"/{self.prefix}set_sim_uvms_dynamics",
         )
         self.release_sim_uvms_client = self.node.create_client(
             Trigger,
             f"/{self.prefix}release_sim_uvms",
         )
+        self.active_dynamics_profile = ""
 
         self.control_mode = ControlMode.TELEOP
         self._planner_output_enabled = False
@@ -2262,18 +2269,26 @@ class Robot(Base):
         on_success=None,
         on_failure=None,
     ) -> None:
-        dynamics_request = SetSimDynamics.Request()
-        dynamics_request.gravity = float(request.gravity)
-        dynamics_request.mass = float(request.payload_mass)
-        dynamics_request.ixx = float(request.payload_ixx)
-        dynamics_request.iyy = float(request.payload_iyy)
-        dynamics_request.izz = float(request.payload_izz)
+        if not (
+            getattr(request, "set_manipulator_dynamics", False)
+            or getattr(request, "set_vehicle_dynamics", False)
+        ):
+            if on_success is not None:
+                on_success()
+            return
 
-        service_name = f"/{self.prefix}set_sim_dynamics"
+        dynamics_request = SetSimDynamics.Request()
+        dynamics_request.use_coupled_dynamics = bool(getattr(request, "use_coupled_dynamics", False))
+        dynamics_request.set_manipulator_dynamics = bool(request.set_manipulator_dynamics)
+        dynamics_request.manipulator = request.manipulator_dynamics
+        dynamics_request.set_vehicle_dynamics = bool(request.set_vehicle_dynamics and "real" not in self.prefix)
+        dynamics_request.vehicle = request.vehicle_dynamics
+
+        service_name = f"/{self.prefix}set_sim_uvms_dynamics"
         if not self.set_sim_dynamics_client.wait_for_service(timeout_sec=0.2):
             self.node.get_logger().warn(
                 f"[{self.prefix}] sim dynamics service {service_name} is not ready; "
-                "continuing controller-settle without simulator dynamics update."
+                "continuing without simulator dynamics update."
             )
             if on_success is not None:
                 on_success()
@@ -2292,7 +2307,7 @@ class Robot(Base):
 
             if response is not None and response.success:
                 self.node.get_logger().info(
-                    f"[{self.prefix}] sim dynamics updated before controller-settle: {response.message}"
+                    f"[{self.prefix}] sim dynamics updated: {response.message}"
                 )
                 if on_success is not None:
                     on_success()
@@ -2303,6 +2318,64 @@ class Robot(Base):
                 )
                 if on_failure is not None:
                     on_failure()
+
+        future.add_done_callback(_done_callback)
+
+    def list_dynamics_profiles(self) -> list[str]:
+        return list_robot_dynamics_profiles()
+
+    def apply_dynamics_profile(self, profile_name: str, on_success=None, on_failure=None) -> None:
+        profile = load_robot_dynamics_profile(profile_name, self.node)
+        if not is_valid_robot_dynamics_profile(profile):
+            if on_failure is not None:
+                on_failure()
+            return
+
+        request = set_dynamics_request_from_profile(
+            profile,
+            include_vehicle=("real" not in self.prefix),
+        )
+        if not (request.set_manipulator_dynamics or request.set_vehicle_dynamics):
+            self.node.get_logger().warn(
+                f"[{self.prefix}] dynamics profile '{profile_name}' has no applicable parameter sections."
+            )
+            if on_failure is not None:
+                on_failure()
+            return
+
+        service_name = f"/{self.prefix}set_sim_uvms_dynamics"
+        if not self.set_sim_dynamics_client.wait_for_service(timeout_sec=0.2):
+            self.node.get_logger().warn(f"[{self.prefix}] dynamics service {service_name} is not ready.")
+            if on_failure is not None:
+                on_failure()
+            return
+
+        future = self.set_sim_dynamics_client.call_async(request)
+
+        def _done_callback(done_future) -> None:
+            try:
+                response = done_future.result()
+            except Exception as exc:
+                self.node.get_logger().error(f"[{self.prefix}] dynamics profile '{profile_name}' failed: {exc}")
+                if on_failure is not None:
+                    on_failure()
+                return
+
+            if response is not None and response.success:
+                self.active_dynamics_profile = str(profile_name)
+                self.node.get_logger().info(
+                    f"[{self.prefix}] dynamics profile '{profile_name}' applied: {response.message}"
+                )
+                if on_success is not None:
+                    on_success()
+                return
+
+            message = "" if response is None else response.message
+            self.node.get_logger().warn(
+                f"[{self.prefix}] dynamics profile '{profile_name}' rejected: {message}"
+            )
+            if on_failure is not None:
+                on_failure()
 
         future.add_done_callback(_done_callback)
 

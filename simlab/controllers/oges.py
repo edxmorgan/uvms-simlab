@@ -22,7 +22,6 @@ except ImportError as exc:
     load_uv_model_function = None
     NAMOR_IMPORT_ERROR = exc
 
-
 class OgesModelbasedController(ControllerTemplate):
     name = "OGES"
     registry_name = "Ours"
@@ -36,9 +35,9 @@ class OgesModelbasedController(ControllerTemplate):
         self.use_vehicle_control_filter = True
         self.use_arm_control_filter = False
 
-        uv_oges = OGES(n_dof=6, use_jit=True, cyclic_dims=(3, 4, 5))
-        uv_A, uv_b, uv_V = uv_oges.define_lyapunov_joint_constraints()
-        self.vehicle_policy = uv_oges.controller(
+        self.uv_oges = OGES(n_dof=6, use_jit=True, cyclic_dims=(3, 4, 5))
+        uv_A, uv_b, uv_V = self.uv_oges.define_lyapunov_joint_constraints()
+        self.vehicle_policy = self.uv_oges.controller(
             uv_A,
             uv_b,
             uv_V,
@@ -46,9 +45,9 @@ class OgesModelbasedController(ControllerTemplate):
             filter_control=self.use_vehicle_control_filter,
         )
 
-        arm_oges = OGES(n_dof=self.arm_dof, use_jit=True)
-        arm_A, arm_b, arm_V = arm_oges.define_lyapunov_joint_constraints()
-        self.arm_policy = arm_oges.controller(
+        self.arm_oges = OGES(n_dof=self.arm_dof, use_jit=True)
+        arm_A, arm_b, arm_V = self.arm_oges.define_lyapunov_joint_constraints()
+        self.arm_policy = self.arm_oges.controller(
             arm_A,
             arm_b,
             arm_V,

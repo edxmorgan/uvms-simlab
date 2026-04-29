@@ -5,9 +5,19 @@ from pathlib import Path
 package_name = 'simlab'
 
 
-def csv_playback_data_files():
+def playback_profile_data_files():
     data_files = []
-    root = Path('resource/csv_playback')
+    root = Path('resource/playback_profile')
+    for path in sorted(root.rglob('*')):
+        if path.is_file():
+            destination = 'share/' + package_name + '/' + str(path.parent.relative_to('resource'))
+            data_files.append((destination, [str(path)]))
+    return data_files
+
+
+def dynamics_profile_data_files():
+    data_files = []
+    root = Path('resource/dynamics_profiles')
     for path in sorted(root.rglob('*')):
         if path.is_file():
             destination = 'share/' + package_name + '/' + str(path.parent.relative_to('resource'))
@@ -23,18 +33,19 @@ setup(
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         (
-            'share/' + package_name + '/manipulator',
-            glob('resource/manipulator/*')
+            'share/' + package_name + '/model_functions/arm',
+            glob('resource/model_functions/arm/*')
         ),
         (
-            'share/' + package_name + '/vehicle',
-            glob('resource/vehicle/*')
+            'share/' + package_name + '/model_functions/vehicle',
+            glob('resource/model_functions/vehicle/*')
         ),
         (
             'share/' + package_name + '/whole_body',
             glob('resource/whole_body/*')
         ),
-        *csv_playback_data_files(),
+        *playback_profile_data_files(),
+        *dynamics_profile_data_files(),
         ('lib/' + package_name, [package_name+'/robot.py']),
         ('lib/' + package_name, [package_name+'/uvms_parameters.py']),
         ('lib/' + package_name, [package_name+'/controller_msg.py']),

@@ -19,7 +19,7 @@ class LowLevelPidController(ControllerTemplate):
 
         uv_pid_controller_path = os.path.join(
             package_share_directory,
-            "vehicle/uv_reg_pid_controller.casadi",
+            "model_functions/vehicle/uv_reg_pid_controller.casadi",
         )
         self.uv_pid_controller = ca.Function.load(uv_pid_controller_path)
         self.arm_params, self.vehicle_params = select_robot_params(self.robot_prefix)
@@ -32,7 +32,7 @@ class LowLevelPidController(ControllerTemplate):
 
         arm_pid_controller_path = os.path.join(
             package_share_directory,
-            "manipulator/arm_pid.casadi",
+            "model_functions/arm/arm_pid.casadi",
         )
         self.arm_pid_controller = ca.Function.load(arm_pid_controller_path)
         self.arm_pid_i_buffer = np.zeros(self.arm_dof + 1, dtype=float)

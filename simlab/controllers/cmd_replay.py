@@ -9,6 +9,11 @@ from rclpy.node import Node
 from ros2_control_blue_reach_5.srv import ResetSimUvms
 
 from simlab.controllers.base import ControllerTemplate
+from simlab.dynamics_profiles import (
+    is_valid_robot_dynamics_profile,
+    load_robot_dynamics_profile,
+    set_dynamics_request_from_profile,
+)
 
 
 class CmdReplayState(str, Enum):
@@ -36,7 +41,7 @@ class CmdReplayController(ControllerTemplate):
 
     def __init__(self, node: Node, arm_dof: int = 4, robot_prefix: str = ""):
         super().__init__(node, arm_dof, robot_prefix)
-        self.profiles_root = Path(ament_index_python.get_package_share_directory("simlab")) / "csv_playback"
+        self.profiles_root = Path(ament_index_python.get_package_share_directory("simlab")) / "playback_profile"
         self.profile_name = str(self._get_or_declare_parameter("cmd_replay_profile", self.DEFAULT_PROFILE)).strip()
         self.csv_path = ""
         self.config_path = ""
@@ -132,6 +137,19 @@ class CmdReplayController(ControllerTemplate):
         control_policy = manifest.get("control_policy", {})
         recording = manifest.get("recording", {})
         csv_name = str(manifest.get("csv", "commands.csv"))
+        reset_section = manifest.get("reset", {})
+        if not isinstance(reset_section, dict):
+            reset_section = {}
+        dynamics_profile_name = str(reset_section.get("robot_dynamics_profile", "dory_alpha"))
+        dynamics_profile = load_robot_dynamics_profile(dynamics_profile_name, self.node)
+        if not is_valid_robot_dynamics_profile(dynamics_profile):
+            self.node.get_logger().error(
+                f"CmdReplay profile '{profile_name}' references invalid robot dynamics profile "
+                f"'{dynamics_profile_name}'."
+            )
+            self.stop_playback()
+            self.lifecycle_state = CmdReplayState.ERROR
+            return False
 
         self.stop_playback()
         self.profile_name = profile_name
@@ -180,11 +198,7 @@ class CmdReplayController(ControllerTemplate):
                 "twist": [0.0] * 6,
                 "wrench": [0.0] * 6,
             },
-            "dynamics": {
-                "gravity": 0.0,
-                "payload_mass": 0.0,
-                "payload_inertia": [0.0, 0.0, 0.0],
-            },
+            "robot_dynamics_profile": "dory_alpha",
         }
 
     def _default_control_policy(self) -> dict:
@@ -302,7 +316,10 @@ class CmdReplayController(ControllerTemplate):
         config = self.reset_config
         manipulator = config.get("manipulator", {})
         vehicle = config.get("vehicle", {})
-        dynamics = config.get("dynamics", {})
+        dynamics = load_robot_dynamics_profile(
+            config.get("robot_dynamics_profile", "dory_alpha"),
+            self.node,
+        )
 
         request = ResetSimUvms.Request()
         request.reset_manipulator = bool(config.get("reset_manipulator", True))
@@ -315,14 +332,12 @@ class CmdReplayController(ControllerTemplate):
         request.vehicle_pose = self._vector(vehicle.get("pose"), 6)
         request.vehicle_twist = self._vector(vehicle.get("twist"), 6)
         request.vehicle_wrench = self._vector(vehicle.get("wrench"), 6)
-        request.gravity = float(dynamics.get("gravity", 0.0))
-        request.payload_mass = float(dynamics.get("payload_mass", dynamics.get("mass", 0.0)))
-
-        inertia = dynamics.get("payload_inertia", dynamics.get("inertia", [0.0, 0.0, 0.0]))
-        inertia = self._vector(inertia, 3)
-        request.payload_ixx = inertia[0]
-        request.payload_iyy = inertia[1]
-        request.payload_izz = inertia[2]
+        dynamics_request = set_dynamics_request_from_profile(dynamics)
+        request.use_coupled_dynamics = dynamics_request.use_coupled_dynamics
+        request.set_manipulator_dynamics = dynamics_request.set_manipulator_dynamics
+        request.manipulator_dynamics = dynamics_request.manipulator
+        request.set_vehicle_dynamics = dynamics_request.set_vehicle_dynamics
+        request.vehicle_dynamics = dynamics_request.vehicle
         return request
 
     def reset_mode(self) -> str:

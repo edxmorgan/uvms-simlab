@@ -29,7 +29,7 @@ A field-ready ROS 2 lab for **Underwater Vehicle–Manipulator Systems**. `uvms_
    Follow the [uvms-simulator installation guide](https://github.com/edxmorgan/uvms-simulator/blob/main/README.md). 
 
 2. **Install simlab extras**
-   This repo is usually pulled into the workspace via `vcs import`. Install the extras and rebuild.
+   When this repo is pulled into the workspace with `vcs import`, install the extras and rebuild.
 
    ```bash
    cd ~/ros2_ws
@@ -148,12 +148,14 @@ The robot metrics overlay includes, per robot:
   - `WP queued N`
   - `WP 2/5 TRACKING`
 
-Simulator-side manipulator dynamics can be changed online through the combined service provided by `uvms-simulator`:
+Simulator dynamics can be changed online through the combined service provided by `uvms-simulator`:
 
 ```bash
-ros2 service call /robot_1_set_sim_dynamics ros2_control_blue_reach_5/srv/SetSimDynamics \
-  "{gravity: 9.81, mass: 0.15, ixx: 0.0, iyy: 0.0, izz: 0.0}"
+ros2 service call /robot_1_set_sim_uvms_dynamics ros2_control_blue_reach_5/srv/SetSimDynamics \
+  "{use_coupled_dynamics: false, set_vehicle_dynamics: false, set_manipulator_dynamics: true, manipulator: {gravity_vector: [0.0, 0.0, 9.81], payload_mass: 0.15, payload_inertia: [0.0, 0.0, 0.0]}}"
 ```
+
+In RViz interactive mode, use `Dynamics Profile` to apply an installed whole-robot dynamics profile during live simulation.
 
 ## Project layout
 
@@ -173,7 +175,7 @@ simlab/
 ├── simlab/voxel_viz.py               # Bathymetry voxel clouds
 ├── simlab/bag_recorder.py            # rosbag2 MCAP recorder
 ├── simlab/rgb2cloudpoint.py          # RGB to pointcloud (MiDaS)
-└── resource/                         # CasADi controllers + models
+└── resource/model_functions/         # Generated model functions
 ```
 
 ## Adding a controller

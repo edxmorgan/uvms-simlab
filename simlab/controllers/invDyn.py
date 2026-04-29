@@ -19,13 +19,13 @@ class LowLevelInvDynController(ControllerTemplate):
 
         tracking_uv_path = os.path.join(
             package_share_directory,
-            "vehicle/uv_trackingController.casadi",
+            "model_functions/vehicle/uv_trackingController.casadi",
         )
         self.tracking_uv_controller = ca.Function.load(tracking_uv_path)
 
         tracking_pid_path = os.path.join(
             package_share_directory,
-            "manipulator/tracking_pid.casadi",
+            "model_functions/arm/tracking_pid.casadi",
         )
         self.tracking_pid_controller = ca.Function.load(tracking_pid_path)
 

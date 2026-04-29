@@ -83,15 +83,7 @@
         0.0
       ]
     },
-    "dynamics": {
-      "gravity": 9.81,
-      "payload_mass": 1.33,
-      "payload_inertia": [
-        0.0,
-        0.0,
-        0.0
-      ]
-    }
+    "robot_dynamics_profile": "dory_alpha_payload_1p9kg"
   },
   "recording": {
     "enabled": false

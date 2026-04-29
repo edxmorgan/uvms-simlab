@@ -71,7 +71,7 @@ class UVMSBackendCore:
         self.node.get_logger().info(f"Oriented Bounding Box corners: {self.fcl_world.obb_corners}")
 
          # Load workspace point cloud and hull
-        workspace_pts_path = os.path.join(package_share_directory, 'manipulator/workspace.npy')
+        workspace_pts_path = os.path.join(package_share_directory, 'model_functions/arm/workspace.npy')
         self.workspace_pts = np.load(workspace_pts_path)
         self.workspace_hull = ConvexHull(self.workspace_pts)
 

@@ -76,6 +76,7 @@ class InteractiveControlsNode(Node):
         waypoints_parent = self.menu_handler.insert("Waypoints", callback=self.noop_menu_callback)
         path_planner_root = self.menu_handler.insert("Path Planner", callback=self.noop_menu_callback)
         csv_playback_root = self.menu_handler.insert("Cmd Replay", callback=self.noop_menu_callback)
+        self.dynamics_profile_root = self.menu_handler.insert("Dynamics Profile", callback=self.noop_menu_callback)
         grasper_root = self.menu_handler.insert("Grasper", callback=self.noop_menu_callback)
         self.reset_manager_parent = self.menu_handler.insert("Reset Manager", callback=self.noop_menu_callback)
 
@@ -119,6 +120,7 @@ class InteractiveControlsNode(Node):
         self.planner_menu_map = {}
         self.csv_playback_menu_map = {}
         self.csv_profile_menu_map = {}
+        self.dynamics_profile_menu_map = {}
         self.robot_menu_parents = {}  # k_robot -> dict of submenu parent handles
 
         for robot in self.uvms_backend.robots:
@@ -215,6 +217,23 @@ class InteractiveControlsNode(Node):
             csv_playback_handles.extend([csv_reset_handle, csv_stop_handle])
             self.csv_playback_menu_map[csv_reset_handle] = (robot, "reset")
             self.csv_playback_menu_map[csv_stop_handle] = (robot, "stop")
+
+            dynamics_profile_handles = []
+            if "real" not in robot.prefix:
+                for profile_name in robot.list_dynamics_profiles():
+                    profile_handle = self.menu_handler.insert(
+                        profile_name,
+                        parent=self.dynamics_profile_root,
+                        callback=self.switch_dynamics_profile,
+                    )
+                    dynamics_profile_handles.append(profile_handle)
+                    self.dynamics_profile_menu_map[profile_handle] = (robot, profile_name)
+                    self.menu_handler.setCheckState(
+                        profile_handle,
+                        MenuHandler.CHECKED
+                        if getattr(robot, "active_dynamics_profile", "") == profile_name
+                        else MenuHandler.UNCHECKED,
+                    )
                 
             ik_settings_parent = self.menu_handler.insert(
                 "IK Settings",
@@ -272,6 +291,7 @@ class InteractiveControlsNode(Node):
                 "grasper": grasper_handles,
                 "planner": path_planner_handles,
                 "csv": csv_playback_handles,
+                "dynamics": dynamics_profile_handles,
             }
            
 
@@ -399,6 +419,7 @@ class InteractiveControlsNode(Node):
         )
         if selected_robot is not None:
             self.menu_handler.setVisible(self.reset_manager_parent, "real" not in selected_robot.prefix)
+            self.menu_handler.setVisible(self.dynamics_profile_root, "real" not in selected_robot.prefix)
 
         for r in self.uvms_backend.robots:
             visible = (r.k_robot == selected_k_robot)
@@ -572,6 +593,22 @@ class InteractiveControlsNode(Node):
                                             MenuHandler.CHECKED if feedback.menu_entry_id == mid else MenuHandler.UNCHECKED)
         self.menu_handler.apply(self.server, feedback.marker_name)
         self.server.applyChanges()
+
+    def switch_dynamics_profile(self, feedback: InteractiveMarkerFeedback):
+        robot, profile_name = self.dynamics_profile_menu_map.get(feedback.menu_entry_id)
+
+        def _on_success():
+            for mid, (r_i, candidate_profile) in self.dynamics_profile_menu_map.items():
+                if r_i.k_robot != robot.k_robot:
+                    continue
+                self.menu_handler.setCheckState(
+                    mid,
+                    MenuHandler.CHECKED if candidate_profile == profile_name else MenuHandler.UNCHECKED,
+                )
+            self.menu_handler.apply(self.server, feedback.marker_name)
+            self.server.applyChanges()
+
+        robot.apply_dynamics_profile(profile_name, on_success=_on_success)
 
     def _csv_playback_controller(self, robot: Robot):
         controller = robot.controller_instance("CmdReplay")
