@@ -64,6 +64,7 @@ setup(
     install_requires=['setuptools',
                       'rclpy',
                       'std_msgs',
+                      'std_srvs',
                       'sensor_msgs',
                       'geometry_msgs',
                       'visualization_msgs',

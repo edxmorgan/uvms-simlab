@@ -77,6 +77,7 @@ class InteractiveControlsNode(Node):
         path_planner_root = self.menu_handler.insert("Path Planner", callback=self.noop_menu_callback)
         csv_playback_root = self.menu_handler.insert("Cmd Replay", callback=self.noop_menu_callback)
         self.dynamics_profile_root = self.menu_handler.insert("Dynamics Profile", callback=self.noop_menu_callback)
+        recording_root = self.menu_handler.insert("Data Recording", callback=self.noop_menu_callback)
         grasper_root = self.menu_handler.insert("Grasper", callback=self.noop_menu_callback)
         self.reset_manager_parent = self.menu_handler.insert("Reset Manager", callback=self.noop_menu_callback)
 
@@ -112,6 +113,18 @@ class InteractiveControlsNode(Node):
             parent=self.reset_manager_parent,
             callback=self.release_simulation,
         )
+        self.start_recording_handle = self.menu_handler.insert(
+            "Start MCAP",
+            parent=recording_root,
+            callback=self.start_mcap_recording,
+        )
+        self.stop_recording_handle = self.menu_handler.insert(
+            "Stop MCAP",
+            parent=recording_root,
+            callback=self.stop_mcap_recording,
+        )
+        self.mcap_recording_active = False
+        self.menu_handler.setVisible(self.stop_recording_handle, False)
 
         self.control_space_menu_map = {}  # mid -> (k_robot, control_space_name)
         self.axis_menu_map = {}
@@ -328,36 +341,14 @@ class InteractiveControlsNode(Node):
         self._refresh_vehicle_waypoint_delete_menu()
 
     def reset_simulation(self, feedback: InteractiveMarkerFeedback):
-        robot = self.uvms_backend.robot_selected
-        if "real" in robot.prefix:
-            self.get_logger().warn(f"Reset Manager is disabled for real robot {robot.prefix}.")
-            return
-        self.uvms_backend.clear_vehicle_waypoints_for_robot(robot.k_robot)
-        self._refresh_vehicle_waypoint_delete_menu()
-        robot.reset_simulation()
+        if self.uvms_backend.reset_selected_simulation():
+            self._refresh_vehicle_waypoint_delete_menu()
 
     def release_simulation(self, feedback: InteractiveMarkerFeedback):
-        robot = self.uvms_backend.robot_selected
-        if "real" in robot.prefix:
-            self.get_logger().warn(f"Reset Manager is disabled for real robot {robot.prefix}.")
-            return
-        robot.release_simulation()
+        self.uvms_backend.release_selected_simulation()
 
     def plan_execute(self, feedback: InteractiveMarkerFeedback):
-        robot = self.uvms_backend.robot_selected
-        if robot.controller_name == "CmdReplay":
-            self.get_logger().warn("Plan & Execute requires a feedback controller; choose PID/InvDyn/OGES first.")
-            return
-        if robot.control_mode != ControlMode.PLANNER:
-            robot.set_controller(robot.controller_name)
-
-        if robot.task_based_controller:
-            self.uvms_backend.plan_task_trajectory()
-            return
-        if self.uvms_backend.selected_vehicle_waypoint_mission().waypoints:
-            self.uvms_backend.execute_selected_vehicle_waypoints()
-            return
-        self.uvms_backend.plan_vehicle_trajectory()
+        self.uvms_backend.plan_execute_selected()
 
     def add_vehicle_waypoint(self, feedback: InteractiveMarkerFeedback):
         if self.uvms_backend.robot_selected.task_based_controller:
@@ -457,6 +448,29 @@ class InteractiveControlsNode(Node):
 
     def noop_menu_callback(self, feedback: InteractiveMarkerFeedback):
         return
+
+    def _set_mcap_recording_menu_state(self, active: bool) -> None:
+        self.mcap_recording_active = active
+        self.menu_handler.setVisible(self.start_recording_handle, not active)
+        self.menu_handler.setVisible(self.stop_recording_handle, active)
+        self.menu_handler.reApply(self.server)
+        self.server.applyChanges()
+
+    def start_mcap_recording(self, feedback: InteractiveMarkerFeedback):
+        del feedback
+        if self.mcap_recording_active:
+            return
+        self.uvms_backend.start_mcap_recording(
+            on_success=lambda: self._set_mcap_recording_menu_state(True)
+        )
+
+    def stop_mcap_recording(self, feedback: InteractiveMarkerFeedback):
+        del feedback
+        if not self.mcap_recording_active:
+            return
+        self.uvms_backend.stop_mcap_recording(
+            on_success=lambda: self._set_mcap_recording_menu_state(False)
+        )
 
     # switch to robot i
     def switch_robot_in_use(self, feedback: InteractiveMarkerFeedback):

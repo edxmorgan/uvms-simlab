@@ -34,6 +34,7 @@ import sensor_msgs_py.point_cloud2 as pc2
 from sensor_msgs.msg import PointCloud2
 from geometry_msgs.msg import PoseStamped
 from control_msgs.msg import DynamicJointState
+from std_srvs.srv import Trigger
 from simlab.planner_markers import PathPlanner
 from simlab.cartesian_ruckig import VehicleCartesianRuckig
 from simlab.frame_utils import PoseX
@@ -57,6 +58,8 @@ class UVMSBackendCore:
         self.tf_broadcaster = tf2_ros.TransformBroadcaster(self.node)
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self.node)
+        self.start_recording_client = self.node.create_client(Trigger, "/bag_recorder_node/start_recording")
+        self.stop_recording_client = self.node.create_client(Trigger, "/bag_recorder_node/stop_recording")
         self.urdf_string = urdf_string
         self.vehicle_target_frame = vehicle_target_frame
         self.world_frame = world_frame
@@ -178,6 +181,72 @@ class UVMSBackendCore:
             robot.close()
         self.robots.clear()
         self.robot_selected = None
+
+    def _call_recording_service(self, client, action_name: str, on_success=None) -> None:
+        if not client.wait_for_service(timeout_sec=0.2):
+            self.node.get_logger().warn(
+                f"MCAP recording {action_name} rejected: bag_recorder_node service is not ready."
+            )
+            return
+
+        future = client.call_async(Trigger.Request())
+
+        def _done_callback(done_future) -> None:
+            try:
+                response = done_future.result()
+            except Exception as exc:
+                self.node.get_logger().error(f"MCAP recording {action_name} failed: {exc}")
+                return
+
+            if response.success:
+                self.node.get_logger().info(f"MCAP recording {action_name}: {response.message}")
+                if on_success is not None:
+                    on_success()
+            else:
+                self.node.get_logger().warn(f"MCAP recording {action_name} rejected: {response.message}")
+
+        future.add_done_callback(_done_callback)
+
+    def start_mcap_recording(self, on_success=None) -> None:
+        self._call_recording_service(self.start_recording_client, "start", on_success=on_success)
+
+    def stop_mcap_recording(self, on_success=None) -> None:
+        self._call_recording_service(self.stop_recording_client, "stop", on_success=on_success)
+
+    def reset_selected_simulation(self) -> bool:
+        robot = self.robot_selected
+        if "real" in robot.prefix:
+            self.node.get_logger().warn(f"Reset Manager is disabled for real robot {robot.prefix}.")
+            return False
+        self.clear_vehicle_waypoints_for_robot(robot.k_robot)
+        robot.reset_simulation()
+        return True
+
+    def release_selected_simulation(self) -> bool:
+        robot = self.robot_selected
+        if "real" in robot.prefix:
+            self.node.get_logger().warn(f"Reset Manager is disabled for real robot {robot.prefix}.")
+            return False
+        robot.release_simulation()
+        return True
+
+    def plan_execute_selected(self) -> bool:
+        robot = self.robot_selected
+        if robot.controller_name == "CmdReplay":
+            self.node.get_logger().warn(
+                "Plan & Execute requires a feedback controller; choose PID/InvDyn/OGES first."
+            )
+            return False
+        if robot.control_mode != ControlMode.PLANNER:
+            robot.set_controller(robot.controller_name)
+
+        if robot.task_based_controller:
+            self.plan_task_trajectory()
+            return True
+        if self.selected_vehicle_waypoint_mission().waypoints:
+            return self.execute_selected_vehicle_waypoints()
+        self.plan_vehicle_trajectory()
+        return True
 
     def selected_vehicle_waypoint_mission(self) -> VehicleWaypointMission:
         return self.vehicle_waypoint_missions[self.robot_selected.k_robot]
