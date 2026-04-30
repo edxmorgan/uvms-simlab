@@ -57,7 +57,7 @@ setup(
         ('lib/' + package_name, [package_name+'/frame_utils.py']),
         ('lib/' + package_name, [package_name+'/uvms_backend.py']),
         ('lib/' + package_name, [package_name+'/backend_utils.py']),
-        ('lib/' + package_name, [package_name+'/debug_targets.py']),
+        ('lib/' + package_name, [package_name+'/reference_targets.py']),
         ('lib/' + package_name, [package_name+'/planner_action_client.py']),
     ],
 
@@ -90,6 +90,7 @@ setup(
             'collision_contact_node = simlab.collision_contact:main',
             'voxelviz_node = simlab.voxel_viz:main',
             'bag_recorder_node = simlab.bag_recorder:main',
+            'mcap_to_replay_profile = simlab.mcap_to_replay_profile:main',
             'env_obstacles_node = simlab.env_obstacles:main',
             'planner_action_server_node = simlab.planner_action_server:main',
         ],

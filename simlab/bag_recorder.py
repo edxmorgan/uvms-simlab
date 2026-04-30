@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Any, Callable, List
 
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.serialization import serialize_message
 from std_srvs.srv import Trigger
@@ -34,10 +35,12 @@ class BagRecorder(Node):
         self.declare_parameter("storage_id", storage_id)
         self.declare_parameter("serialization_format", serialization_format)
         self.declare_parameter("autostart_recording", False)
+        self.declare_parameter("robots_prefix", ["robot_1_"])
 
         self.bag_base_dir = str(self.get_parameter("bag_base_dir").value)
         self.storage_id = str(self.get_parameter("storage_id").value)
         self.serialization_format = str(self.get_parameter("serialization_format").value)
+        robot_prefixes = [str(prefix) for prefix in self.get_parameter("robots_prefix").value]
 
         self.bag_dir = ""
         self.writer = None
@@ -45,9 +48,10 @@ class BagRecorder(Node):
 
         self._subs = []
         self._topic_names: List[str] = []
-        self._topics = topics
+        self._topics = list(topics)
+        self._topics.extend(self._desired_target_topic_specs(robot_prefixes))
 
-        for spec in topics:
+        for spec in self._topics:
             cb = self._make_write_cb(spec.name)
             sub = self.create_subscription(spec.msg_cls, spec.name, cb, spec.qos_depth)
             self._subs.append(sub)
@@ -67,6 +71,22 @@ class BagRecorder(Node):
 
         if bool(self.get_parameter("autostart_recording").value):
             self.start_recording()
+
+    @staticmethod
+    def _desired_target_topic_specs(robot_prefixes: List[str]) -> List[TopicSpec]:
+        from simlab_msgs.msg import ReferenceTargets
+
+        topics: List[TopicSpec] = []
+        for prefix in robot_prefixes:
+            topics.append(
+                TopicSpec(
+                    name=f"/{prefix}/reference/targets",
+                    msg_cls=ReferenceTargets,
+                    type_str="simlab_msgs/msg/ReferenceTargets",
+                    qos_depth=10,
+                )
+            )
+        return topics
 
     def start_recording(self) -> tuple[bool, str]:
         if self._recording:
@@ -157,11 +177,12 @@ def main(args=None):
 
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":

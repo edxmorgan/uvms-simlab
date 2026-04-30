@@ -62,7 +62,7 @@ from geometry_msgs.msg import Pose
 from geometry_msgs.msg import Vector3Stamped
 from enum import Enum
 from dataclasses import dataclass
-from simlab.debug_targets import DebugTargetPublisher
+from simlab.reference_targets import ReferenceTargetPublisher
 from simlab.planner_action_client import PlannerActionClient
 from simlab.planners import visible_planner_names
 
@@ -568,7 +568,7 @@ class Robot(Base):
             on_result=self._on_planner_action_result,
         )
         self._accept_planner_results = True
-        self.debug_pub = DebugTargetPublisher(self.node, self.prefix)
+        self.reference_pub = ReferenceTargetPublisher(self.node, self.prefix)
         qos_profile = QoSProfile(
             history=QoSHistoryPolicy.KEEP_LAST,
             depth=10
@@ -1766,7 +1766,7 @@ class Robot(Base):
             target_quat = path_quat[idx]
 
             stamp_now = self.node.get_clock().now().to_msg()
-            self.debug_pub.publish_world_targets(
+            self.reference_pub.publish_world_targets(
                 stamp_msg=stamp_now,
                 xyz_world_nwu=target_pose_nwu,
                 quat_world_wxyz=target_quat,
@@ -2668,37 +2668,46 @@ class Robot(Base):
                 if hasattr(active_controller, "current_sample_index")
                 else None
             )
-            stabilizing_controller_name = (
-                active_controller.stabilizing_controller_name()
-                if hasattr(active_controller, "stabilizing_controller_name")
+            feedback_controller_name = (
+                active_controller.feedback_controller_name()
+                if hasattr(active_controller, "feedback_controller_name")
                 else "PID"
             )
-            stabilizing_spec = self._controllers.get(stabilizing_controller_name)
-            if stabilizing_spec is None and stabilizing_controller_name != "PID":
-                if not getattr(active_controller, "_warned_invalid_stabilizing_controller", False):
+            feedback_spec = self._controllers.get(feedback_controller_name)
+            if feedback_spec is None and feedback_controller_name != "PID":
+                if not getattr(active_controller, "_warned_invalid_feedback_controller", False):
                     self.node.get_logger().warn(
-                        f"CmdReplay stabilizing controller '{stabilizing_controller_name}' is not available for "
+                        f"CmdReplay feedback controller '{feedback_controller_name}' is not available for "
                         f"{self.robot_name}; falling back to PID."
                     )
-                    active_controller._warned_invalid_stabilizing_controller = True
-                stabilizing_spec = self._controllers.get("PID")
+                    active_controller._warned_invalid_feedback_controller = True
+                feedback_spec = self._controllers.get("PID")
 
-            vehicle_policy = (
-                active_controller.vehicle_policy()
-                if hasattr(active_controller, "vehicle_policy")
-                else "replay"
+            vehicle_mode = (
+                active_controller.vehicle_subsystem_mode()
+                if hasattr(active_controller, "vehicle_subsystem_mode")
+                else "replay_command"
             )
-            manipulator_policy = (
-                active_controller.manipulator_policy()
-                if hasattr(active_controller, "manipulator_policy")
-                else "replay"
+            manipulator_mode = (
+                active_controller.manipulator_subsystem_mode()
+                if hasattr(active_controller, "manipulator_subsystem_mode")
+                else "replay_command"
             )
 
             veh_state_vec = np.array(list(state["pose"]) + list(state["body_vel"]), dtype=float)
-            if vehicle_policy == "replay":
+            if vehicle_mode == "replay_command":
                 cmd_body_wrench = active_controller.vehicle_command_at(sample_index)
-            elif vehicle_policy == "hold" and stabilizing_spec is not None:
-                cmd_body_wrench = stabilizing_spec.vehicle_fn(
+            elif vehicle_mode == "track_reference" and feedback_spec is not None:
+                target_pos, target_vel, target_acc = active_controller.vehicle_reference_at(sample_index)
+                cmd_body_wrench = feedback_spec.vehicle_fn(
+                    state=veh_state_vec,
+                    target_pos=np.asarray(target_pos, dtype=float),
+                    target_vel=np.asarray(target_vel, dtype=float),
+                    target_acc=np.asarray(target_acc, dtype=float),
+                    dt=state["dt"],
+                )
+            elif vehicle_mode == "hold_initial" and feedback_spec is not None:
+                cmd_body_wrench = feedback_spec.vehicle_fn(
                     state=veh_state_vec,
                     target_pos=np.asarray(active_controller.initial_vehicle_pose(), dtype=float),
                     target_vel=np.zeros(6, dtype=float),
@@ -2708,11 +2717,21 @@ class Robot(Base):
             else:
                 cmd_body_wrench = np.zeros(6, dtype=float)
 
-            if manipulator_policy == "replay":
+            if manipulator_mode == "replay_command":
                 cmd_arm_tau = active_controller.arm_command_at(sample_index)
-            elif manipulator_policy == "hold" and stabilizing_spec is not None:
+            elif manipulator_mode == "track_reference" and feedback_spec is not None:
+                q_ref, dq_ref, ddq_ref = active_controller.arm_reference_at(sample_index)
+                cmd_arm_tau = feedback_spec.arm_fn(
+                    q=list(state["q"]) + list(state["grasper_q"]),
+                    q_dot=list(state["dq"]) + list(state["grasper_qdot"]),
+                    q_ref=np.asarray(q_ref, dtype=float).tolist(),
+                    dq_ref=np.asarray(dq_ref, dtype=float).tolist(),
+                    ddq_ref=np.asarray(ddq_ref, dtype=float).tolist(),
+                    dt=state["dt"],
+                )
+            elif manipulator_mode == "hold_initial" and feedback_spec is not None:
                 q_ref = active_controller.initial_manipulator_position()
-                cmd_arm_tau = stabilizing_spec.arm_fn(
+                cmd_arm_tau = feedback_spec.arm_fn(
                     q=list(state["q"]) + list(state["grasper_q"]),
                     q_dot=list(state["dq"]) + list(state["grasper_qdot"]),
                     q_ref=q_ref,
@@ -2817,7 +2836,7 @@ class Robot(Base):
                 dt=state["dt"],
             )
 
-            self.debug_pub.publish_map_targets_and_arm_refs(
+            self.reference_pub.publish_map_targets_and_arm_refs(
                 target_ned_pose=target_ned_pose,
                 target_body_vel=target_body_vel,
                 target_body_acc=target_body_acc,

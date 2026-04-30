@@ -35,6 +35,11 @@ from sensor_msgs.msg import PointCloud2
 from geometry_msgs.msg import PoseStamped
 from control_msgs.msg import DynamicJointState
 from std_srvs.srv import Trigger
+from simlab_msgs.srv import (
+    BackendPoseCommand,
+    BackendRobotCommand,
+    BackendWaypointCommand,
+)
 from simlab.planner_markers import PathPlanner
 from simlab.cartesian_ruckig import VehicleCartesianRuckig
 from simlab.frame_utils import PoseX
@@ -119,6 +124,7 @@ class UVMSBackendCore:
         
         self.planner_marker_publisher = self.node.create_publisher(Marker, "planned_waypoints_marker", planner_viz_qos)
         self.robots:List[Robot] = []
+        self.robot_selected = None
         self.vehicle_waypoint_missions: Dict[int, VehicleWaypointMission] = {}
         self.vehicle_waypoint_viz: Dict[int, VehicleWaypointViz] = {}
         self.max_cartesian_waypoints = 500
@@ -175,12 +181,292 @@ class UVMSBackendCore:
             1.0 / 10.0,
             self.vehicle_waypoint_viz_callback,
         )
+        self._create_backend_api_services()
 
     def close(self) -> None:
         for robot in self.robots:
             robot.close()
         self.robots.clear()
         self.robot_selected = None
+
+    def _create_backend_api_services(self) -> None:
+        self.node.create_service(
+            BackendRobotCommand,
+            "~/backend/robot_command",
+            self._backend_robot_command_callback,
+        )
+        self.node.create_service(
+            BackendPoseCommand,
+            "~/backend/pose_command",
+            self._backend_pose_command_callback,
+        )
+        self.node.create_service(
+            BackendWaypointCommand,
+            "~/backend/waypoint_command",
+            self._backend_waypoint_command_callback,
+        )
+        self.node.get_logger().info(
+            "Backend API ready: ~/backend/robot_command, ~/backend/pose_command, ~/backend/waypoint_command"
+        )
+
+    def _robot_for_api(self, robot_index: int) -> Robot | None:
+        if 0 <= int(robot_index) < len(self.robots):
+            return self.robots[int(robot_index)]
+        self.node.get_logger().warn(f"Backend API rejected invalid robot_index={robot_index}.")
+        return None
+
+    @staticmethod
+    def _api_response(response, success: bool, message: str):
+        response.success = bool(success)
+        response.message = str(message)
+        return response
+
+    def _select_robot_for_api(self, robot_index: int) -> tuple[bool, str]:
+        robot = self._robot_for_api(robot_index)
+        if robot is None:
+            return False, f"invalid robot_index={robot_index}"
+        self.set_robot_selected(robot.k_robot)
+        return True, f"selected {robot.prefix}"
+
+    def _cmd_replay_controller(self, robot: Robot):
+        controller = robot.controller_instance("CmdReplay")
+        if controller is None or not hasattr(controller, "load_profile"):
+            return None
+        return controller
+
+    def select_robot(self, robot_index: int) -> tuple[bool, str]:
+        return self._select_robot_for_api(robot_index)
+
+    def set_robot_controller(self, robot: Robot, controller_name: str) -> tuple[bool, str]:
+        if controller_name not in robot.list_controllers():
+            return False, f"unknown controller '{controller_name}'"
+        if not robot.set_controller(controller_name):
+            return False, f"controller {controller_name} rejected for {robot.prefix}"
+        return True, f"controller set to {controller_name} for {robot.prefix}"
+
+    def set_robot_planner(self, robot: Robot, planner_name: str) -> tuple[bool, str]:
+        if planner_name not in robot.list_planners():
+            return False, f"unknown planner '{planner_name}'"
+        robot.set_planner(planner_name)
+        return True, f"planner set to {planner_name} for {robot.prefix}"
+
+    def set_robot_control_space(self, robot: Robot, control_space_name: str) -> tuple[bool, str]:
+        if control_space_name not in robot.list_control_spaces():
+            return False, f"unknown control space '{control_space_name}'"
+        if robot.control_mode in (ControlMode.REPLAY, ControlMode.REPLAY_SETTLE):
+            return False, f"control-space switch rejected for {robot.prefix}; CmdReplay is active"
+        robot.set_control_space(control_space_name)
+        return True, f"control space set to {control_space_name} for {robot.prefix}"
+
+    def set_robot_dynamics_profile(self, robot: Robot, profile_name: str, on_success=None) -> tuple[bool, str]:
+        if "real" in robot.prefix:
+            return False, f"dynamics profiles are disabled for real robot {robot.prefix}"
+        if profile_name not in robot.list_dynamics_profiles():
+            return False, f"unknown dynamics profile '{profile_name}'"
+        robot.apply_dynamics_profile(profile_name, on_success=on_success)
+        return True, f"dynamics profile request sent for {robot.prefix}: {profile_name}"
+
+    def select_replay_profile(self, robot: Robot, profile_name: str) -> tuple[bool, str]:
+        controller = self._cmd_replay_controller(robot)
+        if controller is None:
+            return False, f"{robot.prefix} has no CmdReplay controller"
+        if hasattr(robot, "cancel_replay_settle"):
+            robot.cancel_replay_settle(mark_failed=False)
+        if hasattr(robot, "_stop_replay_session_recording"):
+            robot._stop_replay_session_recording("profile_changed")
+        if robot.controller_name == "CmdReplay":
+            robot.publish_commands([0.0] * 6, [0.0] * 5)
+        ok = controller.load_profile(profile_name)
+        if not ok:
+            return False, "replay profile rejected"
+        if robot.controller_name != "CmdReplay":
+            self.node.get_logger().info(
+                f"Choose the CmdReplay controller for {robot.prefix} before starting playback."
+            )
+        return True, f"replay profile {profile_name} selected for {robot.prefix}"
+
+    def start_replay(self, robot: Robot) -> tuple[bool, str]:
+        controller = self._cmd_replay_controller(robot)
+        if controller is None:
+            return False, f"{robot.prefix} has no CmdReplay controller"
+        if robot.controller_name != "CmdReplay":
+            return False, f"choose CmdReplay controller for {robot.prefix} before replay"
+        if hasattr(controller, "has_valid_playback") and not controller.has_valid_playback():
+            return False, f"CmdReplay profile is not selected or has no valid samples for {robot.prefix}"
+
+        robot.set_control_mode(ControlMode.REPLAY)
+        robot.publish_commands([0.0] * 6, [0.0] * 5)
+        request = controller.build_reset_request()
+        if not controller.begin_sequence(request.hold_commands):
+            return False, f"CmdReplay reset rejected for {robot.prefix}"
+
+        def _fail_replay_reset():
+            controller.mark_reset_failed()
+            robot.publish_commands([0.0] * 6, [0.0] * 5)
+
+        if hasattr(controller, "reset_mode") and controller.reset_mode() == "controller_settle":
+            robot.apply_sim_dynamics_from_reset_request(
+                request,
+                on_success=lambda: robot.start_replay_controller_settle(controller),
+                on_failure=_fail_replay_reset,
+            )
+            return True, f"CmdReplay controller-settle reset requested for {robot.prefix}"
+
+        def _start_after_reset():
+            robot.set_control_mode(ControlMode.REPLAY)
+            controller.mark_reset_succeeded()
+
+        robot.reset_simulation_with_state(
+            request,
+            on_success=_start_after_reset,
+            on_failure=_fail_replay_reset,
+        )
+        return True, f"CmdReplay reset requested for {robot.prefix}"
+
+    def stop_replay(self, robot: Robot) -> tuple[bool, str]:
+        controller = self._cmd_replay_controller(robot)
+        if controller is None:
+            return False, f"{robot.prefix} has no CmdReplay controller"
+        if hasattr(robot, "cancel_replay_settle"):
+            robot.cancel_replay_settle(mark_failed=False)
+        controller.stop_playback()
+        if hasattr(robot, "_stop_replay_session_recording"):
+            robot._stop_replay_session_recording("stopped")
+        robot.publish_commands([0.0] * 6, [0.0] * 5)
+        return True, f"stopped CmdReplay for {robot.prefix}"
+
+    def command_grasper(self, robot: Robot, action: str) -> tuple[bool, str]:
+        if action not in ("open", "close"):
+            return False, "grasper action must be 'open' or 'close'"
+        ok = robot.command_grasper_from_menu(action)
+        return ok, f"grasper {action} requested for {robot.prefix}" if ok else f"grasper {action} rejected for {robot.prefix}"
+
+    def set_robot_ik_tool_axis(self, robot: Robot, axis) -> tuple[bool, str]:
+        robot.ik_tool_axis = np.asarray(axis, dtype=float)
+        return True, f"IK tool axis set for {robot.prefix}"
+
+    def set_robot_ik_base_align_weight(self, robot: Robot, weight: float) -> tuple[bool, str]:
+        robot.ik_base_align_w = float(weight)
+        return True, f"IK base align weight set for {robot.prefix}"
+
+    def set_vehicle_target(self, robot: Robot, pose: Pose) -> tuple[bool, str]:
+        self.set_robot_selected(robot.k_robot)
+        self.target_vehicle_pose = pose
+        return True, f"vehicle target set for {robot.prefix}"
+
+    def set_task_target_world(self, robot: Robot, pose: Pose) -> tuple[bool, str]:
+        self.set_robot_selected(robot.k_robot)
+        self.target_world_endeffector_pose = pose
+        return True, f"world task target set for {robot.prefix}"
+
+    def set_task_target_arm_base(self, robot: Robot, pose: Pose) -> tuple[bool, str]:
+        self.set_robot_selected(robot.k_robot)
+        self.target_arm_base_endeffector_pose = pose
+        return True, f"arm-base task target set for {robot.prefix}"
+
+    def add_vehicle_waypoint_for_robot(
+        self,
+        robot: Robot,
+        pose: Pose | None = None,
+        use_current_target: bool = True,
+    ) -> tuple[bool, str]:
+        self.set_robot_selected(robot.k_robot)
+        if not use_current_target and pose is not None:
+            self.target_vehicle_pose = pose
+        count = self.add_selected_vehicle_waypoint()
+        return True, f"added waypoint {count} for {robot.prefix}"
+
+    def _backend_robot_command_callback(self, request, response):
+        command = str(request.command).strip()
+        robot = self._robot_for_api(request.robot_index)
+        if command != "select_robot" and robot is None:
+            return self._api_response(response, False, f"invalid robot_index={request.robot_index}")
+
+        try:
+            if command == "select_robot":
+                return self._api_response(response, *self.select_robot(request.robot_index))
+            if command == "set_controller":
+                return self._api_response(response, *self.set_robot_controller(robot, request.name))
+            if command == "set_planner":
+                return self._api_response(response, *self.set_robot_planner(robot, request.name))
+            if command == "set_control_space":
+                return self._api_response(response, *self.set_robot_control_space(robot, request.name))
+            if command == "set_dynamics_profile":
+                return self._api_response(response, *self.set_robot_dynamics_profile(robot, request.name))
+            if command == "plan_execute":
+                self.set_robot_selected(robot.k_robot)
+                return self._api_response(response, self.plan_execute_selected(), f"plan_execute requested for {robot.prefix}")
+            if command == "reset_simulation":
+                self.set_robot_selected(robot.k_robot)
+                return self._api_response(response, self.reset_selected_simulation(), f"reset requested for {robot.prefix}")
+            if command == "release_simulation":
+                self.set_robot_selected(robot.k_robot)
+                return self._api_response(response, self.release_selected_simulation(), f"release requested for {robot.prefix}")
+            if command == "replay_select_profile":
+                return self._api_response(response, *self.select_replay_profile(robot, request.name))
+            if command == "replay_start":
+                return self._api_response(response, *self.start_replay(robot))
+            if command == "replay_stop":
+                return self._api_response(response, *self.stop_replay(robot))
+            if command == "grasper":
+                return self._api_response(response, *self.command_grasper(robot, request.name))
+            if command == "set_ik_tool_axis":
+                return self._api_response(response, *self.set_robot_ik_tool_axis(robot, request.vector3))
+            if command == "set_ik_base_align_weight":
+                return self._api_response(response, *self.set_robot_ik_base_align_weight(robot, request.scalar))
+        except Exception as exc:
+            return self._api_response(response, False, f"{command} failed: {exc}")
+
+        return self._api_response(response, False, f"unknown backend robot command '{command}'")
+
+    def _backend_pose_command_callback(self, request, response):
+        robot = self._robot_for_api(request.robot_index)
+        if robot is None:
+            return self._api_response(response, False, f"invalid robot_index={request.robot_index}")
+        command = str(request.command).strip()
+        try:
+            if command == "set_vehicle_target":
+                return self._api_response(response, *self.set_vehicle_target(robot, request.pose))
+            if command == "set_task_target_world":
+                return self._api_response(response, *self.set_task_target_world(robot, request.pose))
+            if command == "set_task_target_arm_base":
+                return self._api_response(response, *self.set_task_target_arm_base(robot, request.pose))
+            if command == "add_waypoint":
+                return self._api_response(
+                    response,
+                    *self.add_vehicle_waypoint_for_robot(
+                        robot,
+                        pose=request.pose,
+                        use_current_target=request.use_current_target,
+                    ),
+                )
+        except Exception as exc:
+            return self._api_response(response, False, f"{command} failed: {exc}")
+        return self._api_response(response, False, f"unknown backend pose command '{command}'")
+
+    def _backend_waypoint_command_callback(self, request, response):
+        robot = self._robot_for_api(request.robot_index)
+        if robot is None:
+            return self._api_response(response, False, f"invalid robot_index={request.robot_index}")
+        command = str(request.command).strip()
+        try:
+            if command == "delete":
+                ok = self.remove_vehicle_waypoint_for_robot(robot.k_robot, int(request.waypoint_index))
+                return self._api_response(response, ok, f"delete waypoint {request.waypoint_index} for {robot.prefix}")
+            if command == "clear":
+                self.clear_vehicle_waypoints_for_robot(robot.k_robot)
+                return self._api_response(response, True, f"cleared waypoints for {robot.prefix}")
+            if command == "stop":
+                self.set_robot_selected(robot.k_robot)
+                self.stop_selected_vehicle_waypoints()
+                return self._api_response(response, True, f"stopped waypoint mission for {robot.prefix}")
+            if command == "execute":
+                self.set_robot_selected(robot.k_robot)
+                ok = self.execute_selected_vehicle_waypoints()
+                return self._api_response(response, ok, f"execute waypoint mission for {robot.prefix}")
+        except Exception as exc:
+            return self._api_response(response, False, f"{command} failed: {exc}")
+        return self._api_response(response, False, f"unknown backend waypoint command '{command}'")
 
     def _call_recording_service(self, client, action_name: str, on_success=None) -> None:
         if not client.wait_for_service(timeout_sec=0.2):
@@ -423,6 +709,8 @@ class UVMSBackendCore:
     def set_robot_selected(self, robot_k):
         for r in self.robots:
             if r.k_robot == robot_k:
+                if getattr(self, "robot_selected", None) is r:
+                    return
                 self.robot_selected = r
                 self.node.get_logger().info(f"Robot {self.robot_selected.prefix} selected for planning.")
                 return

@@ -30,7 +30,7 @@ from geometry_msgs.msg import Pose
 import numpy as np
 from simlab.uvms_parameters import ReachParams
 from simlab.frame_utils import PoseX
-from simlab.robot import Robot, ControlMode, ControlSpace
+from simlab.robot import Robot, ControlSpace
 
 class InteractiveControlsNode(Node):
     def __init__(self):
@@ -124,7 +124,6 @@ class InteractiveControlsNode(Node):
             callback=self.stop_mcap_recording,
         )
         self.mcap_recording_active = False
-        self.menu_handler.setVisible(self.stop_recording_handle, False)
 
         self.control_space_menu_map = {}  # mid -> (k_robot, control_space_name)
         self.axis_menu_map = {}
@@ -337,7 +336,7 @@ class InteractiveControlsNode(Node):
         )
         # Initial application of menu and markers
         self._apply_joint_control_mode(robot = self.uvms_backend.robot_selected)
-        self._set_robot_submenus_visible(self.uvms_backend.robot_selected.k_robot)
+        self._refresh_robot_menu_state(self.uvms_backend.robot_selected.k_robot)
         self._refresh_vehicle_waypoint_delete_menu()
 
     def reset_simulation(self, feedback: InteractiveMarkerFeedback):
@@ -354,7 +353,7 @@ class InteractiveControlsNode(Node):
         if self.uvms_backend.robot_selected.task_based_controller:
             self.get_logger().warn("Vehicle waypoints are only available for vehicle path planning.")
             return
-        self.uvms_backend.add_selected_vehicle_waypoint()
+        self.uvms_backend.add_vehicle_waypoint_for_robot(self.uvms_backend.robot_selected)
         self._refresh_vehicle_waypoint_delete_menu()
 
     def delete_vehicle_waypoint(self, feedback: InteractiveMarkerFeedback):
@@ -403,26 +402,10 @@ class InteractiveControlsNode(Node):
         msg.text = text
         self.robot_metrics_overlay_pub.publish(msg)
 
-    def _set_robot_submenus_visible(self, selected_k_robot: int) -> None:
-        selected_robot = next(
-            (robot for robot in self.uvms_backend.robots if robot.k_robot == selected_k_robot),
-            None,
-        )
-        if selected_robot is not None:
-            self.menu_handler.setVisible(self.reset_manager_parent, "real" not in selected_robot.prefix)
-            self.menu_handler.setVisible(self.dynamics_profile_root, "real" not in selected_robot.prefix)
-
-        for r in self.uvms_backend.robots:
-            visible = (r.k_robot == selected_k_robot)
-            parents = self.robot_menu_parents.get(r.k_robot, {})
-            for h in parents.values():
-                if isinstance(h, (list, tuple)):
-                    for handle in h:
-                        self.menu_handler.setVisible(handle, visible)
-                else:
-                    self.menu_handler.setVisible(h, visible)
-
-        # push updated menu state to all markers that have menus
+    def _refresh_robot_menu_state(self, selected_k_robot: int) -> None:
+        # Keep menu entries visible. Backend methods reject invalid state
+        # combinations and log the reason.
+        del selected_k_robot
         self.menu_handler.reApply(self.server)
         self.server.applyChanges()
 
@@ -451,14 +434,21 @@ class InteractiveControlsNode(Node):
 
     def _set_mcap_recording_menu_state(self, active: bool) -> None:
         self.mcap_recording_active = active
-        self.menu_handler.setVisible(self.start_recording_handle, not active)
-        self.menu_handler.setVisible(self.stop_recording_handle, active)
+        self.menu_handler.setCheckState(
+            self.start_recording_handle,
+            MenuHandler.UNCHECKED if active else MenuHandler.CHECKED,
+        )
+        self.menu_handler.setCheckState(
+            self.stop_recording_handle,
+            MenuHandler.CHECKED if active else MenuHandler.UNCHECKED,
+        )
         self.menu_handler.reApply(self.server)
         self.server.applyChanges()
 
     def start_mcap_recording(self, feedback: InteractiveMarkerFeedback):
         del feedback
         if self.mcap_recording_active:
+            self.get_logger().warn("MCAP recording is already active.")
             return
         self.uvms_backend.start_mcap_recording(
             on_success=lambda: self._set_mcap_recording_menu_state(True)
@@ -467,6 +457,7 @@ class InteractiveControlsNode(Node):
     def stop_mcap_recording(self, feedback: InteractiveMarkerFeedback):
         del feedback
         if not self.mcap_recording_active:
+            self.get_logger().warn("MCAP recording is not active.")
             return
         self.uvms_backend.stop_mcap_recording(
             on_success=lambda: self._set_mcap_recording_menu_state(False)
@@ -498,8 +489,11 @@ class InteractiveControlsNode(Node):
         self.server.applyChanges()
 
     def configure_selected_robot(self, selected_robot: Robot):
-        self.uvms_backend.set_robot_selected(selected_robot.k_robot)
-        self._set_robot_submenus_visible(selected_robot.k_robot)
+        ok, message = self.uvms_backend.select_robot(selected_robot.k_robot)
+        if not ok:
+            self.get_logger().warn(message)
+            return
+        self._refresh_robot_menu_state(selected_robot.k_robot)
         self._refresh_vehicle_waypoint_delete_menu()
 
         self.get_logger().info(f"""Switched to another robot is task based 
@@ -548,7 +542,7 @@ class InteractiveControlsNode(Node):
         self.server.applyChanges()
 
         if keep_now_target:
-            self.uvms_backend.target_vehicle_pose = self.uv_marker.pose
+            self.uvms_backend.set_vehicle_target(robot, self.uv_marker.pose)
             arm_pose_world_new = robot.try_transform_pose(
                 self.uvms_backend.target_world_endeffector_pose,
                 target_frame=self.uvms_backend.arm_base_target_frame,
@@ -556,7 +550,7 @@ class InteractiveControlsNode(Node):
                 warn_context="set_endeffector_base_marker_pose",
             )
             if arm_pose_world_new is not None:
-                self.uvms_backend.target_arm_base_endeffector_pose = arm_pose_world_new
+                self.uvms_backend.set_task_target_arm_base(robot, arm_pose_world_new)
         self.get_logger().info("Switched to JOINT space control.")
 
 
@@ -580,7 +574,9 @@ class InteractiveControlsNode(Node):
         robot: Robot
         robot, controller_name = self.controller_menu_map.get(feedback.menu_entry_id)
 
-        if not robot.set_controller(controller_name):
+        ok, message = self.uvms_backend.set_robot_controller(robot, controller_name)
+        if not ok:
+            self.get_logger().warn(message)
             return
 
         # update checkmarks
@@ -597,7 +593,10 @@ class InteractiveControlsNode(Node):
         robot: Robot
         robot, planner_name = self.planner_menu_map.get(feedback.menu_entry_id)
 
-        robot.set_planner(planner_name)
+        ok, message = self.uvms_backend.set_robot_planner(robot, planner_name)
+        if not ok:
+            self.get_logger().warn(message)
+            return
         # update checkmarks
         r_i: Robot
         for mid, (r_i, gsn) in self.planner_menu_map.items():
@@ -622,43 +621,27 @@ class InteractiveControlsNode(Node):
             self.menu_handler.apply(self.server, feedback.marker_name)
             self.server.applyChanges()
 
-        robot.apply_dynamics_profile(profile_name, on_success=_on_success)
-
-    def _csv_playback_controller(self, robot: Robot):
-        controller = robot.controller_instance("CmdReplay")
-        if controller is None or not hasattr(controller, "start_playback"):
-            self.get_logger().warn(
-                f"{robot.prefix} has no CmdReplay controller."
-            )
-            return None
-        return controller
+        ok, message = self.uvms_backend.set_robot_dynamics_profile(
+            robot,
+            profile_name,
+            on_success=_on_success,
+        )
+        if not ok:
+            self.get_logger().warn(message)
 
     def stop_csv_playback(self, feedback: InteractiveMarkerFeedback):
         robot, _ = self.csv_playback_menu_map.get(feedback.menu_entry_id)
-        controller = self._csv_playback_controller(robot)
-        if controller is None:
-            return
-        if hasattr(robot, "cancel_replay_settle"):
-            robot.cancel_replay_settle(mark_failed=False)
-        controller.stop_playback()
-        if hasattr(robot, "_stop_replay_session_recording"):
-            robot._stop_replay_session_recording("stopped")
-        robot.publish_commands([0.0] * 6, [0.0] * 5)
-        self.get_logger().info(f"Stopped CSV playback for {robot.prefix}.")
+        ok, message = self.uvms_backend.stop_replay(robot)
+        if ok:
+            self.get_logger().info(message)
+        else:
+            self.get_logger().warn(message)
 
     def switch_csv_playback_profile(self, feedback: InteractiveMarkerFeedback):
         robot, profile_name = self.csv_profile_menu_map.get(feedback.menu_entry_id)
-        controller = robot.controller_instance("CmdReplay")
-        if controller is None or not hasattr(controller, "load_profile"):
-            self.get_logger().warn(f"{robot.prefix} has no CmdReplay controller.")
-            return
-        if hasattr(robot, "cancel_replay_settle"):
-            robot.cancel_replay_settle(mark_failed=False)
-        if hasattr(robot, "_stop_replay_session_recording"):
-            robot._stop_replay_session_recording("profile_changed")
-        if robot.controller_name == "CmdReplay":
-            robot.publish_commands([0.0] * 6, [0.0] * 5)
-        if not controller.load_profile(profile_name):
+        ok, message = self.uvms_backend.select_replay_profile(robot, profile_name)
+        if not ok:
+            self.get_logger().warn(message)
             return
 
         for mid, (r_i, candidate_profile) in self.csv_profile_menu_map.items():
@@ -670,86 +653,24 @@ class InteractiveControlsNode(Node):
             )
         self.menu_handler.apply(self.server, feedback.marker_name)
         self.server.applyChanges()
-        self.get_logger().info(f"Selected CmdReplay profile '{profile_name}' for {robot.prefix}.")
-        if robot.controller_name != "CmdReplay":
-            self.get_logger().info(
-                f"Choose the CmdReplay controller for {robot.prefix} before starting playback."
-            )
+        self.get_logger().info(message)
 
     def reset_csv_playback(self, feedback: InteractiveMarkerFeedback):
         robot, _ = self.csv_playback_menu_map.get(feedback.menu_entry_id)
-        controller = self._csv_playback_controller(robot)
-        if controller is None:
-            return
-        if robot.controller_name != "CmdReplay":
-            self.get_logger().warn(
-                f"CmdReplay reset rejected for {robot.prefix}: choose the CmdReplay controller before playback."
-            )
-            return
-        if hasattr(controller, "has_valid_playback") and not controller.has_valid_playback():
-            controller.stop_playback()
-            robot.publish_commands([0.0] * 6, [0.0] * 5)
-            if hasattr(controller, "has_selected_profile") and not controller.has_selected_profile():
-                self.get_logger().warn(
-                    f"CmdReplay reset rejected for {robot.prefix}: no replay profile selected."
-                )
-            else:
-                self.get_logger().warn(
-                    f"CmdReplay reset rejected for {robot.prefix}: "
-                    f"profile '{getattr(controller, 'profile_name', '')}' has no valid command samples."
-                )
-            return
-        robot.set_control_mode(ControlMode.REPLAY)
-        robot.publish_commands([0.0] * 6, [0.0] * 5)
-        request = controller.build_reset_request()
-        if not controller.begin_sequence(request.hold_commands):
-            robot.publish_commands([0.0] * 6, [0.0] * 5)
-            return
-
-        def _fail_replay_reset():
-            controller.mark_reset_failed()
-            robot.publish_commands([0.0] * 6, [0.0] * 5)
-
-        if hasattr(controller, "reset_mode") and controller.reset_mode() == "controller_settle":
-            def _start_settle_after_dynamics():
-                robot.start_replay_controller_settle(controller)
-                self.get_logger().info(
-                    f"CmdReplay controller-settle reset requested for {robot.prefix}; playback starts after settle."
-                )
-
-            robot.apply_sim_dynamics_from_reset_request(
-                request,
-                on_success=_start_settle_after_dynamics,
-                on_failure=_fail_replay_reset,
-            )
-            return
-
-        def _start_after_reset():
-            robot.set_control_mode(ControlMode.REPLAY)
-            controller.mark_reset_succeeded()
-            self.get_logger().info(f"CmdReplay armed for {robot.prefix}; playback starts on the next eligible control tick.")
-
-        robot.reset_simulation_with_state(
-            request,
-            on_success=_start_after_reset,
-            on_failure=_fail_replay_reset,
-        )
-        next_step = (
-            "Playback will auto-start after reset succeeds."
-            if not request.hold_commands
-            else "Use Release Simulation; playback will start from the next control tick."
-        )
-        self.get_logger().info(
-            f"Reset CmdReplay timer and requested config-conditioned simulation reset for {robot.prefix}. "
-            f"{next_step}"
-        )
+        ok, message = self.uvms_backend.start_replay(robot)
+        if ok:
+            self.get_logger().info(message)
+        else:
+            self.get_logger().warn(message)
 
     def grasper_callback(self, feedback: InteractiveMarkerFeedback):
         robot: Robot
         robot, grasp_state_name = self.grasp_menu_map.get(feedback.menu_entry_id)
 
         if grasp_state_name in ['open','close']:
-            if not robot.command_grasper_from_menu(grasp_state_name):
+            ok, message = self.uvms_backend.command_grasper(robot, grasp_state_name)
+            if not ok:
+                self.get_logger().warn(message)
                 return
 
             r_i: Robot
@@ -764,14 +685,11 @@ class InteractiveControlsNode(Node):
     def switch_control_space_type(self, feedback: InteractiveMarkerFeedback):
         robot: Robot
         robot, control_space_name = self.control_space_menu_map.get(feedback.menu_entry_id)
-        if robot.control_mode in (ControlMode.REPLAY, ControlMode.REPLAY_SETTLE):
-            self.get_logger().warn(
-                f"Control-space switch rejected for {robot.prefix}; CmdReplay is active."
-            )
-            return
 
-        # set on the robot that owns this menu entry
-        robot.set_control_space(control_space_name)
+        ok, message = self.uvms_backend.set_robot_control_space(robot, control_space_name)
+        if not ok:
+            self.get_logger().warn(message)
+            return
 
         # update checkmarks only for that robot's control-space entries
         r_i: Robot
@@ -789,14 +707,17 @@ class InteractiveControlsNode(Node):
         elif control_space_name == ControlSpace.JOINT_SPACE:
             self._apply_joint_control_mode(robot = robot, keep_now_target=True)
 
-        self.get_logger().info(f"Control space set to {control_space_name} for {robot.prefix}")
+        self.get_logger().info(message)
 
 
     def toggle_endeffector_axis_align(self, feedback: InteractiveMarkerFeedback):
         robot: Robot
         robot, lookup_axis  = self.axis_menu_map.get(feedback.menu_entry_id)
 
-        robot.ik_tool_axis = lookup_axis
+        ok, message = self.uvms_backend.set_robot_ik_tool_axis(robot, lookup_axis)
+        if not ok:
+            self.get_logger().warn(message)
+            return
 
         r_i: Robot
         for axis_target_handle, (r_i, axis) in self.axis_menu_map.items():
@@ -807,7 +728,7 @@ class InteractiveControlsNode(Node):
 
         self.menu_handler.apply(self.server, feedback.marker_name)
         self.server.applyChanges()
-        self.get_logger().info(f"Tool axis align set to {lookup_axis.tolist()} for {robot.prefix}")
+        self.get_logger().info(message)
 
     def toggle_align_with_base_weight(self, feedback: InteractiveMarkerFeedback):
         robot: Robot
@@ -816,10 +737,14 @@ class InteractiveControlsNode(Node):
         enabled = self.menu_handler.getCheckState(feedback.menu_entry_id) == MenuHandler.CHECKED
         self.menu_handler.setCheckState(feedback.menu_entry_id, MenuHandler.UNCHECKED if enabled else MenuHandler.CHECKED)
 
-        robot.ik_base_align_w = self.menu_handler.getCheckState(feedback.menu_entry_id) == MenuHandler.CHECKED
+        weight = 1.0 if self.menu_handler.getCheckState(feedback.menu_entry_id) == MenuHandler.CHECKED else 0.0
+        ok, message = self.uvms_backend.set_robot_ik_base_align_weight(robot, weight)
+        if not ok:
+            self.get_logger().warn(message)
+            return
         self.menu_handler.apply(self.server, feedback.marker_name)
         self.server.applyChanges()
-        self.get_logger().info(f"Align arm with base weight set to {robot.ik_base_align_w:.1f}")
+        self.get_logger().info(message)
     
     def vehicle_marker_processFeedback(self, feedback: InteractiveMarkerFeedback):
         pos = feedback.pose.position
@@ -831,12 +756,12 @@ class InteractiveControlsNode(Node):
         self.server.setPose(feedback.marker_name, feedback.pose)
         self.server.applyChanges()
         self.get_logger().debug("Clipped uv_marker position to stay within environment bounds.")
-        self.uvms_backend.target_vehicle_pose = feedback.pose
+        self.uvms_backend.set_vehicle_target(self.uvms_backend.robot_selected, feedback.pose)
         self.sync_endeffector_world_marker_pose(self.uvms_backend.target_arm_base_endeffector_pose, self.uvms_backend.arm_base_target_frame)
 
     def arm_base_task_marker_processFeedback(self, feedback: InteractiveMarkerFeedback):
         if self.uvms_backend.is_valid_arm_base_task(feedback.pose):
-            self.uvms_backend.target_arm_base_endeffector_pose = feedback.pose
+            self.uvms_backend.set_task_target_arm_base(self.uvms_backend.robot_selected, feedback.pose)
             self.sync_endeffector_world_marker_pose(self.uvms_backend.target_arm_base_endeffector_pose, self.uvms_backend.arm_base_target_frame)
             self.get_logger().debug("Updated arm base task marker pose.")
             return
@@ -846,7 +771,7 @@ class InteractiveControlsNode(Node):
 
     def sync_endeffector_world_marker_pose(self, new_pose: Pose, source_frame: str) -> bool:
         if source_frame == self.uvms_backend.world_frame:
-            self.uvms_backend.target_world_endeffector_pose = new_pose
+            self.uvms_backend.set_task_target_world(self.uvms_backend.robot_selected, new_pose)
             return True
 
         task_pose_world_new = self.uvms_backend.robot_selected.try_transform_pose(
@@ -858,7 +783,7 @@ class InteractiveControlsNode(Node):
         if task_pose_world_new is None:
             return False
 
-        self.uvms_backend.target_world_endeffector_pose = task_pose_world_new
+        self.uvms_backend.set_task_target_world(self.uvms_backend.robot_selected, task_pose_world_new)
         return True
 
     def world_task_marker_processFeedback(self, feedback: InteractiveMarkerFeedback):
