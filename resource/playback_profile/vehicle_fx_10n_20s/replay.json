@@ -19,13 +19,12 @@
     ]
   },
   "playback": {
-    "repeats": 1,
-    "loop": false
+    "repeats": 1
   },
-  "control_policy": {
-    "vehicle": "replay",
-    "manipulator": "hold",
-    "stabilizing_controller": "PID"
+  "subsystem_mode": {
+    "vehicle": "replay_command",
+    "manipulator": "hold_initial",
+    "feedback_controller": "PID"
   },
   "reset": {
     "hardware_settle": {

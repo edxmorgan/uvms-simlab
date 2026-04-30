@@ -35,6 +35,24 @@ class CmdReplayController(ControllerTemplate):
     DEFAULT_TIME_COLUMN = "time_sec"
     DEFAULT_VEHICLE_COLUMNS = "vehicle_fx,vehicle_fy,vehicle_fz,vehicle_tx,vehicle_ty,vehicle_tz"
     DEFAULT_ARM_COLUMNS = "tau_axis_e,tau_axis_d,tau_axis_c,tau_axis_b,tau_axis_a"
+    DEFAULT_VEHICLE_REFERENCE_POSE_COLUMNS = (
+        "target_ned_x,target_ned_y,target_ned_z,target_ned_roll,target_ned_pitch,target_ned_yaw"
+    )
+    DEFAULT_VEHICLE_REFERENCE_VEL_COLUMNS = (
+        "target_body_u,target_body_v,target_body_w,target_body_p,target_body_q,target_body_r"
+    )
+    DEFAULT_VEHICLE_REFERENCE_ACC_COLUMNS = (
+        "target_body_du,target_body_dv,target_body_dw,target_body_dp,target_body_dq,target_body_dr"
+    )
+    DEFAULT_ARM_REFERENCE_POSITION_COLUMNS = (
+        "arm_ref_axis_e,arm_ref_axis_d,arm_ref_axis_c,arm_ref_axis_b,arm_ref_axis_a"
+    )
+    DEFAULT_ARM_REFERENCE_VELOCITY_COLUMNS = (
+        "arm_dref_axis_e,arm_dref_axis_d,arm_dref_axis_c,arm_dref_axis_b,arm_dref_axis_a"
+    )
+    DEFAULT_ARM_REFERENCE_ACCELERATION_COLUMNS = (
+        "arm_ddref_axis_e,arm_ddref_axis_d,arm_ddref_axis_c,arm_ddref_axis_b,arm_ddref_axis_a"
+    )
     REAL_SETTLE_POSITION_TOLERANCE = 0.40
     REAL_SETTLE_VELOCITY_TOLERANCE = 0.05
     REAL_SETTLE_TIMEOUT_SEC = 60.0
@@ -49,7 +67,6 @@ class CmdReplayController(ControllerTemplate):
         self.vehicle_columns = self._parse_columns(self.DEFAULT_VEHICLE_COLUMNS, expected_size=6)
         self.arm_columns = self._parse_columns(self.DEFAULT_ARM_COLUMNS, expected_size=self.arm_dof + 1)
         self.repeats = 1
-        self.loop = False
         self.enabled = bool(self._get_or_declare_parameter("cmd_replay_enabled", False, "csv_torque_playback_enabled"))
         self.max_sim_time_step_sec = float(
             self._get_or_declare_parameter("cmd_replay_max_sim_time_step_sec", 1.0)
@@ -69,9 +86,15 @@ class CmdReplayController(ControllerTemplate):
         self.times_sec = np.array([], dtype=float)
         self.vehicle_commands = np.zeros((0, 6), dtype=float)
         self.arm_commands = np.zeros((0, self.arm_dof + 1), dtype=float)
+        self.vehicle_reference_pose = np.zeros((0, 6), dtype=float)
+        self.vehicle_reference_vel = np.zeros((0, 6), dtype=float)
+        self.vehicle_reference_acc = np.zeros((0, 6), dtype=float)
+        self.arm_reference_position = np.zeros((0, self.arm_dof + 1), dtype=float)
+        self.arm_reference_velocity = np.zeros((0, self.arm_dof + 1), dtype=float)
+        self.arm_reference_acceleration = np.zeros((0, self.arm_dof + 1), dtype=float)
         self.duration_sec = 0.0
         self.reset_config = self._default_reset_config()
-        self.control_policy = self._default_control_policy()
+        self.subsystem_mode = self._default_subsystem_mode()
         self.recording_config = self._default_recording_config()
 
         if self.profile_name:
@@ -134,7 +157,14 @@ class CmdReplayController(ControllerTemplate):
 
         playback = manifest.get("playback", {})
         columns = manifest.get("columns", {})
-        control_policy = manifest.get("control_policy", {})
+        subsystem_mode = manifest.get("subsystem_mode", {})
+        if not isinstance(subsystem_mode, dict):
+            self.node.get_logger().error(
+                f"CmdReplay profile '{profile_name}' replay.json must contain a subsystem_mode object."
+            )
+            self.stop_playback()
+            self.lifecycle_state = CmdReplayState.ERROR
+            return False
         recording = manifest.get("recording", {})
         csv_name = str(manifest.get("csv", "commands.csv"))
         reset_section = manifest.get("reset", {})
@@ -165,10 +195,9 @@ class CmdReplayController(ControllerTemplate):
             expected_size=self.arm_dof + 1,
         )
         self.repeats = max(1, int(playback.get("repeats", 1)))
-        self.loop = bool(playback.get("loop", False))
-        self.control_policy = self._merge_control_policy(self._default_control_policy(), control_policy)
+        self.subsystem_mode = self._merge_subsystem_mode(self._default_subsystem_mode(), subsystem_mode)
         self.recording_config = self._merge_recording_config(self._default_recording_config(), recording)
-        self._warned_invalid_stabilizing_controller = False
+        self._warned_invalid_feedback_controller = False
         self.reset_config = self._merge_reset_config(
             self._default_reset_config(),
             manifest.get("reset", {}),
@@ -176,6 +205,12 @@ class CmdReplayController(ControllerTemplate):
         self.times_sec = np.array([], dtype=float)
         self.vehicle_commands = np.zeros((0, 6), dtype=float)
         self.arm_commands = np.zeros((0, self.arm_dof + 1), dtype=float)
+        self.vehicle_reference_pose = np.zeros((0, 6), dtype=float)
+        self.vehicle_reference_vel = np.zeros((0, 6), dtype=float)
+        self.vehicle_reference_acc = np.zeros((0, 6), dtype=float)
+        self.arm_reference_position = np.zeros((0, self.arm_dof + 1), dtype=float)
+        self.arm_reference_velocity = np.zeros((0, self.arm_dof + 1), dtype=float)
+        self.arm_reference_acceleration = np.zeros((0, self.arm_dof + 1), dtype=float)
         self.duration_sec = 0.0
 
         self._load_csv(self.csv_path)
@@ -201,11 +236,11 @@ class CmdReplayController(ControllerTemplate):
             "robot_dynamics_profile": "dory_alpha",
         }
 
-    def _default_control_policy(self) -> dict:
+    def _default_subsystem_mode(self) -> dict:
         return {
-            "vehicle": "replay",
-            "manipulator": "replay",
-            "stabilizing_controller": "PID",
+            "vehicle": "replay_command",
+            "manipulator": "replay_command",
+            "feedback_controller": "PID",
         }
 
     def _default_recording_config(self) -> dict:
@@ -223,38 +258,36 @@ class CmdReplayController(ControllerTemplate):
     def recording_enabled(self) -> bool:
         return bool(self.recording_config.get("enabled", False))
 
-    def _merge_control_policy(self, base: dict, override: dict) -> dict:
+    def _merge_subsystem_mode(self, base: dict, override: dict) -> dict:
         if not isinstance(override, dict):
             override = {}
-        policy = dict(base)
+        mode = dict(base)
         for key in ("vehicle", "manipulator"):
-            value = str(override.get(key, policy[key])).strip().lower()
-            if value not in ("replay", "hold", "zero"):
+            value = str(override.get(key, mode[key])).strip().lower()
+            if value not in ("replay_command", "track_reference", "hold_initial", "zero_command"):
                 self.node.get_logger().warn(
-                    f"CmdReplay invalid control_policy.{key}='{value}'; using '{policy[key]}'."
+                    f"CmdReplay invalid subsystem_mode.{key}='{value}'; using '{mode[key]}'."
                 )
                 continue
-            policy[key] = value
-        stabilizing_controller = str(
-            override.get("stabilizing_controller", policy["stabilizing_controller"])
-        ).strip()
-        if not stabilizing_controller:
+            mode[key] = value
+        feedback_controller = str(override.get("feedback_controller", mode["feedback_controller"])).strip()
+        if not feedback_controller:
             self.node.get_logger().warn(
-                f"CmdReplay invalid control_policy.stabilizing_controller='{stabilizing_controller}'; "
-                f"using '{policy['stabilizing_controller']}'."
+                f"CmdReplay invalid subsystem_mode.feedback_controller='{feedback_controller}'; "
+                f"using '{mode['feedback_controller']}'."
             )
         else:
-            policy["stabilizing_controller"] = stabilizing_controller
-        return policy
+            mode["feedback_controller"] = feedback_controller
+        return mode
 
-    def vehicle_policy(self) -> str:
-        return str(self.control_policy.get("vehicle", "replay"))
+    def vehicle_subsystem_mode(self) -> str:
+        return str(self.subsystem_mode.get("vehicle", "replay_command"))
 
-    def manipulator_policy(self) -> str:
-        return str(self.control_policy.get("manipulator", "replay"))
+    def manipulator_subsystem_mode(self) -> str:
+        return str(self.subsystem_mode.get("manipulator", "replay_command"))
 
-    def stabilizing_controller_name(self) -> str:
-        return str(self.control_policy.get("stabilizing_controller", "PID"))
+    def feedback_controller_name(self) -> str:
+        return str(self.subsystem_mode.get("feedback_controller", "PID"))
 
     def _load_reset_config(self, config_path: str) -> None:
         path = Path(os.path.expanduser(config_path))
@@ -375,6 +408,7 @@ class CmdReplayController(ControllerTemplate):
         names: tuple,
         columns: list,
         label: str,
+        warn_missing: bool = True,
     ) -> np.ndarray:
         rows = int(self.times_sec.size)
         command = np.zeros((rows, len(columns)), dtype=float)
@@ -388,7 +422,7 @@ class CmdReplayController(ControllerTemplate):
                 continue
             command[:, index] = np.asarray(data[column], dtype=float).reshape(-1)
 
-        if missing:
+        if missing and warn_missing:
             self.node.get_logger().warn(
                 f"CmdReplay missing {label} column(s) {missing}; using zero for those command slots."
             )
@@ -430,20 +464,82 @@ class CmdReplayController(ControllerTemplate):
             self.arm_columns,
             "arm",
         )
+        vehicle_tracks_reference = self.vehicle_subsystem_mode() == "track_reference"
+        manipulator_tracks_reference = self.manipulator_subsystem_mode() == "track_reference"
+        self.vehicle_reference_pose = self._command_matrix_from_columns(
+            data,
+            names,
+            self._parse_columns(self.DEFAULT_VEHICLE_REFERENCE_POSE_COLUMNS, expected_size=6),
+            "vehicle reference pose",
+            warn_missing=vehicle_tracks_reference,
+        )
+        self.vehicle_reference_vel = self._command_matrix_from_columns(
+            data,
+            names,
+            self._parse_columns(self.DEFAULT_VEHICLE_REFERENCE_VEL_COLUMNS, expected_size=6),
+            "vehicle reference velocity",
+            warn_missing=vehicle_tracks_reference,
+        )
+        self.vehicle_reference_acc = self._command_matrix_from_columns(
+            data,
+            names,
+            self._parse_columns(self.DEFAULT_VEHICLE_REFERENCE_ACC_COLUMNS, expected_size=6),
+            "vehicle reference acceleration",
+            warn_missing=vehicle_tracks_reference,
+        )
+        self.arm_reference_position = self._command_matrix_from_columns(
+            data,
+            names,
+            self._parse_columns(self.DEFAULT_ARM_REFERENCE_POSITION_COLUMNS, expected_size=self.arm_dof + 1),
+            "arm reference position",
+            warn_missing=manipulator_tracks_reference,
+        )
+        self.arm_reference_velocity = self._command_matrix_from_columns(
+            data,
+            names,
+            self._parse_columns(self.DEFAULT_ARM_REFERENCE_VELOCITY_COLUMNS, expected_size=self.arm_dof + 1),
+            "arm reference velocity",
+            warn_missing=manipulator_tracks_reference,
+        )
+        self.arm_reference_acceleration = self._command_matrix_from_columns(
+            data,
+            names,
+            self._parse_columns(self.DEFAULT_ARM_REFERENCE_ACCELERATION_COLUMNS, expected_size=self.arm_dof + 1),
+            "arm reference acceleration",
+            warn_missing=manipulator_tracks_reference,
+        )
 
         order = np.argsort(self.times_sec)
         self.times_sec = self.times_sec[order]
         self.vehicle_commands = self.vehicle_commands[order]
         self.arm_commands = self.arm_commands[order]
+        self.vehicle_reference_pose = self.vehicle_reference_pose[order]
+        self.vehicle_reference_vel = self.vehicle_reference_vel[order]
+        self.vehicle_reference_acc = self.vehicle_reference_acc[order]
+        self.arm_reference_position = self.arm_reference_position[order]
+        self.arm_reference_velocity = self.arm_reference_velocity[order]
+        self.arm_reference_acceleration = self.arm_reference_acceleration[order]
 
         finite = (
             np.isfinite(self.times_sec)
             & np.all(np.isfinite(self.vehicle_commands), axis=1)
             & np.all(np.isfinite(self.arm_commands), axis=1)
+            & np.all(np.isfinite(self.vehicle_reference_pose), axis=1)
+            & np.all(np.isfinite(self.vehicle_reference_vel), axis=1)
+            & np.all(np.isfinite(self.vehicle_reference_acc), axis=1)
+            & np.all(np.isfinite(self.arm_reference_position), axis=1)
+            & np.all(np.isfinite(self.arm_reference_velocity), axis=1)
+            & np.all(np.isfinite(self.arm_reference_acceleration), axis=1)
         )
         self.times_sec = self.times_sec[finite]
         self.vehicle_commands = self.vehicle_commands[finite]
         self.arm_commands = self.arm_commands[finite]
+        self.vehicle_reference_pose = self.vehicle_reference_pose[finite]
+        self.vehicle_reference_vel = self.vehicle_reference_vel[finite]
+        self.vehicle_reference_acc = self.vehicle_reference_acc[finite]
+        self.arm_reference_position = self.arm_reference_position[finite]
+        self.arm_reference_velocity = self.arm_reference_velocity[finite]
+        self.arm_reference_acceleration = self.arm_reference_acceleration[finite]
 
         if self.times_sec.size == 0:
             self.node.get_logger().error(
@@ -462,7 +558,7 @@ class CmdReplayController(ControllerTemplate):
         self.node.get_logger().info(
             f"CmdReplay loaded {self.times_sec.size} samples from {path}, "
             f"duration={self.duration_sec:.3f}s, repeats={self.repeats}, "
-            f"loop={self.loop}, enabled={self.enabled}."
+            f"enabled={self.enabled}."
         )
 
     def reset_playback(self) -> None:
@@ -480,6 +576,12 @@ class CmdReplayController(ControllerTemplate):
             and self.duration_sec > 0.0
             and self.vehicle_commands.shape[0] == self.times_sec.size
             and self.arm_commands.shape[0] == self.times_sec.size
+            and self.vehicle_reference_pose.shape[0] == self.times_sec.size
+            and self.vehicle_reference_vel.shape[0] == self.times_sec.size
+            and self.vehicle_reference_acc.shape[0] == self.times_sec.size
+            and self.arm_reference_position.shape[0] == self.times_sec.size
+            and self.arm_reference_velocity.shape[0] == self.times_sec.size
+            and self.arm_reference_acceleration.shape[0] == self.times_sec.size
         )
 
     def has_selected_profile(self) -> bool:
@@ -595,7 +697,7 @@ class CmdReplayController(ControllerTemplate):
             return "stopped"
         if self.times_sec.size == 0 or self.duration_sec <= 0.0:
             return "no_csv"
-        if not self.loop and self._sample_time_sec >= self.duration_sec:
+        if self._sample_time_sec >= self.duration_sec:
             return "complete"
         return "running"
 
@@ -673,6 +775,34 @@ class CmdReplayController(ControllerTemplate):
             return np.zeros(self.arm_dof + 1, dtype=float)
         return self.arm_commands[int(index)].copy()
 
+    def vehicle_reference_at(self, index) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        if index is None:
+            return (
+                np.zeros(6, dtype=float),
+                np.zeros(6, dtype=float),
+                np.zeros(6, dtype=float),
+            )
+        index = int(index)
+        return (
+            self.vehicle_reference_pose[index].copy(),
+            self.vehicle_reference_vel[index].copy(),
+            self.vehicle_reference_acc[index].copy(),
+        )
+
+    def arm_reference_at(self, index) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        if index is None:
+            return (
+                np.zeros(self.arm_dof + 1, dtype=float),
+                np.zeros(self.arm_dof + 1, dtype=float),
+                np.zeros(self.arm_dof + 1, dtype=float),
+            )
+        index = int(index)
+        return (
+            self.arm_reference_position[index].copy(),
+            self.arm_reference_velocity[index].copy(),
+            self.arm_reference_acceleration[index].copy(),
+        )
+
     def _current_sample_index(self):
         if not self.enabled:
             return None
@@ -681,14 +811,7 @@ class CmdReplayController(ControllerTemplate):
 
         t = self._sample_time_sec
 
-        if self.loop:
-            if self.repeats != 1:
-                self.node.get_logger().warn(
-                    "CmdReplay loop=true ignores repeats because loop playback does not reset between cycles."
-                )
-            self.repeats = 1
-            sample_t = t % self.duration_sec
-        elif t < self.duration_sec:
+        if t < self.duration_sec:
             sample_t = t
         else:
             if self._current_pass + 1 < self.repeats:
