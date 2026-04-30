@@ -14,6 +14,7 @@
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 #!/usr/bin/env python3
+import copy
 from simlab.uvms_parameters import ReachParams
 import rclpy
 from rclpy.node import Node
@@ -65,6 +66,7 @@ class UVMSBackendCore:
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self.node)
         self.start_recording_client = self.node.create_client(Trigger, "/bag_recorder_node/start_recording")
         self.stop_recording_client = self.node.create_client(Trigger, "/bag_recorder_node/stop_recording")
+        self.mcap_recording_active = False
         self.urdf_string = urdf_string
         self.vehicle_target_frame = vehicle_target_frame
         self.world_frame = world_frame
@@ -349,18 +351,30 @@ class UVMSBackendCore:
         robot.ik_base_align_w = float(weight)
         return True, f"IK base align weight set for {robot.prefix}"
 
+    def _clip_pose_to_environment_bounds(self, pose: Pose) -> tuple[Pose, bool]:
+        clipped_pose = copy.deepcopy(pose)
+        p = clipped_pose.position
+        clipped_xyz = self.fcl_world.enforce_bounds([p.x, p.y, p.z])
+        clipped = not np.allclose([p.x, p.y, p.z], clipped_xyz)
+        p.x, p.y, p.z = clipped_xyz
+        return clipped_pose, clipped
+
     def set_vehicle_target(self, robot: Robot, pose: Pose) -> tuple[bool, str]:
         self.set_robot_selected(robot.k_robot)
-        self.target_vehicle_pose = pose
-        return True, f"vehicle target set for {robot.prefix}"
+        self.target_vehicle_pose, clipped = self._clip_pose_to_environment_bounds(pose)
+        suffix = " within environment bounds" if clipped else ""
+        return True, f"vehicle target set for {robot.prefix}{suffix}"
 
     def set_task_target_world(self, robot: Robot, pose: Pose) -> tuple[bool, str]:
         self.set_robot_selected(robot.k_robot)
-        self.target_world_endeffector_pose = pose
-        return True, f"world task target set for {robot.prefix}"
+        self.target_world_endeffector_pose, clipped = self._clip_pose_to_environment_bounds(pose)
+        suffix = " within environment bounds" if clipped else ""
+        return True, f"world task target set for {robot.prefix}{suffix}"
 
     def set_task_target_arm_base(self, robot: Robot, pose: Pose) -> tuple[bool, str]:
         self.set_robot_selected(robot.k_robot)
+        if not self.is_valid_arm_base_task(pose):
+            return False, f"arm-base task target rejected for {robot.prefix}: outside reachable workspace"
         self.target_arm_base_endeffector_pose = pose
         return True, f"arm-base task target set for {robot.prefix}"
 
@@ -370,9 +384,13 @@ class UVMSBackendCore:
         pose: Pose | None = None,
         use_current_target: bool = True,
     ) -> tuple[bool, str]:
+        if robot.task_based_controller:
+            return False, "vehicle waypoints are only available for vehicle path planning"
         self.set_robot_selected(robot.k_robot)
         if not use_current_target and pose is not None:
-            self.target_vehicle_pose = pose
+            ok, message = self.set_vehicle_target(robot, pose)
+            if not ok:
+                return False, message
         count = self.add_selected_vehicle_waypoint()
         return True, f"added waypoint {count} for {robot.prefix}"
 
@@ -468,12 +486,12 @@ class UVMSBackendCore:
             return self._api_response(response, False, f"{command} failed: {exc}")
         return self._api_response(response, False, f"unknown backend waypoint command '{command}'")
 
-    def _call_recording_service(self, client, action_name: str, on_success=None) -> None:
+    def _call_recording_service(self, client, action_name: str, on_success=None) -> bool:
         if not client.wait_for_service(timeout_sec=0.2):
             self.node.get_logger().warn(
                 f"MCAP recording {action_name} rejected: bag_recorder_node service is not ready."
             )
-            return
+            return False
 
         future = client.call_async(Trigger.Request())
 
@@ -492,12 +510,31 @@ class UVMSBackendCore:
                 self.node.get_logger().warn(f"MCAP recording {action_name} rejected: {response.message}")
 
         future.add_done_callback(_done_callback)
+        return True
 
-    def start_mcap_recording(self, on_success=None) -> None:
-        self._call_recording_service(self.start_recording_client, "start", on_success=on_success)
+    def start_mcap_recording(self, on_success=None) -> bool:
+        if self.mcap_recording_active:
+            self.node.get_logger().warn("MCAP recording start rejected: recording is already active.")
+            return False
 
-    def stop_mcap_recording(self, on_success=None) -> None:
-        self._call_recording_service(self.stop_recording_client, "stop", on_success=on_success)
+        def _mark_active() -> None:
+            self.mcap_recording_active = True
+            if on_success is not None:
+                on_success()
+
+        return self._call_recording_service(self.start_recording_client, "start", on_success=_mark_active)
+
+    def stop_mcap_recording(self, on_success=None) -> bool:
+        if not self.mcap_recording_active:
+            self.node.get_logger().warn("MCAP recording stop rejected: recording is not active.")
+            return False
+
+        def _mark_inactive() -> None:
+            self.mcap_recording_active = False
+            if on_success is not None:
+                on_success()
+
+        return self._call_recording_service(self.stop_recording_client, "stop", on_success=_mark_inactive)
 
     def reset_selected_simulation(self) -> bool:
         robot = self.robot_selected
@@ -538,6 +575,9 @@ class UVMSBackendCore:
         return self.vehicle_waypoint_missions[self.robot_selected.k_robot]
 
     def add_selected_vehicle_waypoint(self) -> int:
+        if self.robot_selected.task_based_controller:
+            self.node.get_logger().warn("Vehicle waypoints are only available for vehicle path planning.")
+            return 0
         mission = self.selected_vehicle_waypoint_mission()
         count = mission.add_waypoint(self.target_vehicle_pose)
         self.node.get_logger().info(
