@@ -62,9 +62,11 @@ from geometry_msgs.msg import Pose
 from geometry_msgs.msg import Vector3Stamped
 from enum import Enum
 from dataclasses import dataclass
+from simlab_msgs.msg import ControllerPerformance
 from simlab.reference_targets import ReferenceTargetPublisher
 from simlab.planner_action_client import PlannerActionClient
 from simlab.planners import visible_planner_names
+from simlab.performance_metrics import ControllerPerformanceMetrics
 
 class ControlSpace(str, Enum):
     JOINT_SPACE = "joint_space"
@@ -558,6 +560,12 @@ class Robot(Base):
         self.pose_command = [0.0]*6
         self.body_vel_command = [0.0]*6
         self.body_acc_command = [0.0]*6
+        self.performance_metrics = ControllerPerformanceMetrics()
+        self.performance_publisher = self.node.create_publisher(
+            ControllerPerformance,
+            f"/{self.prefix}/performance/controller",
+            10,
+        )
         self.controller_instances = [
             controller_class(self.node, self.n_joint, self.prefix)
             for controller_class in DEFAULT_CONTROLLER_CLASSES
@@ -1160,6 +1168,75 @@ class Robot(Base):
             'arm_gravity': float(self.arm_gravity),
         }
 
+    def _reference_trajectory_direction_ned(self) -> np.ndarray:
+        body_vel_ref = ControllerPerformanceMetrics.fixed_array(self.body_vel_command, 6)
+        try:
+            pose_ref = ControllerPerformanceMetrics.fixed_array(self.pose_command, 6)
+            jacobian = self.vehicle_J(pose_ref[3:6]).full()
+            ned_vel_ref = np.asarray(
+                self.to_ned_velocity(jacobian, body_vel_ref),
+                dtype=float,
+            ).reshape(-1)
+            return ControllerPerformanceMetrics.fixed_array(ned_vel_ref, 6)[:3]
+        except Exception:
+            return np.zeros(3, dtype=float)
+
+    def _update_controller_performance_metrics(self) -> Dict:
+        state = self.get_state()
+        active = (
+            state.get("status") == "active"
+            and not self.sim_reset_hold
+            and self.control_mode in (ControlMode.PLANNER, ControlMode.REPLAY, ControlMode.REPLAY_SETTLE)
+        )
+        reference = {
+            "pose": self.pose_command,
+            "body_vel": self.body_vel_command,
+            "body_acc": self.body_acc_command,
+            "q": self.arm.q_command,
+            "dq": self.arm.dq_command,
+            "ddq": self.arm.ddq_command,
+            "trajectory_direction": self._reference_trajectory_direction_ned(),
+        }
+        return self.performance_metrics.update(
+            current=state,
+            reference=reference,
+            active=active,
+        )
+
+    def get_controller_performance_metrics(self) -> Dict:
+        return self.performance_metrics.snapshot()
+
+    def _publish_controller_performance_metrics(self) -> None:
+        metrics = self._update_controller_performance_metrics()
+        msg = ControllerPerformance()
+        msg.header.stamp = self.node.get_clock().now().to_msg()
+        msg.header.frame_id = self.map_frame
+        msg.robot_prefix = self.prefix
+        msg.active = bool(metrics.get("active", 0.0))
+        msg.vehicle_cross_track_m = float(metrics.get("vehicle_cross_track_m", 0.0))
+        msg.vehicle_along_track_m = float(metrics.get("vehicle_along_track_m", 0.0))
+        msg.vehicle_n_cross_track = float(metrics.get("vehicle_n_cross_track", 0.0))
+        msg.vehicle_n_along_track = float(metrics.get("vehicle_n_along_track", 0.0))
+        msg.vehicle_n_position = float(metrics.get("vehicle_n_position", 0.0))
+        msg.vehicle_n_attitude = float(metrics.get("vehicle_n_attitude", 0.0))
+        msg.vehicle_n_linear_velocity = float(metrics.get("vehicle_n_linear_velocity", 0.0))
+        msg.vehicle_n_angular_velocity = float(metrics.get("vehicle_n_angular_velocity", 0.0))
+        msg.vehicle_n_linear_acceleration = float(metrics.get("vehicle_n_linear_acceleration", 0.0))
+        msg.vehicle_n_angular_acceleration = float(metrics.get("vehicle_n_angular_acceleration", 0.0))
+        msg.arm_n_position = float(metrics.get("arm_n_position", 0.0))
+        msg.arm_n_velocity = float(metrics.get("arm_n_velocity", 0.0))
+        msg.arm_n_acceleration = float(metrics.get("arm_n_acceleration", 0.0))
+        msg.tracking_score = float(metrics.get("tracking_score", 0.0))
+        msg.tracking_score_rms = float(metrics.get("tracking_score_rms", 0.0))
+        msg.normalized_control_effort = float(metrics.get("normalized_control_effort", 0.0))
+        msg.effort_per_tracking_score = float(metrics.get("effort_per_tracking_score", 0.0))
+        msg.energy_per_meter = float(metrics.get("energy_per_meter", 0.0))
+        msg.energy_per_second = float(metrics.get("energy_per_second", 0.0))
+        msg.time_to_tolerance_sec = float(metrics.get("time_to_tolerance_sec", 0.0))
+        msg.peak_tracking_score = float(metrics.get("peak_tracking_score", 0.0))
+        msg.sample_count = float(metrics.get("sample_count", 0.0))
+        self.performance_publisher.publish(msg)
+
     def try_transform_pose(
         self,
         pose_in_source: Pose,
@@ -1439,6 +1516,7 @@ class Robot(Base):
 
         self.vehicle_effort_command_publisher.publish(veh_msg)
         self.manipulator_effort_command_publisher.publish(arm_msg)
+        self._publish_controller_performance_metrics()
     
     def _now_sec(self) -> float:
         return self.node.get_clock().now().nanoseconds * 1e-9
