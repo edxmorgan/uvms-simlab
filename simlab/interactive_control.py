@@ -350,10 +350,10 @@ class InteractiveControlsNode(Node):
         self.uvms_backend.plan_execute_selected()
 
     def add_vehicle_waypoint(self, feedback: InteractiveMarkerFeedback):
-        if self.uvms_backend.robot_selected.task_based_controller:
-            self.get_logger().warn("Vehicle waypoints are only available for vehicle path planning.")
+        ok, message = self.uvms_backend.add_vehicle_waypoint_for_robot(self.uvms_backend.robot_selected)
+        if not ok:
+            self.get_logger().warn(message)
             return
-        self.uvms_backend.add_vehicle_waypoint_for_robot(self.uvms_backend.robot_selected)
         self._refresh_vehicle_waypoint_delete_menu()
 
     def delete_vehicle_waypoint(self, feedback: InteractiveMarkerFeedback):
@@ -447,18 +447,12 @@ class InteractiveControlsNode(Node):
 
     def start_mcap_recording(self, feedback: InteractiveMarkerFeedback):
         del feedback
-        if self.mcap_recording_active:
-            self.get_logger().warn("MCAP recording is already active.")
-            return
         self.uvms_backend.start_mcap_recording(
             on_success=lambda: self._set_mcap_recording_menu_state(True)
         )
 
     def stop_mcap_recording(self, feedback: InteractiveMarkerFeedback):
         del feedback
-        if not self.mcap_recording_active:
-            self.get_logger().warn("MCAP recording is not active.")
-            return
         self.uvms_backend.stop_mcap_recording(
             on_success=lambda: self._set_mcap_recording_menu_state(False)
         )
@@ -747,32 +741,33 @@ class InteractiveControlsNode(Node):
         self.get_logger().info(message)
     
     def vehicle_marker_processFeedback(self, feedback: InteractiveMarkerFeedback):
-        pos = feedback.pose.position
-        clipped_xyz = self.uvms_backend.fcl_world.enforce_bounds([pos.x, pos.y, pos.z])
-        pos.x = clipped_xyz[0]
-        pos.y = clipped_xyz[1]
-        pos.z = clipped_xyz[2]
+        ok, message = self.uvms_backend.set_vehicle_target(self.uvms_backend.robot_selected, feedback.pose)
+        if not ok:
+            self.get_logger().warn(message)
+            return
 
-        self.server.setPose(feedback.marker_name, feedback.pose)
+        self.server.setPose(feedback.marker_name, self.uvms_backend.target_vehicle_pose)
         self.server.applyChanges()
-        self.get_logger().debug("Clipped uv_marker position to stay within environment bounds.")
-        self.uvms_backend.set_vehicle_target(self.uvms_backend.robot_selected, feedback.pose)
+        self.get_logger().debug(message)
         self.sync_endeffector_world_marker_pose(self.uvms_backend.target_arm_base_endeffector_pose, self.uvms_backend.arm_base_target_frame)
 
     def arm_base_task_marker_processFeedback(self, feedback: InteractiveMarkerFeedback):
-        if self.uvms_backend.is_valid_arm_base_task(feedback.pose):
-            self.uvms_backend.set_task_target_arm_base(self.uvms_backend.robot_selected, feedback.pose)
+        ok, message = self.uvms_backend.set_task_target_arm_base(self.uvms_backend.robot_selected, feedback.pose)
+        if ok:
             self.sync_endeffector_world_marker_pose(self.uvms_backend.target_arm_base_endeffector_pose, self.uvms_backend.arm_base_target_frame)
-            self.get_logger().debug("Updated arm base task marker pose.")
+            self.get_logger().debug(message)
             return
 
+        self.get_logger().debug(message)
         self.server.setPose(self.arm_base_task_marker.name, self.uvms_backend.target_arm_base_endeffector_pose)
         self.server.applyChanges()
 
     def sync_endeffector_world_marker_pose(self, new_pose: Pose, source_frame: str) -> bool:
         if source_frame == self.uvms_backend.world_frame:
-            self.uvms_backend.set_task_target_world(self.uvms_backend.robot_selected, new_pose)
-            return True
+            ok, message = self.uvms_backend.set_task_target_world(self.uvms_backend.robot_selected, new_pose)
+            if not ok:
+                self.get_logger().warn(message)
+            return ok
 
         task_pose_world_new = self.uvms_backend.robot_selected.try_transform_pose(
             new_pose,
@@ -783,8 +778,10 @@ class InteractiveControlsNode(Node):
         if task_pose_world_new is None:
             return False
 
-        self.uvms_backend.set_task_target_world(self.uvms_backend.robot_selected, task_pose_world_new)
-        return True
+        ok, message = self.uvms_backend.set_task_target_world(self.uvms_backend.robot_selected, task_pose_world_new)
+        if not ok:
+            self.get_logger().warn(message)
+        return ok
 
     def world_task_marker_processFeedback(self, feedback: InteractiveMarkerFeedback):
         pose_world = self.uvms_backend.robot_selected.try_transform_pose(
@@ -796,11 +793,13 @@ class InteractiveControlsNode(Node):
         if pose_world is None:
             return
 
-        p = pose_world.position
-        p.x, p.y, p.z = self.uvms_backend.fcl_world.enforce_bounds([p.x, p.y, p.z])
+        ok, message = self.uvms_backend.set_task_target_world(self.uvms_backend.robot_selected, pose_world)
+        if not ok:
+            self.get_logger().warn(message)
+            return
 
         pose_arm = self.uvms_backend.robot_selected.try_transform_pose(
-            pose_world,
+            self.uvms_backend.target_world_endeffector_pose,
             target_frame=self.uvms_backend.arm_base_target_frame,
             source_frame=self.uvms_backend.world_frame,
             warn_context="world_task_marker_processFeedback,to_arm_base",
@@ -810,9 +809,6 @@ class InteractiveControlsNode(Node):
 
         self.server.setPose(feedback.marker_name, pose_arm)
         self.server.applyChanges()
-
-        # no duplicate transform now, we already have pose_world
-        self.sync_endeffector_world_marker_pose(pose_world, self.uvms_backend.world_frame)
 
     def destroy_node(self):
         if getattr(self, "uvms_backend", None) is not None:
