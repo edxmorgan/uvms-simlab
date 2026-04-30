@@ -74,7 +74,7 @@ class BagRecorder(Node):
 
     @staticmethod
     def _desired_target_topic_specs(robot_prefixes: List[str]) -> List[TopicSpec]:
-        from simlab_msgs.msg import ReferenceTargets
+        from simlab_msgs.msg import ControllerPerformance, ReferenceTargets
 
         topics: List[TopicSpec] = []
         for prefix in robot_prefixes:
@@ -83,6 +83,14 @@ class BagRecorder(Node):
                     name=f"/{prefix}/reference/targets",
                     msg_cls=ReferenceTargets,
                     type_str="simlab_msgs/msg/ReferenceTargets",
+                    qos_depth=10,
+                )
+            )
+            topics.append(
+                TopicSpec(
+                    name=f"/{prefix}/performance/controller",
+                    msg_cls=ControllerPerformance,
+                    type_str="simlab_msgs/msg/ControllerPerformance",
                     qos_depth=10,
                 )
             )

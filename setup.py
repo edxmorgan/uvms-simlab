@@ -58,6 +58,7 @@ setup(
         ('lib/' + package_name, [package_name+'/uvms_backend.py']),
         ('lib/' + package_name, [package_name+'/backend_utils.py']),
         ('lib/' + package_name, [package_name+'/reference_targets.py']),
+        ('lib/' + package_name, [package_name+'/performance_metrics.py']),
         ('lib/' + package_name, [package_name+'/planner_action_client.py']),
     ],
 

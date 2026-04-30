@@ -699,9 +699,13 @@ class UVMSBackendCore:
         self.env_aabb_pub.publish(max_marker)
 
     def format_robot_metrics_overlay_text(self) -> str:
-        lines = ['Robot Control Status']
+        lines = [
+            'Robot Control Status',
+            'Units: v=m/s, payload=kg, g=m/s^2, E=J, dE/dt=W; score and n* terms are unitless',
+        ]
         for index, robot in enumerate(self.robots):
             metrics = robot.get_energy_metrics()
+            tracking = robot.get_controller_performance_metrics()
             mission = self.vehicle_waypoint_missions[robot.k_robot]
             state = robot.get_state()
             ned_vel = np.asarray(state.get("ned_vel", [0.0] * 6), dtype=float).reshape(-1)
@@ -731,6 +735,13 @@ class UVMSBackendCore:
                 f"{metrics['prefix']}{selected} | {hold_state} | {controller_in_use} | "
                 f"v {linear_speed_mps:.3f} m/s | payload {metrics['arm_payload_mass']:.3f} kg | "
                 f"g {metrics['arm_gravity']:.3f} m/s^2 | {waypoint_info} | "
+                f"score {tracking.get('tracking_score', 0.0):.3f} "
+                f"(rms {tracking.get('tracking_score_rms', 0.0):.3f}) | "
+                f"nXTE {tracking.get('vehicle_n_cross_track', 0.0):.3f} | "
+                f"nATE {tracking.get('vehicle_n_along_track', 0.0):.3f} | "
+                f"nVel {tracking.get('vehicle_n_linear_velocity', 0.0):.3f} | "
+                f"nAtt {tracking.get('vehicle_n_attitude', 0.0):.3f} | "
+                f"nArm {tracking.get('arm_n_position', 0.0):.3f} | "
                 f"E {total_energy:.2f} J | dE/dt {total_power:.2f} W"
             )
         return '\n'.join(lines)
