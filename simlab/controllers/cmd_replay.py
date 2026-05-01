@@ -485,7 +485,7 @@ class CmdReplayController(ControllerTemplate):
             names,
             self._parse_columns(self.DEFAULT_VEHICLE_REFERENCE_ACC_COLUMNS, expected_size=6),
             "vehicle reference acceleration",
-            warn_missing=vehicle_tracks_reference,
+            warn_missing=False,
         )
         self.arm_reference_position = self._command_matrix_from_columns(
             data,
@@ -506,7 +506,7 @@ class CmdReplayController(ControllerTemplate):
             names,
             self._parse_columns(self.DEFAULT_ARM_REFERENCE_ACCELERATION_COLUMNS, expected_size=self.arm_dof + 1),
             "arm reference acceleration",
-            warn_missing=manipulator_tracks_reference,
+            warn_missing=False,
         )
 
         order = np.argsort(self.times_sec)

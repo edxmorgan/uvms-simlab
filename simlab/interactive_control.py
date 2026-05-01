@@ -80,6 +80,7 @@ class InteractiveControlsNode(Node):
         recording_root = self.menu_handler.insert("Data Recording", callback=self.noop_menu_callback)
         grasper_root = self.menu_handler.insert("Grasper", callback=self.noop_menu_callback)
         self.reset_manager_parent = self.menu_handler.insert("Reset Manager", callback=self.noop_menu_callback)
+        robot_control_parent = self.menu_handler.insert("Robot Control", callback=self.noop_menu_callback)
 
         self.add_vehicle_waypoint_handle = self.menu_handler.insert(
             "Add",
@@ -125,15 +126,156 @@ class InteractiveControlsNode(Node):
         )
         self.mcap_recording_active = False
 
-        self.control_space_menu_map = {}  # mid -> (k_robot, control_space_name)
+        self.control_space_menu_map = {}
         self.axis_menu_map = {}
         self.grasp_menu_map = {}
         self.controller_menu_map = {}
         self.planner_menu_map = {}
-        self.csv_playback_menu_map = {}
         self.csv_profile_menu_map = {}
         self.dynamics_profile_menu_map = {}
-        self.robot_menu_parents = {}  # k_robot -> dict of submenu parent handles
+
+        control_space_names = []
+        controller_names = []
+        planner_names = []
+        replay_profile_names = []
+        dynamics_profile_names = []
+        for robot in self.uvms_backend.robots:
+            for cs_name in robot.list_control_spaces():
+                if cs_name not in control_space_names:
+                    control_space_names.append(cs_name)
+
+            for controller_name in robot.list_controllers():
+                if controller_name not in controller_names:
+                    controller_names.append(controller_name)
+
+            for planner_name in robot.list_planners():
+                if planner_name not in planner_names:
+                    planner_names.append(planner_name)
+
+            cmd_replay_controller = robot.controller_instance("CmdReplay")
+            if cmd_replay_controller is not None and hasattr(cmd_replay_controller, "list_profiles"):
+                for profile_name in cmd_replay_controller.list_profiles():
+                    if profile_name not in replay_profile_names:
+                        replay_profile_names.append(profile_name)
+
+            if "real" not in robot.prefix:
+                for profile_name in robot.list_dynamics_profiles():
+                    if profile_name not in dynamics_profile_names:
+                        dynamics_profile_names.append(profile_name)
+
+        for path_planner_name in planner_names:
+            path_planner_handle = self.menu_handler.insert(
+                f"{path_planner_name}",
+                parent=path_planner_root,
+                callback=self.switch_planner_type,
+            )
+            self.planner_menu_map[path_planner_handle] = path_planner_name
+            self.menu_handler.setCheckState(path_planner_handle, MenuHandler.UNCHECKED)
+
+        self.csv_profiles_parent = self.menu_handler.insert(
+            "Profiles",
+            parent=csv_playback_root,
+            callback=self.noop_menu_callback,
+        )
+        for profile_name in replay_profile_names:
+            profile_handle = self.menu_handler.insert(
+                profile_name,
+                parent=self.csv_profiles_parent,
+                callback=self.switch_csv_playback_profile,
+            )
+            self.csv_profile_menu_map[profile_handle] = profile_name
+            self.menu_handler.setCheckState(profile_handle, MenuHandler.UNCHECKED)
+
+        self.csv_reset_handle = self.menu_handler.insert(
+            "Reset Robot + Playback",
+            parent=csv_playback_root,
+            callback=self.reset_csv_playback,
+        )
+        self.csv_stop_handle = self.menu_handler.insert(
+            "Stop",
+            parent=csv_playback_root,
+            callback=self.stop_csv_playback,
+        )
+        for profile_name in dynamics_profile_names:
+            profile_handle = self.menu_handler.insert(
+                profile_name,
+                parent=self.dynamics_profile_root,
+                callback=self.switch_dynamics_profile,
+            )
+            self.dynamics_profile_menu_map[profile_handle] = profile_name
+            self.menu_handler.setCheckState(profile_handle, MenuHandler.UNCHECKED)
+
+        cs_parent = self.menu_handler.insert(
+            "Control Space",
+            parent=robot_control_parent,
+            callback=self.noop_menu_callback,
+        )
+        for cs_name in control_space_names:
+            mid = self.menu_handler.insert(
+                cs_name,
+                parent=cs_parent,
+                callback=self.switch_control_space_type,
+            )
+            self.control_space_menu_map[mid] = cs_name
+            self.menu_handler.setCheckState(mid, MenuHandler.UNCHECKED)
+
+        controller_parent = self.menu_handler.insert(
+            "Controller",
+            parent=robot_control_parent,
+            callback=self.noop_menu_callback,
+        )
+        for controller_name in controller_names:
+            controller_handle = self.menu_handler.insert(
+                f"{controller_name}",
+                parent=controller_parent,
+                callback=self.switch_controller_type,
+            )
+            self.controller_menu_map[controller_handle] = controller_name
+            self.menu_handler.setCheckState(controller_handle, MenuHandler.UNCHECKED)
+
+        ik_settings_parent = self.menu_handler.insert(
+            "IK Settings",
+            parent=robot_control_parent,
+            callback=self.noop_menu_callback,
+        )
+        x_axis_align_target_task_space_handle = self.menu_handler.insert(
+            'x-axis align',
+            parent=ik_settings_parent,
+            callback=self.toggle_endeffector_axis_align
+        )
+        y_axis_align_target_task_space_handle = self.menu_handler.insert(
+            'y-axis align',
+            parent=ik_settings_parent,
+            callback=self.toggle_endeffector_axis_align
+        )
+        z_axis_align_target_task_space_handle = self.menu_handler.insert(
+            'z-axis align',
+            parent=ik_settings_parent,
+            callback=self.toggle_endeffector_axis_align
+        )
+        align_tool_axis_handle = self.menu_handler.insert(
+            'align arm with base',
+            parent=ik_settings_parent,
+            callback=self.toggle_align_with_base_weight,
+        )
+        self.axis_menu_map[x_axis_align_target_task_space_handle] = np.array([1, 0, 0], dtype=int)
+        self.axis_menu_map[y_axis_align_target_task_space_handle] = np.array([0, 1, 0], dtype=int)
+        self.axis_menu_map[z_axis_align_target_task_space_handle] = np.array([0, 0, 1], dtype=int)
+        self.axis_menu_map[align_tool_axis_handle] = None
+        self.menu_handler.setCheckState(x_axis_align_target_task_space_handle, MenuHandler.UNCHECKED)
+        self.menu_handler.setCheckState(y_axis_align_target_task_space_handle, MenuHandler.UNCHECKED)
+        self.menu_handler.setCheckState(z_axis_align_target_task_space_handle, MenuHandler.CHECKED)
+        self.menu_handler.setCheckState(align_tool_axis_handle, MenuHandler.CHECKED)
+        for robot in self.uvms_backend.robots:
+            robot.ik_tool_axis = np.array([0, 0, 1], dtype=int)
+            robot.ik_base_align_w = 1
+
+        self.open_grasper_handle = self.menu_handler.insert('Open', parent=grasper_root, callback=self.grasper_callback)
+        self.close_grasper_handle = self.menu_handler.insert('Close', parent=grasper_root, callback=self.grasper_callback)
+        self.grasp_menu_map[self.open_grasper_handle] = 'open'
+        self.grasp_menu_map[self.close_grasper_handle] = 'close'
+        self.menu_handler.setCheckState(self.open_grasper_handle, MenuHandler.UNCHECKED)
+        self.menu_handler.setCheckState(self.close_grasper_handle, MenuHandler.CHECKED)
 
         for robot in self.uvms_backend.robots:
             robot_handle = self.menu_handler.insert(
@@ -145,167 +287,6 @@ class InteractiveControlsNode(Node):
 
             self.menu_handler.setCheckState(robot_handle,
                                              MenuHandler.CHECKED if self.uvms_backend.robot_selected.k_robot == robot.k_robot else MenuHandler.UNCHECKED)
-
-            robot_control_parent = self.menu_handler.insert(
-                f"{robot.prefix} Control",
-                callback=self.noop_menu_callback,
-            )
-
-            # control space submenu per robot
-            cs_parent = self.menu_handler.insert(
-                "Control Space",
-                parent=robot_control_parent,
-                callback=self.noop_menu_callback,
-            )
-            for cs_name in robot.list_control_spaces():
-                mid = self.menu_handler.insert(
-                    cs_name,
-                    parent=cs_parent,
-                    callback=self.switch_control_space_type,
-                )
-                self.control_space_menu_map[mid] = (robot, cs_name)
-                self.menu_handler.setCheckState(mid, MenuHandler.CHECKED if robot.control_space == cs_name else MenuHandler.UNCHECKED)
-                
-            controller_parent = self.menu_handler.insert(
-                "Controller",
-                parent=robot_control_parent,
-                callback=self.noop_menu_callback,
-            )
-
-            for controller_name in robot.list_controllers():
-                controller_handle = self.menu_handler.insert(
-                    f"{controller_name}",
-                    parent=controller_parent,
-                    callback=self.switch_controller_type,
-                )
-                self.controller_menu_map[controller_handle] = (robot, controller_name)
-                self.menu_handler.setCheckState(controller_handle,
-                                                 MenuHandler.CHECKED if robot.controller_name == controller_name else MenuHandler.UNCHECKED)
-                
-            path_planner_handles = []
-            for path_planner_name in robot.list_planners():
-                path_planner_handle = self.menu_handler.insert(
-                    f"{path_planner_name}",
-                    parent=path_planner_root,
-                    callback=self.switch_planner_type,
-                )
-                path_planner_handles.append(path_planner_handle)
-                self.planner_menu_map[path_planner_handle] = (robot, path_planner_name)
-                self.menu_handler.setCheckState(path_planner_handle,
-                                                 MenuHandler.CHECKED if robot.planner_name == path_planner_name else MenuHandler.UNCHECKED)
-
-            csv_profiles_parent = self.menu_handler.insert(
-                "Profiles",
-                parent=csv_playback_root,
-                callback=self.noop_menu_callback,
-            )
-            csv_playback_handles = [csv_profiles_parent]
-            cmd_replay_controller = robot.controller_instance("CmdReplay")
-            if cmd_replay_controller is not None and hasattr(cmd_replay_controller, "list_profiles"):
-                for profile_name in cmd_replay_controller.list_profiles():
-                    profile_handle = self.menu_handler.insert(
-                        profile_name,
-                        parent=csv_profiles_parent,
-                        callback=self.switch_csv_playback_profile,
-                    )
-                    self.csv_profile_menu_map[profile_handle] = (robot, profile_name)
-                    self.menu_handler.setCheckState(
-                        profile_handle,
-                        MenuHandler.CHECKED
-                        if getattr(cmd_replay_controller, "profile_name", None) == profile_name
-                        else MenuHandler.UNCHECKED,
-                    )
-                    csv_playback_handles.append(profile_handle)
-            csv_reset_handle = self.menu_handler.insert(
-                "Reset Robot + Playback",
-                parent=csv_playback_root,
-                callback=self.reset_csv_playback,
-            )
-            csv_stop_handle = self.menu_handler.insert(
-                "Stop",
-                parent=csv_playback_root,
-                callback=self.stop_csv_playback,
-            )
-            csv_playback_handles.extend([csv_reset_handle, csv_stop_handle])
-            self.csv_playback_menu_map[csv_reset_handle] = (robot, "reset")
-            self.csv_playback_menu_map[csv_stop_handle] = (robot, "stop")
-
-            dynamics_profile_handles = []
-            if "real" not in robot.prefix:
-                for profile_name in robot.list_dynamics_profiles():
-                    profile_handle = self.menu_handler.insert(
-                        profile_name,
-                        parent=self.dynamics_profile_root,
-                        callback=self.switch_dynamics_profile,
-                    )
-                    dynamics_profile_handles.append(profile_handle)
-                    self.dynamics_profile_menu_map[profile_handle] = (robot, profile_name)
-                    self.menu_handler.setCheckState(
-                        profile_handle,
-                        MenuHandler.CHECKED
-                        if getattr(robot, "active_dynamics_profile", "") == profile_name
-                        else MenuHandler.UNCHECKED,
-                    )
-                
-            ik_settings_parent = self.menu_handler.insert(
-                "IK Settings",
-                parent=robot_control_parent,
-                callback=self.noop_menu_callback,
-            )
-            x_axis_align_target_task_space_handle = self.menu_handler.insert(
-                'x-axis align',
-                parent=ik_settings_parent,
-                callback=self.toggle_endeffector_axis_align
-            )
-            y_axis_align_target_task_space_handle = self.menu_handler.insert(
-                'y-axis align',
-                parent=ik_settings_parent,
-                callback=self.toggle_endeffector_axis_align
-            )
-            z_axis_align_target_task_space_handle = self.menu_handler.insert(
-                'z-axis align',
-                parent=ik_settings_parent,
-                callback=self.toggle_endeffector_axis_align
-            )
-            align_tool_axis_handle = self.menu_handler.insert(
-                'align arm with base',
-                parent=ik_settings_parent,
-                callback=self.toggle_align_with_base_weight,
-            )
-            
-            self.axis_menu_map[x_axis_align_target_task_space_handle] = (robot, np.array([1, 0, 0], dtype=int))
-            self.axis_menu_map[y_axis_align_target_task_space_handle] = (robot, np.array([0, 1, 0], dtype=int))
-            self.axis_menu_map[z_axis_align_target_task_space_handle] = (robot, np.array([0, 0, 1], dtype=int))
-            self.axis_menu_map[align_tool_axis_handle] = (robot, None)
-
-            self.menu_handler.setCheckState(x_axis_align_target_task_space_handle, MenuHandler.UNCHECKED)
-            self.menu_handler.setCheckState(y_axis_align_target_task_space_handle, MenuHandler.UNCHECKED)
-            self.menu_handler.setCheckState(z_axis_align_target_task_space_handle, MenuHandler.CHECKED)
-            _, robot.ik_tool_axis = self.axis_menu_map.get(z_axis_align_target_task_space_handle)
-            
-            self.menu_handler.setCheckState(align_tool_axis_handle, MenuHandler.CHECKED)
-            robot.ik_base_align_w = 1
-
-            open_grasper_handle = self.menu_handler.insert('Open', parent=grasper_root, callback=self.grasper_callback)
-            close_grasper_handle = self.menu_handler.insert('Close', parent=grasper_root, callback=self.grasper_callback)
-            grasper_handles = [open_grasper_handle, close_grasper_handle]
-            self.grasp_menu_map[open_grasper_handle] = (robot, 'open')
-            self.grasp_menu_map[close_grasper_handle] = (robot, 'close')
-            self.menu_handler.setCheckState(open_grasper_handle, MenuHandler.UNCHECKED)
-            self.menu_handler.setCheckState(close_grasper_handle, MenuHandler.CHECKED)
-
-            # remember parents so visibility can be toggled per robot
-            self.robot_menu_parents[robot.k_robot] = {
-                "control": robot_control_parent,
-                "cs": cs_parent,
-                "controller": controller_parent,
-                "ik": ik_settings_parent,
-                "grasper": grasper_handles,
-                "planner": path_planner_handles,
-                "csv": csv_playback_handles,
-                "dynamics": dynamics_profile_handles,
-            }
-           
 
         # Create markers
         self.uv_marker = marker_util.make_UVMS_Dof_Marker(
@@ -385,9 +366,9 @@ class InteractiveControlsNode(Node):
         msg.action = OverlayText.ADD
         msg.text_size = 14.0
         char_width = msg.text_size * 0.92
-        line_height = msg.text_size * 3.2
-        msg.width = max(760, int(longest_line * char_width) + 80)
-        msg.height = max(520, int((160 + line_height * len(lines)) * 1.6))
+        robot_count = sum(1 for line in lines if line.startswith("robot_"))
+        msg.width = min(1800, max(900, int(longest_line * char_width) + 96))
+        msg.height = max(356, int(238 + 118 * max(robot_count, 1)))
         msg.horizontal_distance = 28
         msg.vertical_distance = 170
         msg.horizontal_alignment = OverlayText.RIGHT
@@ -403,8 +384,44 @@ class InteractiveControlsNode(Node):
         self.robot_metrics_overlay_pub.publish(msg)
 
     def _refresh_robot_menu_state(self, selected_k_robot: int) -> None:
-        # Keep menu entries visible. Backend methods reject invalid state
-        # combinations and log the reason.
+        selected_robot = self.uvms_backend.robot_selected
+        for mid, control_space_name in self.control_space_menu_map.items():
+            self.menu_handler.setCheckState(
+                mid,
+                MenuHandler.CHECKED if selected_robot.control_space == control_space_name else MenuHandler.UNCHECKED,
+            )
+
+        for mid, controller_name in self.controller_menu_map.items():
+            self.menu_handler.setCheckState(
+                mid,
+                MenuHandler.CHECKED if selected_robot.controller_name == controller_name else MenuHandler.UNCHECKED,
+            )
+
+        for mid, planner_name in self.planner_menu_map.items():
+            self.menu_handler.setCheckState(
+                mid,
+                MenuHandler.CHECKED if selected_robot.planner_name == planner_name else MenuHandler.UNCHECKED,
+            )
+
+        cmd_replay_controller = selected_robot.controller_instance("CmdReplay")
+        selected_profile = (
+            getattr(cmd_replay_controller, "profile_name", None)
+            if cmd_replay_controller is not None
+            else None
+        )
+        for mid, profile_name in self.csv_profile_menu_map.items():
+            self.menu_handler.setCheckState(
+                mid,
+                MenuHandler.CHECKED if selected_profile == profile_name else MenuHandler.UNCHECKED,
+            )
+
+        active_dynamics_profile = getattr(selected_robot, "active_dynamics_profile", "")
+        for mid, profile_name in self.dynamics_profile_menu_map.items():
+            self.menu_handler.setCheckState(
+                mid,
+                MenuHandler.CHECKED if active_dynamics_profile == profile_name else MenuHandler.UNCHECKED,
+            )
+
         del selected_k_robot
         self.menu_handler.reApply(self.server)
         self.server.applyChanges()
@@ -565,8 +582,8 @@ class InteractiveControlsNode(Node):
         self.server.applyChanges()
 
     def switch_controller_type(self, feedback: InteractiveMarkerFeedback):
-        robot: Robot
-        robot, controller_name = self.controller_menu_map.get(feedback.menu_entry_id)
+        robot = self.uvms_backend.robot_selected
+        controller_name = self.controller_menu_map.get(feedback.menu_entry_id)
 
         ok, message = self.uvms_backend.set_robot_controller(robot, controller_name)
         if not ok:
@@ -574,40 +591,33 @@ class InteractiveControlsNode(Node):
             return
 
         # update checkmarks
-        r_i: Robot
-        for mid, (r_i, gsn) in self.controller_menu_map.items():
-            if r_i.k_robot != robot.k_robot:
-                continue
+        for mid, candidate_controller in self.controller_menu_map.items():
             self.menu_handler.setCheckState(mid, 
-                                            MenuHandler.CHECKED if feedback.menu_entry_id == mid else MenuHandler.UNCHECKED)
+                                            MenuHandler.CHECKED if candidate_controller == controller_name else MenuHandler.UNCHECKED)
         self.menu_handler.apply(self.server, feedback.marker_name)
         self.server.applyChanges()
 
     def switch_planner_type(self, feedback: InteractiveMarkerFeedback):
-        robot: Robot
-        robot, planner_name = self.planner_menu_map.get(feedback.menu_entry_id)
+        robot = self.uvms_backend.robot_selected
+        planner_name = self.planner_menu_map.get(feedback.menu_entry_id)
 
         ok, message = self.uvms_backend.set_robot_planner(robot, planner_name)
         if not ok:
             self.get_logger().warn(message)
             return
         # update checkmarks
-        r_i: Robot
-        for mid, (r_i, gsn) in self.planner_menu_map.items():
-            if r_i.k_robot != robot.k_robot:
-                continue
+        for mid, candidate_planner in self.planner_menu_map.items():
             self.menu_handler.setCheckState(mid, 
-                                            MenuHandler.CHECKED if feedback.menu_entry_id == mid else MenuHandler.UNCHECKED)
+                                            MenuHandler.CHECKED if candidate_planner == planner_name else MenuHandler.UNCHECKED)
         self.menu_handler.apply(self.server, feedback.marker_name)
         self.server.applyChanges()
 
     def switch_dynamics_profile(self, feedback: InteractiveMarkerFeedback):
-        robot, profile_name = self.dynamics_profile_menu_map.get(feedback.menu_entry_id)
+        robot = self.uvms_backend.robot_selected
+        profile_name = self.dynamics_profile_menu_map.get(feedback.menu_entry_id)
 
         def _on_success():
-            for mid, (r_i, candidate_profile) in self.dynamics_profile_menu_map.items():
-                if r_i.k_robot != robot.k_robot:
-                    continue
+            for mid, candidate_profile in self.dynamics_profile_menu_map.items():
                 self.menu_handler.setCheckState(
                     mid,
                     MenuHandler.CHECKED if candidate_profile == profile_name else MenuHandler.UNCHECKED,
@@ -624,7 +634,7 @@ class InteractiveControlsNode(Node):
             self.get_logger().warn(message)
 
     def stop_csv_playback(self, feedback: InteractiveMarkerFeedback):
-        robot, _ = self.csv_playback_menu_map.get(feedback.menu_entry_id)
+        robot = self.uvms_backend.robot_selected
         ok, message = self.uvms_backend.stop_replay(robot)
         if ok:
             self.get_logger().info(message)
@@ -632,15 +642,14 @@ class InteractiveControlsNode(Node):
             self.get_logger().warn(message)
 
     def switch_csv_playback_profile(self, feedback: InteractiveMarkerFeedback):
-        robot, profile_name = self.csv_profile_menu_map.get(feedback.menu_entry_id)
+        robot = self.uvms_backend.robot_selected
+        profile_name = self.csv_profile_menu_map.get(feedback.menu_entry_id)
         ok, message = self.uvms_backend.select_replay_profile(robot, profile_name)
         if not ok:
             self.get_logger().warn(message)
             return
 
-        for mid, (r_i, candidate_profile) in self.csv_profile_menu_map.items():
-            if r_i.k_robot != robot.k_robot:
-                continue
+        for mid, candidate_profile in self.csv_profile_menu_map.items():
             self.menu_handler.setCheckState(
                 mid,
                 MenuHandler.CHECKED if candidate_profile == profile_name else MenuHandler.UNCHECKED,
@@ -650,7 +659,7 @@ class InteractiveControlsNode(Node):
         self.get_logger().info(message)
 
     def reset_csv_playback(self, feedback: InteractiveMarkerFeedback):
-        robot, _ = self.csv_playback_menu_map.get(feedback.menu_entry_id)
+        robot = self.uvms_backend.robot_selected
         ok, message = self.uvms_backend.start_replay(robot)
         if ok:
             self.get_logger().info(message)
@@ -658,8 +667,8 @@ class InteractiveControlsNode(Node):
             self.get_logger().warn(message)
 
     def grasper_callback(self, feedback: InteractiveMarkerFeedback):
-        robot: Robot
-        robot, grasp_state_name = self.grasp_menu_map.get(feedback.menu_entry_id)
+        robot = self.uvms_backend.robot_selected
+        grasp_state_name = self.grasp_menu_map.get(feedback.menu_entry_id)
 
         if grasp_state_name in ['open','close']:
             ok, message = self.uvms_backend.command_grasper(robot, grasp_state_name)
@@ -667,31 +676,24 @@ class InteractiveControlsNode(Node):
                 self.get_logger().warn(message)
                 return
 
-            r_i: Robot
-            for mid, (r_i, gsn) in self.grasp_menu_map.items():
-                if r_i.k_robot != robot.k_robot:
-                    continue
+            for mid, gsn in self.grasp_menu_map.items():
                 self.menu_handler.setCheckState(mid, 
                                                 MenuHandler.CHECKED if feedback.menu_entry_id == mid else MenuHandler.UNCHECKED)
             self.menu_handler.apply(self.server, feedback.marker_name)
             self.server.applyChanges()
 
     def switch_control_space_type(self, feedback: InteractiveMarkerFeedback):
-        robot: Robot
-        robot, control_space_name = self.control_space_menu_map.get(feedback.menu_entry_id)
+        robot = self.uvms_backend.robot_selected
+        control_space_name = self.control_space_menu_map.get(feedback.menu_entry_id)
 
         ok, message = self.uvms_backend.set_robot_control_space(robot, control_space_name)
         if not ok:
             self.get_logger().warn(message)
             return
 
-        # update checkmarks only for that robot's control-space entries
-        r_i: Robot
-        for mid, (r_i, csn) in self.control_space_menu_map.items():
-            if r_i.k_robot != robot.k_robot:
-                continue
+        for mid, candidate_control_space in self.control_space_menu_map.items():
             self.menu_handler.setCheckState(mid, 
-                                            MenuHandler.CHECKED if feedback.menu_entry_id == mid else MenuHandler.UNCHECKED)
+                                            MenuHandler.CHECKED if candidate_control_space == control_space_name else MenuHandler.UNCHECKED)
 
         self.menu_handler.apply(self.server, feedback.marker_name)
         self.server.applyChanges()
@@ -705,17 +707,16 @@ class InteractiveControlsNode(Node):
 
 
     def toggle_endeffector_axis_align(self, feedback: InteractiveMarkerFeedback):
-        robot: Robot
-        robot, lookup_axis  = self.axis_menu_map.get(feedback.menu_entry_id)
+        robot = self.uvms_backend.robot_selected
+        lookup_axis  = self.axis_menu_map.get(feedback.menu_entry_id)
 
         ok, message = self.uvms_backend.set_robot_ik_tool_axis(robot, lookup_axis)
         if not ok:
             self.get_logger().warn(message)
             return
 
-        r_i: Robot
-        for axis_target_handle, (r_i, axis) in self.axis_menu_map.items():
-            if r_i.k_robot != robot.k_robot:
+        for axis_target_handle, axis in self.axis_menu_map.items():
+            if axis is None:
                 continue
             self.menu_handler.setCheckState(axis_target_handle, 
                                             MenuHandler.CHECKED if feedback.menu_entry_id == axis_target_handle else MenuHandler.UNCHECKED)
@@ -725,8 +726,7 @@ class InteractiveControlsNode(Node):
         self.get_logger().info(message)
 
     def toggle_align_with_base_weight(self, feedback: InteractiveMarkerFeedback):
-        robot: Robot
-        robot, _  = self.axis_menu_map.get(feedback.menu_entry_id)
+        robot = self.uvms_backend.robot_selected
 
         enabled = self.menu_handler.getCheckState(feedback.menu_entry_id) == MenuHandler.CHECKED
         self.menu_handler.setCheckState(feedback.menu_entry_id, MenuHandler.UNCHECKED if enabled else MenuHandler.CHECKED)
