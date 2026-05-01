@@ -23,7 +23,7 @@
   },
   "subsystem_mode": {
     "vehicle": "hold_initial",
-    "manipulator": "replay_command",
+    "manipulator": "track_reference",
     "feedback_controller": "PID"
   },
   "reset": {

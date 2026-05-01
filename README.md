@@ -85,7 +85,7 @@ ros2 launch ros2_control_blue_reach_5 robot_system_multi_interface.launch.py \
     gui:=false task:=manual record_data:=true
 ```
 
-> 💡 Recording: `record_data:=true` starts rosbag2 MCAP logging to `uvms_bag_YYYYmmdd_HHMMSS`.
+> 💡 Recording: `record_data:=true` starts rosbag2 MCAP logging under `~/ros_ws/recordings/mcap/uvms_bag_YYYYmmdd_HHMMSS`.
 
 > 💡 Hardware swap: set `use_vehicle_hardware:=true` and `use_manipulator_hardware:=true` to put your BlueROV2 Heavy, Reach Alpha 5, and A50 DVL directly into the loop.
 
@@ -174,7 +174,6 @@ simlab/
 ├── simlab/collision_contact.py       # FCL contact markers + clearance
 ├── simlab/voxel_viz.py               # Bathymetry voxel clouds
 ├── simlab/bag_recorder.py            # rosbag2 MCAP recorder
-├── simlab/rgb2cloudpoint.py          # RGB to pointcloud (MiDaS)
 └── resource/model_functions/         # Generated model functions
 ```
 

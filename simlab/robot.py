@@ -626,7 +626,7 @@ class Robot(Base):
         self._replay_settle_vehicle_target = None
         self.sim_reset_hold = False
         if not self.node.has_parameter("cmd_replay_record_dir"):
-            self.node.declare_parameter("cmd_replay_record_dir", "~/ros_ws/replay_sessions")
+            self.node.declare_parameter("cmd_replay_record_dir", "~/ros_ws/recordings/replay_sessions")
         self.cmd_replay_record_dir = FilePath(
             os.path.expanduser(str(self.node.get_parameter("cmd_replay_record_dir").value))
         )
@@ -2130,6 +2130,18 @@ class Robot(Base):
             "ddq_alpha_axis_d",
             "ddq_alpha_axis_c",
             "ddq_alpha_axis_b",
+            "ref_alpha_axis_e",
+            "ref_alpha_axis_d",
+            "ref_alpha_axis_c",
+            "ref_alpha_axis_b",
+            "dref_alpha_axis_e",
+            "dref_alpha_axis_d",
+            "dref_alpha_axis_c",
+            "dref_alpha_axis_b",
+            "ddref_alpha_axis_e",
+            "ddref_alpha_axis_d",
+            "ddref_alpha_axis_c",
+            "ddref_alpha_axis_b",
             "effort_alpha_axis_e",
             "effort_alpha_axis_d",
             "effort_alpha_axis_c",
@@ -2157,6 +2169,30 @@ class Robot(Base):
             "vehicle_dp",
             "vehicle_dq",
             "vehicle_dr",
+            "target_vehicle_x",
+            "target_vehicle_y",
+            "target_vehicle_z",
+            "target_vehicle_roll",
+            "target_vehicle_pitch",
+            "target_vehicle_yaw",
+            "target_vehicle_u",
+            "target_vehicle_v",
+            "target_vehicle_w",
+            "target_vehicle_p",
+            "target_vehicle_q",
+            "target_vehicle_r",
+            "target_vehicle_du",
+            "target_vehicle_dv",
+            "target_vehicle_dw",
+            "target_vehicle_dp",
+            "target_vehicle_dq",
+            "target_vehicle_dr",
+            "wrench_vehicle_fx",
+            "wrench_vehicle_fy",
+            "wrench_vehicle_fz",
+            "wrench_vehicle_tx",
+            "wrench_vehicle_ty",
+            "wrench_vehicle_tz",
             "cmd_vehicle_fx",
             "cmd_vehicle_fy",
             "cmd_vehicle_fz",
@@ -2200,8 +2236,25 @@ class Robot(Base):
         pose = list(state.get("pose", []))
         body_vel = list(state.get("body_vel", []))
         body_acc = list(state.get("body_acc", []))
+        body_forces = list(state.get("body_forces", []))
         arm_cmd = list(cmd_arm_tau)
         vehicle_cmd = list(cmd_body_wrench)
+        sample_index = (
+            replay_controller.current_sample_index()
+            if hasattr(replay_controller, "current_sample_index")
+            else None
+        )
+        q_ref = [0.0] * 5
+        dq_ref = [0.0] * 5
+        ddq_ref = [0.0] * 5
+        target_pose = [0.0] * 6
+        target_vel = [0.0] * 6
+        target_acc = [0.0] * 6
+        if sample_index is not None:
+            if hasattr(replay_controller, "arm_reference_at"):
+                q_ref, dq_ref, ddq_ref = replay_controller.arm_reference_at(sample_index)
+            if hasattr(replay_controller, "vehicle_reference_at"):
+                target_pose, target_vel, target_acc = replay_controller.vehicle_reference_at(sample_index)
 
         def at(values, index, default=0.0):
             return float(values[index]) if index < len(values) else float(default)
@@ -2225,6 +2278,18 @@ class Robot(Base):
                 "ddq_alpha_axis_d": at(ddq, 1),
                 "ddq_alpha_axis_c": at(ddq, 2),
                 "ddq_alpha_axis_b": at(ddq, 3),
+                "ref_alpha_axis_e": at(q_ref, 0),
+                "ref_alpha_axis_d": at(q_ref, 1),
+                "ref_alpha_axis_c": at(q_ref, 2),
+                "ref_alpha_axis_b": at(q_ref, 3),
+                "dref_alpha_axis_e": at(dq_ref, 0),
+                "dref_alpha_axis_d": at(dq_ref, 1),
+                "dref_alpha_axis_c": at(dq_ref, 2),
+                "dref_alpha_axis_b": at(dq_ref, 3),
+                "ddref_alpha_axis_e": at(ddq_ref, 0),
+                "ddref_alpha_axis_d": at(ddq_ref, 1),
+                "ddref_alpha_axis_c": at(ddq_ref, 2),
+                "ddref_alpha_axis_b": at(ddq_ref, 3),
                 "effort_alpha_axis_e": at(effort, 0),
                 "effort_alpha_axis_d": at(effort, 1),
                 "effort_alpha_axis_c": at(effort, 2),
@@ -2252,6 +2317,30 @@ class Robot(Base):
                 "vehicle_dp": at(body_acc, 3),
                 "vehicle_dq": at(body_acc, 4),
                 "vehicle_dr": at(body_acc, 5),
+                "target_vehicle_x": at(target_pose, 0),
+                "target_vehicle_y": at(target_pose, 1),
+                "target_vehicle_z": at(target_pose, 2),
+                "target_vehicle_roll": at(target_pose, 3),
+                "target_vehicle_pitch": at(target_pose, 4),
+                "target_vehicle_yaw": at(target_pose, 5),
+                "target_vehicle_u": at(target_vel, 0),
+                "target_vehicle_v": at(target_vel, 1),
+                "target_vehicle_w": at(target_vel, 2),
+                "target_vehicle_p": at(target_vel, 3),
+                "target_vehicle_q": at(target_vel, 4),
+                "target_vehicle_r": at(target_vel, 5),
+                "target_vehicle_du": at(target_acc, 0),
+                "target_vehicle_dv": at(target_acc, 1),
+                "target_vehicle_dw": at(target_acc, 2),
+                "target_vehicle_dp": at(target_acc, 3),
+                "target_vehicle_dq": at(target_acc, 4),
+                "target_vehicle_dr": at(target_acc, 5),
+                "wrench_vehicle_fx": at(body_forces, 0),
+                "wrench_vehicle_fy": at(body_forces, 1),
+                "wrench_vehicle_fz": at(body_forces, 2),
+                "wrench_vehicle_tx": at(body_forces, 3),
+                "wrench_vehicle_ty": at(body_forces, 4),
+                "wrench_vehicle_tz": at(body_forces, 5),
                 "cmd_vehicle_fx": at(vehicle_cmd, 0),
                 "cmd_vehicle_fy": at(vehicle_cmd, 1),
                 "cmd_vehicle_fz": at(vehicle_cmd, 2),

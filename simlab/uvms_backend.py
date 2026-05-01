@@ -18,6 +18,8 @@ import copy
 from simlab.uvms_parameters import ReachParams
 import rclpy
 from rclpy.node import Node
+from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
+from rcl_interfaces.srv import SetParameters
 from simlab.fcl_checker import FCLWorld
 import numpy as np
 from scipy.spatial import ConvexHull
@@ -66,7 +68,17 @@ class UVMSBackendCore:
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self.node)
         self.start_recording_client = self.node.create_client(Trigger, "/bag_recorder_node/start_recording")
         self.stop_recording_client = self.node.create_client(Trigger, "/bag_recorder_node/stop_recording")
+        self.camera_parameters_client = self.node.create_client(
+            SetParameters,
+            "/gstreamer_camera_node/set_parameters",
+        )
+        self.sim_camera_parameters_client = self.node.create_client(
+            SetParameters,
+            "/sim_camera_renderer_node/set_parameters",
+        )
         self.mcap_recording_active = False
+        self.use_vehicle_hardware = bool(self.node.get_parameter_or("use_vehicle_hardware", False).value)
+        self.camera_source = str(self.node.get_parameter_or("camera_source", "auto").value)
         self.urdf_string = urdf_string
         self.vehicle_target_frame = vehicle_target_frame
         self.world_frame = world_frame
@@ -121,7 +133,7 @@ class UVMSBackendCore:
         self.target_vehicle_marker_in_world_tf_timer = self.node.create_timer(1.0 / 60.0, self.target_vehicle_in_world_tf_timer_callback)
         self.target_arm_base_marker_tf_timer = self.node.create_timer(1.0 / 60.0, self.target_arm_base_tf_timer_callback)
         self.target_endeffector_in_world_tf_timer = self.node.create_timer(1.0 / 60.0, self.target_endeffector_in_world_tf_timer_callback)
-        self.vehicle_target_cloud_timer = self.node.create_timer(1.0 / 100.0, self.vehicle_target_cloud_timer_callback)
+        self.vehicle_target_cloud_timer = self.node.create_timer(1.0 / 60.0, self.vehicle_target_cloud_timer_callback)
         self.task_on_vehicle_solve_timer = self.node.create_timer(1.0 / 10.0, self.plan_and_execute_task_trajectory_wrt_vehicle)
         
         self.planner_marker_publisher = self.node.create_publisher(Marker, "planned_waypoints_marker", planner_viz_qos)
@@ -396,6 +408,15 @@ class UVMSBackendCore:
 
     def _backend_robot_command_callback(self, request, response):
         command = str(request.command).strip()
+        if command == "start_mcap_recording":
+            ok = self.start_mcap_recording()
+            message = "MCAP recording start requested" if ok else "MCAP recording start rejected"
+            return self._api_response(response, ok, message)
+        if command == "stop_mcap_recording":
+            ok = self.stop_mcap_recording()
+            message = "MCAP recording stop requested" if ok else "MCAP recording stop rejected"
+            return self._api_response(response, ok, message)
+
         robot = self._robot_for_api(request.robot_index)
         if command != "select_robot" and robot is None:
             return self._api_response(response, False, f"invalid robot_index={request.robot_index}")
@@ -701,7 +722,7 @@ class UVMSBackendCore:
     def format_robot_metrics_overlay_text(self) -> str:
         lines = [
             'Robot Control Status',
-            'Units: v=m/s, payload=kg, g=m/s^2, E=J, dE/dt=W; score and n* terms are unitless',
+            '',
         ]
         for index, robot in enumerate(self.robots):
             metrics = robot.get_energy_metrics()
@@ -764,9 +785,83 @@ class UVMSBackendCore:
                     return
                 self.robot_selected = r
                 self.node.get_logger().info(f"Robot {self.robot_selected.prefix} selected for planning.")
+                self._set_camera_frame_for_robot(self.robot_selected)
                 return
         self.node.get_logger().error(f"No robot with k_robot={robot_k}")
         raise ValueError(f"No robot with k_robot={robot_k}")
+
+    def _set_camera_frame_for_robot(self, robot: Robot) -> None:
+        if self.camera_source == "sim" and robot.prefix != "robot_real_":
+            self._set_sim_camera_selected_robot(robot)
+            return
+
+        if self.use_vehicle_hardware and self.camera_source != "sim" and robot.prefix != "robot_real_":
+            self.node.get_logger().debug(
+                "Camera frame update skipped for simulated robot because the active camera stream is the real vehicle camera."
+            )
+            return
+
+        if not self.camera_parameters_client.service_is_ready():
+            self.node.get_logger().debug(
+                "Camera frame update skipped because /gstreamer_camera_node/set_parameters is not ready."
+            )
+            return
+
+        frame_id = f"{robot.prefix}camera_link"
+        request = SetParameters.Request()
+        request.parameters = [
+            Parameter(
+                name="frame_id",
+                value=ParameterValue(
+                    type=ParameterType.PARAMETER_STRING,
+                    string_value=frame_id,
+                ),
+            )
+        ]
+        future = self.camera_parameters_client.call_async(request)
+
+        def _log_camera_frame_result(done_future):
+            try:
+                response = done_future.result()
+            except Exception as exc:
+                self.node.get_logger().warn(f"Camera frame update failed for {robot.prefix}: {exc}")
+                return
+            if not response.results or not response.results[0].successful:
+                reason = response.results[0].reason if response.results else "empty response"
+                self.node.get_logger().warn(f"Camera frame update rejected for {robot.prefix}: {reason}")
+
+        future.add_done_callback(_log_camera_frame_result)
+
+    def _set_sim_camera_selected_robot(self, robot: Robot) -> None:
+        if not self.sim_camera_parameters_client.service_is_ready():
+            self.node.get_logger().debug(
+                "Sim camera selection skipped because /sim_camera_renderer_node/set_parameters is not ready."
+            )
+            return
+
+        request = SetParameters.Request()
+        request.parameters = [
+            Parameter(
+                name="selected_prefix",
+                value=ParameterValue(
+                    type=ParameterType.PARAMETER_STRING,
+                    string_value=robot.prefix,
+                ),
+            )
+        ]
+        future = self.sim_camera_parameters_client.call_async(request)
+
+        def _log_sim_camera_result(done_future):
+            try:
+                response = done_future.result()
+            except Exception as exc:
+                self.node.get_logger().warn(f"Sim camera selection failed for {robot.prefix}: {exc}")
+                return
+            if not response.results or not response.results[0].successful:
+                reason = response.results[0].reason if response.results else "empty response"
+                self.node.get_logger().warn(f"Sim camera selection rejected for {robot.prefix}: {reason}")
+
+        future.add_done_callback(_log_sim_camera_result)
     
     def target_vehicle_in_world_tf_timer_callback(self):
         stamp_now = self.node.get_clock().now().to_msg()
@@ -800,7 +895,10 @@ class UVMSBackendCore:
         if not self.robot_selected.task_based_controller:
             header = Header()
             header.frame_id = self.vehicle_target_frame
-            header.stamp = self.node.get_clock().now().to_msg()
+            # These are interactive target-frame clouds. A zero stamp lets RViz
+            # render them with the latest target TF instead of waiting for an
+            # exact timestamp match from a separate TF timer.
+            header.stamp = rclpy.time.Time().to_msg()
 
             rov_cloud_msg = pc2.create_cloud_xyz32(header, self.workspace_pts)
             self.taskspace_pc_publisher_.publish(rov_cloud_msg)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Callable, List
 
 import rclpy
@@ -25,7 +26,7 @@ class BagRecorder(Node):
     def __init__(
         self,
         topics: List[TopicSpec],
-        bag_base_dir: str = "uvms_bag",
+        bag_base_dir: str = "~/ros_ws/recordings/mcap",
         storage_id: str = "mcap",
         serialization_format: str = "cdr",
     ):
@@ -41,6 +42,7 @@ class BagRecorder(Node):
         self.storage_id = str(self.get_parameter("storage_id").value)
         self.serialization_format = str(self.get_parameter("serialization_format").value)
         robot_prefixes = [str(prefix) for prefix in self.get_parameter("robots_prefix").value]
+        self.bag_base_path = Path(self.bag_base_dir).expanduser()
 
         self.bag_dir = ""
         self.writer = None
@@ -101,7 +103,8 @@ class BagRecorder(Node):
             return True, f"already recording to {self.bag_dir}"
 
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.bag_dir = f"{self.bag_base_dir}_{ts}"
+        self.bag_base_path.mkdir(parents=True, exist_ok=True)
+        self.bag_dir = str(self.bag_base_path / f"uvms_bag_{ts}")
 
         writer = rosbag2_py.SequentialWriter()
         storage_options = rosbag2_py.StorageOptions(uri=self.bag_dir, storage_id=self.storage_id)
@@ -165,6 +168,7 @@ def main(args=None):
 
     from control_msgs.msg import DynamicJointState
     from geometry_msgs.msg import PoseStamped
+    from sensor_msgs.msg import CameraInfo, Image
 
     topics = [
         TopicSpec(
@@ -178,6 +182,18 @@ def main(args=None):
             msg_cls=PoseStamped,
             type_str="geometry_msgs/msg/PoseStamped",
             qos_depth=10,
+        ),
+        TopicSpec(
+            name="/alpha/image_raw",
+            msg_cls=Image,
+            type_str="sensor_msgs/msg/Image",
+            qos_depth=1,
+        ),
+        TopicSpec(
+            name="/alpha/camera_info",
+            msg_cls=CameraInfo,
+            type_str="sensor_msgs/msg/CameraInfo",
+            qos_depth=1,
         ),
     ]
 

@@ -23,7 +23,7 @@
   },
   "subsystem_mode": {
     "vehicle": "hold_initial",
-    "manipulator": "replay_command",
+    "manipulator": "track_reference",
     "feedback_controller": "PID"
   },
   "reset": {
@@ -82,7 +82,7 @@
         0.0
       ]
     },
-    "robot_dynamics_profile": "dory_alpha_payload_0p0kg"
+    "robot_dynamics_profile": "dory_alpha_payload_1p15kg"
   },
   "recording": {
     "enabled": true
