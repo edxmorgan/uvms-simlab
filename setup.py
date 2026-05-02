@@ -101,7 +101,7 @@ setup(
             'env_obstacles_node = simlab.env_obstacles:main',
             'planner_action_server_node = simlab.planner_action_server:main',
             'sim_camera_renderer_node = simlab.sim_camera_renderer:main',
-            'opencv_camera_viewer = simlab.opencv_camera_viewer:main',
+            'camera_viewer = simlab.opencv_camera_viewer:main',
             'plot_replay_session = simlab.replay_session_plotter:main',
             'replay_plot_node = simlab.replay_plot_node:main',
         ],
