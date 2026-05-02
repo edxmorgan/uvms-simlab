@@ -14,8 +14,10 @@ class CollisionNode(Node):
     def __init__(self):
         super().__init__('mesh_collision_node')
         self.declare_parameter('robot_description', '')
+        self.declare_parameter('world_frame', 'world')
 
         urdf_string = self.get_parameter('robot_description').get_parameter_value().string_value
+        self.world_frame = self.get_parameter('world_frame').get_parameter_value().string_value
         if not urdf_string:
             self.get_logger().error('robot_description param is empty. Did you load it into the param server in launch')
             raise RuntimeError('no robot_description')
@@ -26,7 +28,7 @@ class CollisionNode(Node):
         self.get_logger().info(f'env_links { [x["link"] for x in env_links] }')
 
         # single world that mirrors your original data layout
-        self.world = FCLWorld(urdf_string=urdf_string, world_frame='world', vehicle_radius=0.4)
+        self.world = FCLWorld(urdf_string=urdf_string, world_frame=self.world_frame, vehicle_radius=0.4)
 
         # TF and pub
         self.tf_buf = Buffer()
@@ -45,7 +47,7 @@ class CollisionNode(Node):
 
         # clear old markers
         clear = Marker()
-        clear.header.frame_id = 'world'
+        clear.header.frame_id = self.world_frame
         clear.action = Marker.DELETEALL
         try:
             self.contact_pub.publish(clear)
@@ -60,7 +62,7 @@ class CollisionNode(Node):
         CONTACT_MARKER_SIZE = 0.05
         red = color(r=1.0, g=0.1, b=0.1, a=1.0)
         for idx, (pair_key, p_world) in enumerate(pairs.items()):
-            m = make_marker('contact', idx, 'world', CONTACT_MARKER_SIZE, p_world, red)
+            m = make_marker('contact', idx, self.world_frame, CONTACT_MARKER_SIZE, p_world, red)
             m.lifetime.sec = 0
             m.lifetime.nanosec = int(0.1 * 1e9)
             try:
@@ -80,8 +82,8 @@ class CollisionNode(Node):
                 # optional nearest point markers
                 # blue = color(r=0.1, g=0.1, b=0.95, a=1.0)
                 green = color(r=0.1, g=0.95, b=0.1, a=1.0)
-                # mr = make_marker('nearest_robot', 1001, 'world', 0.05, p_robot, blue)
-                me = make_marker('nearest_env',   1002, 'world', 0.05, p_env,   green)
+                # mr = make_marker('nearest_robot', 1001, self.world_frame, 0.05, p_robot, blue)
+                me = make_marker('nearest_env',   1002, self.world_frame, 0.05, p_env,   green)
                 # mr.lifetime.nanosec = int(0.1 * 1e9)
                 me.lifetime.nanosec = int(0.1 * 1e9)
                 # self.contact_pub.publish(mr)

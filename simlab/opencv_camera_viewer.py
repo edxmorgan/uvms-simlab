@@ -9,7 +9,9 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import time
+from typing import Dict, List
 
 import cv2
 import numpy as np
@@ -19,42 +21,76 @@ from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Image
 
 
+@dataclass
+class TopicState:
+    window_name: str
+    frame_count: int = 0
+    last_log_time: float = 0.0
+    last_hash: int | None = None
+    static_count: int = 0
+
+
 class OpenCVCameraViewer(Node):
-    def __init__(self, topic: str, window_name: str, reliable: bool):
-        super().__init__("opencv_camera_viewer")
-        self.topic = topic
-        self.window_name = window_name
-        self.frame_count = 0
-        self.last_log_time = time.monotonic()
-        self.last_hash = None
-        self.static_count = 0
+    def __init__(self, topics: List[str], window_name: str, reliable: bool):
+        super().__init__("camera_viewer")
+        self.declare_parameter("image_topics", [""])
+        self.declare_parameter("robot_prefixes", [""])
+        param_topics = [
+            str(topic)
+            for topic in self.get_parameter("image_topics").value
+            if str(topic)
+        ]
+        param_robot_topics = [
+            f"/{str(prefix).rstrip('_')}/camera/image_raw"
+            for prefix in self.get_parameter("robot_prefixes").value
+            if str(prefix)
+        ]
+        self.topics = topics or param_topics or param_robot_topics or ["/robot_1/camera/image_raw"]
+        self.topic_states: Dict[str, TopicState] = {}
+        self.image_subscriptions = []
 
         qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
             depth=5,
             reliability=ReliabilityPolicy.RELIABLE if reliable else ReliabilityPolicy.BEST_EFFORT,
         )
-        self.create_subscription(Image, topic, self.image_callback, qos)
-        cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
-        self.get_logger().info(f"Viewing {topic}. Press q or Esc in the image window to exit.")
+        for topic in self.topics:
+            topic_window_name = window_name if len(self.topics) == 1 else f"{window_name}: {topic}"
+            self.topic_states[topic] = TopicState(
+                window_name=topic_window_name,
+                last_log_time=time.monotonic(),
+            )
+            self.image_subscriptions.append(
+                self.create_subscription(
+                    Image,
+                    topic,
+                    lambda msg, image_topic=topic: self.image_callback(image_topic, msg),
+                    qos,
+                )
+            )
+            cv2.namedWindow(topic_window_name, cv2.WINDOW_NORMAL)
+        self.get_logger().info(
+            f"Viewing {self.topics}. Press q or Esc in any image window to exit."
+        )
 
-    def image_callback(self, msg: Image) -> None:
-        image = self._message_to_bgr(msg)
+    def image_callback(self, topic: str, msg: Image) -> None:
+        state = self.topic_states[topic]
+        image = self._message_to_bgr(topic, msg)
         if image is None:
             return
 
-        self.frame_count += 1
+        state.frame_count += 1
         frame_hash = hash(image.tobytes())
-        if frame_hash == self.last_hash:
-            self.static_count += 1
+        if frame_hash == state.last_hash:
+            state.static_count += 1
         else:
-            self.static_count = 0
-        self.last_hash = frame_hash
+            state.static_count = 0
+        state.last_hash = frame_hash
 
         overlay = (
-            f"{self.topic} | {msg.header.frame_id} | "
-            f"{msg.width}x{msg.height} | frame {self.frame_count} | "
-            f"static {self.static_count}"
+            f"{topic} | {msg.header.frame_id} | "
+            f"{msg.width}x{msg.height} | frame {state.frame_count} | "
+            f"static {state.static_count}"
         )
         cv2.putText(
             image,
@@ -66,20 +102,24 @@ class OpenCVCameraViewer(Node):
             2,
             cv2.LINE_AA,
         )
-        cv2.imshow(self.window_name, image)
+        cv2.imshow(state.window_name, image)
 
         now = time.monotonic()
-        if now - self.last_log_time >= 2.0:
-            self.last_log_time = now
+        if now - state.last_log_time >= 2.0:
+            state.last_log_time = now
             self.get_logger().info(
-                f"frame={self.frame_count} stamp={msg.header.stamp.sec}.{msg.header.stamp.nanosec:09d} "
+                f"topic={topic} frame={state.frame_count} "
+                f"stamp={msg.header.stamp.sec}.{msg.header.stamp.nanosec:09d} "
                 f"min={int(image.min())} max={int(image.max())} mean={float(image.mean()):.2f} "
-                f"static_count={self.static_count}"
+                f"static_count={state.static_count}"
             )
 
-    def _message_to_bgr(self, msg: Image):
+    def _message_to_bgr(self, topic: str, msg: Image):
         if msg.encoding not in {"bgr8", "rgb8", "mono8"}:
-            self.get_logger().warn(f"Unsupported image encoding: {msg.encoding}", throttle_duration_sec=2.0)
+            self.get_logger().warn(
+                f"{topic}: unsupported image encoding: {msg.encoding}",
+                throttle_duration_sec=2.0,
+            )
             return None
 
         channels = 1 if msg.encoding == "mono8" else 3
@@ -87,7 +127,7 @@ class OpenCVCameraViewer(Node):
         data = np.frombuffer(msg.data, dtype=np.uint8)
         if data.size < expected_size:
             self.get_logger().warn(
-                f"Image data too small: got {data.size}, expected {expected_size}",
+                f"{topic}: image data too small: got {data.size}, expected {expected_size}",
                 throttle_duration_sec=2.0,
             )
             return None
@@ -103,12 +143,17 @@ class OpenCVCameraViewer(Node):
 
 
 def main(args=None):
-    parser = argparse.ArgumentParser(description="Display a ROS 2 Image topic with OpenCV.")
+    parser = argparse.ArgumentParser(description="Display one or more ROS 2 Image topics with OpenCV.")
     parser.add_argument(
-        "topic",
-        nargs="?",
-        default="/robot_1/camera/image_raw",
-        help="Image topic to display.",
+        "topics",
+        nargs="*",
+        help="Image topics to display. If omitted, uses the image_topics ROS parameter.",
+    )
+    parser.add_argument(
+        "--robots",
+        nargs="+",
+        default=[],
+        help="Robot prefixes to display, for example robot_1_ robot_2_ robot_real_.",
     )
     parser.add_argument("--window-name", default="UVMS Camera", help="OpenCV window title.")
     parser.add_argument(
@@ -119,7 +164,8 @@ def main(args=None):
     parsed, ros_args = parser.parse_known_args(args)
 
     rclpy.init(args=ros_args)
-    node = OpenCVCameraViewer(parsed.topic, parsed.window_name, reliable=not parsed.best_effort)
+    robot_topics = [f"/{prefix.rstrip('_')}/camera/image_raw" for prefix in parsed.robots]
+    node = OpenCVCameraViewer([*parsed.topics, *robot_topics], parsed.window_name, reliable=not parsed.best_effort)
     try:
         while rclpy.ok():
             rclpy.spin_once(node, timeout_sec=0.02)

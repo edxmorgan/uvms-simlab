@@ -37,7 +37,7 @@ class InteractiveControlsNode(Node):
         super().__init__('uvms_interactive_controls',
                          automatically_declare_parameters_from_overrides=True)
         urdf_string = self.get_parameter('robot_description').get_parameter_value().string_value
-        self.world_frame = "world"
+        self.world_frame = str(self.get_parameter_or('world_frame', 'world').value)
         self.vehicle_target_frame = "vehicle_marker_frame"
         self.arm_base_target_frame = "arm_base_marker_frame"
         self.world_endeffector_target_frame = "world_endeffector_marker_frame"

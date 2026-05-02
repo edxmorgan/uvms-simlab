@@ -77,6 +77,7 @@ class UVMSBackendCore:
             "/sim_camera_renderer_node/set_parameters",
         )
         self.mcap_recording_active = False
+        self._pending_camera_robot: Robot | None = None
         self.use_vehicle_hardware = bool(self.node.get_parameter_or("use_vehicle_hardware", False).value)
         self.camera_source = str(self.node.get_parameter_or("camera_source", "auto").value)
         self.urdf_string = urdf_string
@@ -160,6 +161,7 @@ class UVMSBackendCore:
                 prefix,
                 planner,
                 vehicle_cart_traj,
+                world_frame=self.world_frame,
                 create_subscriptions=False,
             )
             robot_k.set_control_mode(ControlMode.PLANNER)
@@ -186,6 +188,10 @@ class UVMSBackendCore:
             10,
         )
         self.initialise_target_Poses()
+        self.camera_selection_retry_timer = self.node.create_timer(
+            0.5,
+            self._retry_pending_camera_selection,
+        )
         self.set_robot_selected(self.robots[0].k_robot)
         self.vehicle_waypoint_execution_timer = self.node.create_timer(
             1.0 / 20.0,
@@ -288,8 +294,6 @@ class UVMSBackendCore:
             robot.cancel_replay_settle(mark_failed=False)
         if hasattr(robot, "_stop_replay_session_recording"):
             robot._stop_replay_session_recording("profile_changed")
-        if robot.controller_name == "CmdReplay":
-            robot.publish_commands([0.0] * 6, [0.0] * 5)
         ok = controller.load_profile(profile_name)
         if not ok:
             return False, "replay profile rejected"
@@ -308,8 +312,8 @@ class UVMSBackendCore:
         if hasattr(controller, "has_valid_playback") and not controller.has_valid_playback():
             return False, f"CmdReplay profile is not selected or has no valid samples for {robot.prefix}"
 
-        robot.set_control_mode(ControlMode.REPLAY)
-        robot.publish_commands([0.0] * 6, [0.0] * 5)
+        if not robot.activate_cmd_replay_controller():
+            return False, f"CmdReplay activation failed for {robot.prefix}"
         request = controller.build_reset_request()
         if not controller.begin_sequence(request.hold_commands):
             return False, f"CmdReplay reset rejected for {robot.prefix}"
@@ -791,21 +795,35 @@ class UVMSBackendCore:
         raise ValueError(f"No robot with k_robot={robot_k}")
 
     def _set_camera_frame_for_robot(self, robot: Robot) -> None:
-        if self.camera_source == "sim" and robot.prefix != "robot_real_":
-            self._set_sim_camera_selected_robot(robot)
+        self._pending_camera_robot = robot
+        if self._try_set_camera_frame_for_robot(robot):
+            self._pending_camera_robot = None
+
+    def _retry_pending_camera_selection(self) -> None:
+        robot = self._pending_camera_robot
+        if robot is None:
             return
+        if self._try_set_camera_frame_for_robot(robot):
+            self._pending_camera_robot = None
+
+    def _try_set_camera_frame_for_robot(self, robot: Robot) -> bool:
+        robot_has_sim_camera = robot.prefix != "robot_real_" or not self.use_vehicle_hardware
+        if self.camera_source == "mixed":
+            return self._set_sim_camera_selected_robot(robot)
+        if self.camera_source == "sim" and robot_has_sim_camera:
+            return self._set_sim_camera_selected_robot(robot)
 
         if self.use_vehicle_hardware and self.camera_source != "sim" and robot.prefix != "robot_real_":
             self.node.get_logger().debug(
                 "Camera frame update skipped for simulated robot because the active camera stream is the real vehicle camera."
             )
-            return
+            return True
 
         if not self.camera_parameters_client.service_is_ready():
             self.node.get_logger().debug(
                 "Camera frame update skipped because /gstreamer_camera_node/set_parameters is not ready."
             )
-            return
+            return False
 
         frame_id = f"{robot.prefix}camera_link"
         request = SetParameters.Request()
@@ -831,13 +849,14 @@ class UVMSBackendCore:
                 self.node.get_logger().warn(f"Camera frame update rejected for {robot.prefix}: {reason}")
 
         future.add_done_callback(_log_camera_frame_result)
+        return True
 
-    def _set_sim_camera_selected_robot(self, robot: Robot) -> None:
+    def _set_sim_camera_selected_robot(self, robot: Robot) -> bool:
         if not self.sim_camera_parameters_client.service_is_ready():
             self.node.get_logger().debug(
                 "Sim camera selection skipped because /sim_camera_renderer_node/set_parameters is not ready."
             )
-            return
+            return False
 
         request = SetParameters.Request()
         request.parameters = [
@@ -862,6 +881,7 @@ class UVMSBackendCore:
                 self.node.get_logger().warn(f"Sim camera selection rejected for {robot.prefix}: {reason}")
 
         future.add_done_callback(_log_sim_camera_result)
+        return True
     
     def target_vehicle_in_world_tf_timer_callback(self):
         stamp_now = self.node.get_clock().now().to_msg()

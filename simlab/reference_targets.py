@@ -21,9 +21,17 @@ class ReferenceTargetPublisher:
     Publishes the reference sample used by planning/control and MCAP replay capture.
     """
 
-    def __init__(self, node: Node, prefix: str, topics: Optional[ReferenceTopics] = None, queue_size: int = 10):
+    def __init__(
+        self,
+        node: Node,
+        prefix: str,
+        topics: Optional[ReferenceTopics] = None,
+        queue_size: int = 10,
+        world_frame: str = "world",
+    ):
         self.node = node
         self.prefix = prefix
+        self.world_frame = world_frame
         self.topics = topics or default_reference_topics(prefix)
         self.pub_targets = node.create_publisher(ReferenceTargets, self.topics.targets, queue_size)
         self._last_msg: Optional[ReferenceTargets] = None
@@ -39,7 +47,7 @@ class ReferenceTargetPublisher:
     ) -> None:
         msg = self._last_msg or ReferenceTargets()
         msg.header.stamp = stamp_msg
-        msg.header.frame_id = "world"
+        msg.header.frame_id = self.world_frame
         msg.world_pose.position.x = float(xyz_world_nwu[0])
         msg.world_pose.position.y = float(xyz_world_nwu[1])
         msg.world_pose.position.z = float(xyz_world_nwu[2])

@@ -465,6 +465,7 @@ class Robot(Base):
                   prefix,
                   planner=None,
                   vehicle_cart_traj=None,
+                  world_frame: str = "world",
                   create_subscriptions: bool = True):
         self.planner: PathPlanner = planner
         self.vehicle_cart_traj: VehicleCartesianRuckig = vehicle_cart_traj
@@ -535,6 +536,7 @@ class Robot(Base):
         self.vehicle_ned2body_vel = ca.Function.load(vehicle_ned2body_vel_path)
 
         self.node = node
+        self.world_frame = world_frame
 
         self.n_joint = n_joint
         self.floating_base_IOs = f'{prefix}IOs'
@@ -576,7 +578,11 @@ class Robot(Base):
             on_result=self._on_planner_action_result,
         )
         self._accept_planner_results = True
-        self.reference_pub = ReferenceTargetPublisher(self.node, self.prefix)
+        self.reference_pub = ReferenceTargetPublisher(
+            self.node,
+            self.prefix,
+            world_frame=self.world_frame,
+        )
         qos_profile = QoSProfile(
             history=QoSHistoryPolicy.KEEP_LAST,
             depth=10
@@ -711,8 +717,6 @@ class Robot(Base):
         self.arm_controller_fn = None
         self.controller_name = None
 
-        self.world_frame = 'world'
-
         for controller in self.controller_instances:
             self.register_controller(
                 name=controller.registry_name,
@@ -750,6 +754,12 @@ class Robot(Base):
             self.control_mode = ControlMode.PLANNER
         spec = self._controllers[name]  # raises KeyError if missing, good fail-fast
         next_controller = getattr(spec.arm_fn, "__self__", None)
+        if activate and self._controller_is_replay(next_controller):
+            self.controller_name = name
+            self.node.get_logger().info(
+                f"Controller set to {name} for {self.prefix} (armed; start replay to publish commands)"
+            )
+            return True
         self.vehicle_controller_fn = spec.vehicle_fn
         self.arm_controller_fn = spec.arm_fn
         self.controller_name = name
@@ -763,6 +773,17 @@ class Robot(Base):
                 previous_controller.stop_playback()
             self.set_control_mode(ControlMode.PLANNER)
         self.node.get_logger().info(f"Controller set to {name} for {self.prefix}")
+        return True
+
+    def activate_cmd_replay_controller(self) -> bool:
+        spec = self._controllers.get("CmdReplay")
+        if spec is None:
+            self.node.get_logger().error(f"CmdReplay controller missing for {self.prefix}.")
+            return False
+        self.vehicle_controller_fn = spec.vehicle_fn
+        self.arm_controller_fn = spec.arm_fn
+        self.controller_name = "CmdReplay"
+        self.set_control_mode(ControlMode.REPLAY)
         return True
 
     def active_controller_instance(self):
@@ -2699,7 +2720,6 @@ class Robot(Base):
         self.arm.dq_command = np.zeros((4,), dtype=float).tolist()
         self.arm.ddq_command = np.zeros((4,), dtype=float).tolist()
         self.enable_planner_output()
-        
 
     def control_loop_callback(self):
         state = self.get_state()

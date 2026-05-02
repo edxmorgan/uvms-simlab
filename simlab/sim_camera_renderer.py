@@ -88,6 +88,8 @@ class SimCameraRendererNode(Node):
         super().__init__("sim_camera_renderer_node")
         self.declare_parameter("robot_description", "")
         self.declare_parameter("robots_prefix", ["robot_1_"])
+        self.declare_parameter("camera_prefixes", [""])
+        self.declare_parameter("render_prefixes", [""])
         self.declare_parameter("world_frame", "world")
         self.declare_parameter("width", 640)
         self.declare_parameter("height", 480)
@@ -101,6 +103,18 @@ class SimCameraRendererNode(Node):
             raise RuntimeError("sim_camera_renderer_node requires robot_description")
 
         self.robot_prefixes = [str(p) for p in self.get_parameter("robots_prefix").value]
+        self.camera_prefixes = [
+            str(p) for p in self.get_parameter("camera_prefixes").value
+            if str(p)
+        ]
+        if not self.camera_prefixes:
+            self.camera_prefixes = [p for p in self.robot_prefixes if p != "robot_real_"]
+        self.render_prefixes = [
+            str(p) for p in self.get_parameter("render_prefixes").value
+            if str(p)
+        ]
+        if not self.render_prefixes:
+            self.render_prefixes = list(self.camera_prefixes)
         self.world_frame = str(self.get_parameter("world_frame").value)
         self.width = int(self.get_parameter("width").value)
         self.height = int(self.get_parameter("height").value)
@@ -109,7 +123,7 @@ class SimCameraRendererNode(Node):
         self.selected_prefix = str(self.get_parameter("selected_prefix").value)
         self.publish_selected_output = bool(self.get_parameter("publish_selected_output").value)
         if not self.selected_prefix:
-            self.selected_prefix = next((p for p in self.robot_prefixes if p != "robot_real_"), "")
+            self.selected_prefix = self.camera_prefixes[0] if self.camera_prefixes else ""
 
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
@@ -118,12 +132,32 @@ class SimCameraRendererNode(Node):
         info_qos = QoSProfile(depth=1)
         self.image_publishers: Dict[str, object] = {}
         self.info_publishers: Dict[str, object] = {}
-        for prefix in self.robot_prefixes:
-            if prefix == "robot_real_":
-                continue
+        self.passthrough_image_subs = []
+        self.passthrough_info_subs = []
+        for prefix in self.render_prefixes:
             topic_base = _topic_prefix(prefix)
             self.image_publishers[prefix] = self.create_publisher(Image, f"{topic_base}/image_raw", image_qos)
             self.info_publishers[prefix] = self.create_publisher(CameraInfo, f"{topic_base}/camera_info", info_qos)
+        for prefix in self.camera_prefixes:
+            if prefix in self.render_prefixes:
+                continue
+            topic_base = _topic_prefix(prefix)
+            self.passthrough_image_subs.append(
+                self.create_subscription(
+                    Image,
+                    f"{topic_base}/image_raw",
+                    lambda msg, camera_prefix=prefix: self._passthrough_image_cb(camera_prefix, msg),
+                    image_qos,
+                )
+            )
+            self.passthrough_info_subs.append(
+                self.create_subscription(
+                    CameraInfo,
+                    f"{topic_base}/camera_info",
+                    lambda msg, camera_prefix=prefix: self._passthrough_info_cb(camera_prefix, msg),
+                    info_qos,
+                )
+            )
         self.selected_image_publisher = self.create_publisher(Image, "/alpha/image_raw", image_qos)
         self.selected_info_publisher = self.create_publisher(CameraInfo, "/alpha/camera_info", info_qos)
         self.parameter_callback_handle = self.add_on_set_parameters_callback(self._set_parameters_callback)
@@ -137,8 +171,8 @@ class SimCameraRendererNode(Node):
 
         self.timer = self.create_timer(1.0 / max(self.render_rate, 0.1), self.render_all)
         self.get_logger().info(
-            f"sim_camera_renderer_node publishing rendered images for "
-            f"{[p for p in self.robot_prefixes if p != 'robot_real_']}"
+            f"sim_camera_renderer_node render cameras={self.render_prefixes}, "
+            f"selectable cameras={self.camera_prefixes}"
         )
 
     def _set_parameters_callback(self, parameters):
@@ -147,12 +181,12 @@ class SimCameraRendererNode(Node):
         for parameter in parameters:
             if parameter.name == "selected_prefix":
                 selected_prefix = str(parameter.value)
-                if selected_prefix not in self.image_publishers:
+                if selected_prefix not in self.camera_prefixes:
                     result.successful = False
-                    result.reason = f"selected_prefix must be one of {sorted(self.image_publishers)}"
+                    result.reason = f"selected_prefix must be one of {sorted(self.camera_prefixes)}"
                     return result
                 self.selected_prefix = selected_prefix
-                self.get_logger().info(f"Selected simulated camera feed set to {self.selected_prefix}")
+                self.get_logger().info(f"Selected camera feed set to {self.selected_prefix}")
             elif parameter.name == "publish_selected_output":
                 self.publish_selected_output = bool(parameter.value)
         return result
@@ -274,6 +308,14 @@ class SimCameraRendererNode(Node):
 
     def _has_subscribers(self, publisher) -> bool:
         return publisher.get_subscription_count() > 0
+
+    def _passthrough_image_cb(self, prefix: str, msg: Image) -> None:
+        if self.publish_selected_output and prefix == self.selected_prefix:
+            self.selected_image_publisher.publish(msg)
+
+    def _passthrough_info_cb(self, prefix: str, msg: CameraInfo) -> None:
+        if self.publish_selected_output and prefix == self.selected_prefix:
+            self.selected_info_publisher.publish(msg)
 
     def _should_render_prefix(self, prefix: str) -> bool:
         if self._has_subscribers(self.image_publishers[prefix]):
