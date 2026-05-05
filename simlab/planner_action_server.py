@@ -5,7 +5,7 @@ from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.node import Node
 from simlab.action import PlanVehicle
 from rclpy.callback_groups import ReentrantCallbackGroup
-from rclpy.executors import MultiThreadedExecutor
+from rclpy.executors import SingleThreadedExecutor
 import tf2_ros
 from simlab.fcl_checker import FCLWorld
 from simlab.shutdown import install_signal_shutdown_handler, spin_until_shutdown
@@ -235,8 +235,9 @@ def main(args=None):
     install_signal_shutdown_handler()
     planner_action_server = PlannerActionServer()
 
-    # Use a MultiThreadedExecutor to enable processing goals concurrently
-    executor = MultiThreadedExecutor()
+    # A single-thread executor avoids idle busy-spin seen with the action server
+    # under rclpy while still matching the server's one-goal-at-a-time policy.
+    executor = SingleThreadedExecutor()
 
     try:
         spin_until_shutdown(planner_action_server, executor=executor)

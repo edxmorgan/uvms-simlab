@@ -15,6 +15,7 @@
 
 #!/usr/bin/env python3
 import copy
+from datetime import datetime
 from simlab.uvms_parameters import ReachParams
 import rclpy
 from rclpy.node import Node
@@ -37,6 +38,7 @@ import sensor_msgs_py.point_cloud2 as pc2
 from sensor_msgs.msg import PointCloud2
 from geometry_msgs.msg import PoseStamped
 from control_msgs.msg import DynamicJointState
+from rviz_2d_overlay_msgs.msg import OverlayText
 from std_srvs.srv import Trigger
 from simlab.srv import (
     BackendPoseCommand,
@@ -108,6 +110,16 @@ class UVMSBackendCore:
 
         self.taskspace_pc_publisher_ = self.node.create_publisher(PointCloud2,'workspace_pointcloud',pointcloud_qos)
         self.rov_pc_publisher_ = self.node.create_publisher(PointCloud2, 'base_pointcloud', pointcloud_qos)
+        self.robot_metrics_overlay_pub = self.node.create_publisher(
+            OverlayText,
+            'robot_metrics_overlay_text',
+            10,
+        )
+        self.research_overlay_pub = self.node.create_publisher(
+            OverlayText,
+            'chatter_overlay_text',
+            10,
+        )
 
         # stack clouds that represent the vehicle occupied volume
         all_pts = np.vstack([
@@ -140,6 +152,8 @@ class UVMSBackendCore:
         self.target_endeffector_in_world_tf_timer = self.node.create_timer(1.0 / 20.0, self.target_endeffector_in_world_tf_timer_callback)
         self.vehicle_target_cloud_timer = self.node.create_timer(1.0 / 2.0, self.vehicle_target_cloud_timer_callback)
         self.task_on_vehicle_solve_timer = self.node.create_timer(1.0 / 5.0, self.plan_and_execute_task_trajectory_wrt_vehicle)
+        self.robot_metrics_overlay_timer = self.node.create_timer(1.0 / 5.0, self.publish_robot_metrics_overlay_callback)
+        self.research_overlay_timer = self.node.create_timer(1.0, self.publish_research_overlay_callback)
         
         self.planner_marker_publisher = self.node.create_publisher(Marker, "planned_waypoints_marker", planner_viz_qos)
         self.robots:List[Robot] = []
@@ -774,6 +788,54 @@ class UVMSBackendCore:
                 f"E {total_energy:.2f} J | dE/dt {total_power:.2f} W"
             )
         return '\n'.join(lines)
+
+    def format_research_overlay_text(self) -> str:
+        return f"© {datetime.now().year} Louisiana State University. Research use."
+
+    def publish_robot_metrics_overlay_callback(self) -> None:
+        text = self.format_robot_metrics_overlay_text()
+        lines = text.splitlines() or [""]
+        longest_line = max(len(line) for line in lines)
+        msg = OverlayText()
+        msg.action = OverlayText.ADD
+        msg.text_size = 14.0
+        char_width = msg.text_size * 0.92
+        robot_count = sum(1 for line in lines if line.startswith("robot_"))
+        msg.width = min(1800, max(900, int(longest_line * char_width) + 96))
+        msg.height = max(356, int(238 + 118 * max(robot_count, 1)))
+        msg.horizontal_distance = 28
+        msg.vertical_distance = 170
+        msg.horizontal_alignment = OverlayText.RIGHT
+        msg.vertical_alignment = OverlayText.TOP
+        msg.bg_color.a = 0.45
+        msg.line_width = 2
+        msg.font = 'DejaVu Sans Mono'
+        msg.fg_color.r = 1.0
+        msg.fg_color.g = 0.9
+        msg.fg_color.b = 0.2
+        msg.fg_color.a = 0.95
+        msg.text = text
+        self.robot_metrics_overlay_pub.publish(msg)
+
+    def publish_research_overlay_callback(self) -> None:
+        msg = OverlayText()
+        msg.action = OverlayText.ADD
+        msg.text_size = 22.0
+        msg.width = 980
+        msg.height = 128
+        msg.horizontal_distance = 28
+        msg.vertical_distance = 29
+        msg.horizontal_alignment = OverlayText.LEFT
+        msg.vertical_alignment = OverlayText.TOP
+        msg.bg_color.a = 0.5
+        msg.line_width = 216
+        msg.font = 'Sans Serif'
+        msg.fg_color.r = 25.0 / 255.0
+        msg.fg_color.g = 1.0
+        msg.fg_color.b = 240.0 / 255.0
+        msg.fg_color.a = 0.8
+        msg.text = self.format_research_overlay_text()
+        self.research_overlay_pub.publish(msg)
 
     def _dynamic_joint_states_cb(self, msg: DynamicJointState) -> None:
         for robot in self.robots:
