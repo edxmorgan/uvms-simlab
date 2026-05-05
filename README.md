@@ -10,7 +10,7 @@ A field-ready ROS 2 lab for **Underwater Vehicle–Manipulator Systems**. `uvms_
 - **Collision + clearance monitoring** – FCL-backed checks visualize contacts, environment bounds, and clearance markers.
 - **SE(3) planning with live visualization** – OMPL planners + Ruckig execution stream candidate paths and waypoints to RViz.
 - **Control modes** – PS4 teleop, joint-space torque control, or direct thruster PWM via launch args.
-- **Visualization tooling** – workspace clouds, vehicle-base clouds, voxelized bathymetry, and collision/context markers.
+- **Visualization tooling** – workspace clouds, vehicle-base clouds, backend-published overlays, and opt-in voxel/collision debug markers.
 - **Data logging** – rosbag2 MCAP recorder for repeatable datasets.
 - **Perception extras** – optional RGB-to-pointcloud (MiDaS) for quick depth-based clouds.
 
@@ -136,6 +136,12 @@ Notes:
 
 ### Overlay information
 
+The SimLab backend publishes RViz overlay topics independently of the optional
+voxel and collision debug nodes:
+
+- `/chatter_overlay_text`: research-use session overlay.
+- `/robot_metrics_overlay_text`: live robot metrics overlay.
+
 The robot metrics overlay includes, per robot:
 
 - selected controller
@@ -171,8 +177,8 @@ simlab/
 ├── simlab/joystick_control.py        # PS4 teleop node
 ├── simlab/joint_control.py           # Joint-space torque control
 ├── simlab/direct_thruster_control.py # Thruster PWM keyboard control
-├── simlab/collision_contact.py       # FCL contact markers + clearance
-├── simlab/voxel_viz.py               # Bathymetry voxel clouds
+├── simlab/collision_contact.py       # Opt-in FCL contact markers + clearance
+├── simlab/voxel_viz.py               # Opt-in bathymetry voxel clouds
 ├── simlab/bag_recorder.py            # rosbag2 MCAP recorder
 └── resource/model_functions/         # Generated model functions
 ```

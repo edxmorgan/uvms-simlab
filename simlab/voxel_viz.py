@@ -21,11 +21,9 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from simlab.shutdown import install_signal_shutdown_handler, shutdown_node, spin_until_shutdown
 from sensor_msgs.msg import PointCloud2
-from std_msgs.msg import String
 import trimesh
 from ament_index_python.packages import get_package_share_directory
 from simlab.mesh_utils import collect_env_meshes, conc_env_trimesh, points_to_cloud2
-from datetime import datetime
 
 class VoxelVizNode(Node):
     def __init__(self):
@@ -81,26 +79,7 @@ class VoxelVizNode(Node):
             qos_profile_sensor_data
         )
 
-        self.overlay_text_publisher = self.create_publisher(
-            String,
-            "chatter",
-            10
-        )
-
-        self.overlay_text_timer = self.create_timer(1.0, self.publish_overlay_text_callback)
         self.timer = self.create_timer(2.0, self.tick)
-
-    def publish_overlay_text_callback(self) -> None:
-        if not rclpy.ok():
-            return
-        str_msg = String()
-        str_msg.data = f"© {datetime.now().year} Louisiana State University. Research use."
-        try:
-            self.overlay_text_publisher.publish(str_msg)
-        except Exception:
-            if rclpy.ok():
-                raise
-
 
     def tick(self):
         """

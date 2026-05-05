@@ -20,7 +20,6 @@ import gc
 import rclpy
 from rclpy.node import Node
 from simlab.shutdown import install_signal_shutdown_handler, shutdown_node, spin_until_shutdown
-from rviz_2d_overlay_msgs.msg import OverlayText
 from simlab.uvms_backend import UVMSBackendCore
 from visualization_msgs.msg import InteractiveMarkerControl, InteractiveMarkerFeedback
 from interactive_markers.interactive_marker_server import InteractiveMarkerServer
@@ -55,15 +54,6 @@ class InteractiveControlsNode(Node):
                                                               self.vehicle_target_frame, self.arm_base_target_frame, 
                                                               self.world_frame,
                                                               self.world_endeffector_target_frame, ReachParams)
-        self.robot_metrics_overlay_pub = self.create_publisher(
-            OverlayText,
-            'robot_metrics_overlay_text',
-            10,
-        )
-        self.robot_metrics_overlay_timer = self.create_timer(
-            1.0 / 5.0,
-            self.publish_robot_metrics_overlay_callback,
-        )
         # Create marker server, menu handler
         self.server = InteractiveMarkerServer(self, "uvms_interactive_controls")
 
@@ -357,31 +347,6 @@ class InteractiveControlsNode(Node):
 
     def stop_vehicle_waypoints(self, feedback: InteractiveMarkerFeedback):
         self.uvms_backend.stop_selected_vehicle_waypoints()
-
-    def publish_robot_metrics_overlay_callback(self) -> None:
-        text = self.uvms_backend.format_robot_metrics_overlay_text()
-        lines = text.splitlines() or [""]
-        longest_line = max(len(line) for line in lines)
-        msg = OverlayText()
-        msg.action = OverlayText.ADD
-        msg.text_size = 14.0
-        char_width = msg.text_size * 0.92
-        robot_count = sum(1 for line in lines if line.startswith("robot_"))
-        msg.width = min(1800, max(900, int(longest_line * char_width) + 96))
-        msg.height = max(356, int(238 + 118 * max(robot_count, 1)))
-        msg.horizontal_distance = 28
-        msg.vertical_distance = 170
-        msg.horizontal_alignment = OverlayText.RIGHT
-        msg.vertical_alignment = OverlayText.TOP
-        msg.bg_color.a = 0.45
-        msg.line_width = 2
-        msg.font = 'DejaVu Sans Mono'
-        msg.fg_color.r = 1.0
-        msg.fg_color.g = 0.9
-        msg.fg_color.b = 0.2
-        msg.fg_color.a = 0.95
-        msg.text = text
-        self.robot_metrics_overlay_pub.publish(msg)
 
     def _refresh_robot_menu_state(self, selected_k_robot: int) -> None:
         selected_robot = self.uvms_backend.robot_selected
