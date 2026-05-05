@@ -7,6 +7,15 @@
   <maintainer email="edmorgangh@gmail.com">Edward Morgan</maintainer>
   <license>AGPL-3.0-or-later</license>
 
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>ament_cmake_python</buildtool_depend>
+
+  <depend>geometry_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>rosidl_default_generators</depend>
+
+  <exec_depend>rosidl_default_runtime</exec_depend>
+
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
   <test_depend>ament_pep257</test_depend>
@@ -15,16 +24,16 @@
   <exec_depend>rclpy</exec_depend>
   <exec_depend>std_srvs</exec_depend>
   <exec_depend>rviz_2d_overlay_msgs</exec_depend>
-  <exec_depend>std_msgs</exec_depend>
   <exec_depend>python3-collada</exec_depend>
-  <exec_depend>simlab_msgs</exec_depend>
   <exec_depend>ros2_control_blue_reach_5</exec_depend>
   <exec_depend>python3-yaml</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
   <exec_depend>tf2_geometry_msgs</exec_depend>
   <exec_depend>rosbag2_py</exec_depend>
 
+  <member_of_group>rosidl_interface_packages</member_of_group>
+
   <export>
-    <build_type>ament_python</build_type>
+    <build_type>ament_cmake</build_type>
   </export>
 </package>

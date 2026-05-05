@@ -18,6 +18,7 @@ import os
 import numpy as np
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 from simlab.shutdown import install_signal_shutdown_handler, shutdown_node, spin_until_shutdown
 from sensor_msgs.msg import PointCloud2
 from std_msgs.msg import String
@@ -77,7 +78,7 @@ class VoxelVizNode(Node):
         self.cloud_pub = self.create_publisher(
             PointCloud2,
             '/env_voxels_cloud',
-            10
+            qos_profile_sensor_data
         )
 
         self.overlay_text_publisher = self.create_publisher(
@@ -86,9 +87,8 @@ class VoxelVizNode(Node):
             10
         )
 
-        self.overlay_text_timer = self.create_timer(1.0 / 30, self.publish_overlay_text_callback)
-        # timer
-        self.timer = self.create_timer(0.1, self.tick)
+        self.overlay_text_timer = self.create_timer(1.0, self.publish_overlay_text_callback)
+        self.timer = self.create_timer(2.0, self.tick)
 
     def publish_overlay_text_callback(self) -> None:
         if not rclpy.ok():
@@ -109,6 +109,8 @@ class VoxelVizNode(Node):
         2. Placeholder for OccupancyGrid projection from octree later.
         """
         if not rclpy.ok():
+            return
+        if self.cloud_pub.get_subscription_count() == 0:
             return
         # Publish voxel centers as PointCloud2
         if self.centers is not None and self.centers.shape[0] > 0:

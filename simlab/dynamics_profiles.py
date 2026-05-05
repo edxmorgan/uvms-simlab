@@ -4,7 +4,7 @@ from pathlib import Path
 
 import ament_index_python
 from rclpy.node import Node
-from ros2_control_blue_reach_5.msg import SimManipulatorDynamics, SimVehicleDynamics
+from ros2_control_blue_reach_5.msg import SimCameraDynamics, SimManipulatorDynamics, SimVehicleDynamics
 from ros2_control_blue_reach_5.srv import SetSimDynamics
 
 
@@ -49,7 +49,11 @@ def load_robot_dynamics_profile(profile_name: str, node: Node | None = None) -> 
 def is_valid_robot_dynamics_profile(profile: dict) -> bool:
     if not isinstance(profile, dict):
         return False
-    return isinstance(profile.get("manipulator"), dict) or isinstance(profile.get("vehicle"), dict)
+    return (
+        isinstance(profile.get("manipulator"), dict)
+        or isinstance(profile.get("vehicle"), dict)
+        or isinstance(profile.get("camera"), dict)
+    )
 
 
 def required_float(config: dict, key: str) -> float:
@@ -81,6 +85,25 @@ def required_matrix(config: dict, key: str, rows: int, cols: int) -> list[float]
     if len(values) != size:
         raise ValueError(f"dynamics matrix '{key}' must contain exactly {size} values")
     return values
+
+
+def optional_bool(config: dict, key: str) -> bool | None:
+    if key not in config:
+        return None
+    value = config[key]
+    if value is None:
+        raise ValueError(f"boolean profile parameter '{key}' must be true or false")
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "off"}:
+            return False
+    raise ValueError(f"boolean profile parameter '{key}' must be true or false")
 
 
 def vehicle_dynamics_from_config(dynamics: dict) -> SimVehicleDynamics:
@@ -144,7 +167,7 @@ def manipulator_dynamics_from_config(dynamics: dict) -> SimManipulatorDynamics:
 
 def set_dynamics_request_from_profile(profile: dict, include_vehicle: bool = True) -> SetSimDynamics.Request:
     request = SetSimDynamics.Request()
-    request.use_coupled_dynamics = bool(profile["use_coupled_dynamics"])
+    request.use_coupled_dynamics = bool(profile.get("use_coupled_dynamics", False))
     manipulator = profile.get("manipulator")
     if isinstance(manipulator, dict):
         request.set_manipulator_dynamics = True
@@ -154,3 +177,30 @@ def set_dynamics_request_from_profile(profile: dict, include_vehicle: bool = Tru
         request.set_vehicle_dynamics = True
         request.vehicle = vehicle_dynamics_from_config(vehicle)
     return request
+
+
+def camera_dynamics_from_profile(profile: dict) -> SimCameraDynamics | None:
+    camera = profile.get("camera")
+    if not isinstance(camera, dict):
+        return None
+
+    msg = SimCameraDynamics()
+    if "underwater_effect" in camera:
+        msg.set_underwater_effect = True
+        msg.underwater_effect = optional_bool(camera, "underwater_effect")
+    if "underwater_haze" in camera:
+        msg.set_underwater_haze = True
+        msg.underwater_haze = float(camera["underwater_haze"])
+    if "underwater_tint" in camera:
+        msg.set_underwater_tint = True
+        msg.underwater_tint = float(camera["underwater_tint"])
+    if "underwater_blur" in camera:
+        msg.set_underwater_blur = True
+        msg.underwater_blur = float(camera["underwater_blur"])
+    if "underwater_noise" in camera:
+        msg.set_underwater_noise = True
+        msg.underwater_noise = float(camera["underwater_noise"])
+    if "underwater_vignette" in camera:
+        msg.set_underwater_vignette = True
+        msg.underwater_vignette = float(camera["underwater_vignette"])
+    return msg

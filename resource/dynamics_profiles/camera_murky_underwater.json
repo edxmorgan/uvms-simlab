@@ -1,0 +1,10 @@
+{
+  "camera": {
+    "underwater_effect": true,
+    "underwater_haze": 0.95,
+    "underwater_tint": 0.9,
+    "underwater_blur": 2.2,
+    "underwater_noise": 0.055,
+    "underwater_vignette": 0.5
+  }
+}

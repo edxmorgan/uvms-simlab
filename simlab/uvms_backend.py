@@ -38,7 +38,7 @@ from sensor_msgs.msg import PointCloud2
 from geometry_msgs.msg import PoseStamped
 from control_msgs.msg import DynamicJointState
 from std_srvs.srv import Trigger
-from simlab_msgs.srv import (
+from simlab.srv import (
     BackendPoseCommand,
     BackendRobotCommand,
     BackendWaypointCommand,
@@ -103,7 +103,7 @@ class UVMSBackendCore:
         self.vehicle_body_hull = ConvexHull(self.rov_ellipsoid_cl_pts)
 
         pointcloud_qos = QoSProfile(history=QoSHistoryPolicy.KEEP_LAST, depth=1, durability=QoSDurabilityPolicy.VOLATILE,
-                                    reliability=QoSReliabilityPolicy.RELIABLE,
+                                    reliability=QoSReliabilityPolicy.BEST_EFFORT,
         )
 
         self.taskspace_pc_publisher_ = self.node.create_publisher(PointCloud2,'workspace_pointcloud',pointcloud_qos)
@@ -130,12 +130,16 @@ class UVMSBackendCore:
         # publisher for FCL environment AABB
         self.env_aabb_pub = self.node.create_publisher(Marker, "fcl_environment_aabb", viz_qos)
         self.env_bounds_timer = self.node.create_timer(1.0 / 1.0, self.publish_fcl_environment_aabb_callback)
-        self.fcl_update_timer = self.node.create_timer(1.0 / 50.0, self.fcl_update_callback)
-        self.target_vehicle_marker_in_world_tf_timer = self.node.create_timer(1.0 / 60.0, self.target_vehicle_in_world_tf_timer_callback)
-        self.target_arm_base_marker_tf_timer = self.node.create_timer(1.0 / 60.0, self.target_arm_base_tf_timer_callback)
-        self.target_endeffector_in_world_tf_timer = self.node.create_timer(1.0 / 60.0, self.target_endeffector_in_world_tf_timer_callback)
-        self.vehicle_target_cloud_timer = self.node.create_timer(1.0 / 60.0, self.vehicle_target_cloud_timer_callback)
-        self.task_on_vehicle_solve_timer = self.node.create_timer(1.0 / 10.0, self.plan_and_execute_task_trajectory_wrt_vehicle)
+        self.fcl_update_rate = float(self.node.get_parameter_or("interactive_fcl_update_rate", 10.0).value)
+        if self.fcl_update_rate > 0.0:
+            self.fcl_update_timer = self.node.create_timer(1.0 / self.fcl_update_rate, self.fcl_update_callback)
+        else:
+            self.fcl_update_timer = None
+        self.target_vehicle_marker_in_world_tf_timer = self.node.create_timer(1.0 / 20.0, self.target_vehicle_in_world_tf_timer_callback)
+        self.target_arm_base_marker_tf_timer = self.node.create_timer(1.0 / 20.0, self.target_arm_base_tf_timer_callback)
+        self.target_endeffector_in_world_tf_timer = self.node.create_timer(1.0 / 20.0, self.target_endeffector_in_world_tf_timer_callback)
+        self.vehicle_target_cloud_timer = self.node.create_timer(1.0 / 2.0, self.vehicle_target_cloud_timer_callback)
+        self.task_on_vehicle_solve_timer = self.node.create_timer(1.0 / 5.0, self.plan_and_execute_task_trajectory_wrt_vehicle)
         
         self.planner_marker_publisher = self.node.create_publisher(Marker, "planned_waypoints_marker", planner_viz_qos)
         self.robots:List[Robot] = []
@@ -194,11 +198,11 @@ class UVMSBackendCore:
         )
         self.set_robot_selected(self.robots[0].k_robot)
         self.vehicle_waypoint_execution_timer = self.node.create_timer(
-            1.0 / 20.0,
+            1.0 / 10.0,
             self.vehicle_waypoint_execution_callback,
         )
         self.vehicle_waypoint_viz_timer = self.node.create_timer(
-            1.0 / 10.0,
+            1.0 / 2.0,
             self.vehicle_waypoint_viz_callback,
         )
         self._create_backend_api_services()
@@ -920,11 +924,13 @@ class UVMSBackendCore:
             # exact timestamp match from a separate TF timer.
             header.stamp = rclpy.time.Time().to_msg()
 
-            rov_cloud_msg = pc2.create_cloud_xyz32(header, self.workspace_pts)
-            self.taskspace_pc_publisher_.publish(rov_cloud_msg)
+            if self.taskspace_pc_publisher_.get_subscription_count() > 0:
+                rov_cloud_msg = pc2.create_cloud_xyz32(header, self.workspace_pts)
+                self.taskspace_pc_publisher_.publish(rov_cloud_msg)
 
-            cloud_msg = pc2.create_cloud_xyz32(header, self.rov_ellipsoid_cl_pts)
-            self.rov_pc_publisher_.publish(cloud_msg)
+            if self.rov_pc_publisher_.get_subscription_count() > 0:
+                cloud_msg = pc2.create_cloud_xyz32(header, self.rov_ellipsoid_cl_pts)
+                self.rov_pc_publisher_.publish(cloud_msg)
 
     def is_valid_arm_base_task(self, target_arm_base_endeffector_pose: Pose) -> bool:
         pose_v = self.robot_selected.try_transform_pose(

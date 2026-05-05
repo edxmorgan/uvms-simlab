@@ -8,7 +8,7 @@ from pathlib import Path
 
 import rosbag2_py
 from control_msgs.msg import DynamicJointState
-from simlab_msgs.msg import ReferenceTargets
+from simlab.msg import ReferenceTargets
 from rclpy.serialization import deserialize_message
 
 
@@ -71,7 +71,7 @@ TARGET_COLUMNS = (
     "arm_ddref_axis_b",
     "arm_ddref_axis_a",
 )
-REFERENCE_TOPIC_TYPE = "simlab_msgs/msg/ReferenceTargets"
+REFERENCE_TOPIC_TYPE = "simlab/msg/ReferenceTargets"
 
 
 def _clean(value: float, eps: float = 1e-12) -> float:

@@ -3,7 +3,7 @@ import threading
 import numpy as np
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.node import Node
-from simlab_msgs.action import PlanVehicle
+from simlab.action import PlanVehicle
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 import tf2_ros
@@ -37,8 +37,6 @@ class PlannerActionServer(Node):
             f"{self._tag} default robot collision radius is {self.fcl_world.vehicle_radius:.3f} m "
             f"(overridden per action goal)."
         )
-
-        self.fcl_update_timer = self.create_timer(1.0 / 50.0, self._fcl_update_callback)
 
         self.safety_margin: float = 1e-2
         self.env_bounds = tuple(float(v) for v in self.fcl_world.env_xyz_bounds)

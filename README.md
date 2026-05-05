@@ -10,7 +10,7 @@ A field-ready ROS 2 lab for **Underwater Vehicle–Manipulator Systems**. `uvms_
 - **Collision + clearance monitoring** – FCL-backed checks visualize contacts, environment bounds, and clearance markers.
 - **SE(3) planning with live visualization** – OMPL planners + Ruckig execution stream candidate paths and waypoints to RViz.
 - **Control modes** – PS4 teleop, joint-space torque control, or direct thruster PWM via launch args.
-- **Mocap + viz tooling** – OptiTrack/mocap4r2 publishing, pose/path trails, workspace clouds, and voxelized bathymetry.
+- **Visualization tooling** – workspace clouds, vehicle-base clouds, voxelized bathymetry, and collision/context markers.
 - **Data logging** – rosbag2 MCAP recorder for repeatable datasets.
 - **Perception extras** – optional RGB-to-pointcloud (MiDaS) for quick depth-based clouds.
 
