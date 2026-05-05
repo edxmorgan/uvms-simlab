@@ -33,7 +33,7 @@ import tf2_ros
 from typing import Dict, List
 from simlab.robot import Robot, ControlMode
 from geometry_msgs.msg import Pose
-from std_msgs.msg import Header
+from std_msgs.msg import Header, String
 import sensor_msgs_py.point_cloud2 as pc2
 from sensor_msgs.msg import PointCloud2
 from geometry_msgs.msg import PoseStamped
@@ -116,8 +116,8 @@ class UVMSBackendCore:
             10,
         )
         self.research_overlay_pub = self.node.create_publisher(
-            OverlayText,
-            'chatter_overlay_text',
+            String,
+            'chatter',
             10,
         )
 
@@ -818,23 +818,8 @@ class UVMSBackendCore:
         self.robot_metrics_overlay_pub.publish(msg)
 
     def publish_research_overlay_callback(self) -> None:
-        msg = OverlayText()
-        msg.action = OverlayText.ADD
-        msg.text_size = 22.0
-        msg.width = 980
-        msg.height = 128
-        msg.horizontal_distance = 28
-        msg.vertical_distance = 29
-        msg.horizontal_alignment = OverlayText.LEFT
-        msg.vertical_alignment = OverlayText.TOP
-        msg.bg_color.a = 0.5
-        msg.line_width = 216
-        msg.font = 'Sans Serif'
-        msg.fg_color.r = 25.0 / 255.0
-        msg.fg_color.g = 1.0
-        msg.fg_color.b = 240.0 / 255.0
-        msg.fg_color.a = 0.8
-        msg.text = self.format_research_overlay_text()
+        msg = String()
+        msg.data = self.format_research_overlay_text()
         self.research_overlay_pub.publish(msg)
 
     def _dynamic_joint_states_cb(self, msg: DynamicJointState) -> None:

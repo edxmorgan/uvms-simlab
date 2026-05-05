@@ -136,10 +136,11 @@ Notes:
 
 ### Overlay information
 
-The SimLab backend publishes RViz overlay topics independently of the optional
+The SimLab backend publishes RViz overlay data independently of the optional
 voxel and collision debug nodes:
 
-- `/chatter_overlay_text`: research-use session overlay.
+- `chatter`: research-use session text consumed by `string_to_overlay_text`,
+  which publishes `/chatter_overlay_text` for RViz.
 - `/robot_metrics_overlay_text`: live robot metrics overlay.
 
 The robot metrics overlay includes, per robot:
