@@ -53,11 +53,7 @@ class BagRecorder(Node):
         self._topics = list(topics)
         self._topics.extend(self._desired_target_topic_specs(robot_prefixes))
 
-        for spec in self._topics:
-            cb = self._make_write_cb(spec.name)
-            sub = self.create_subscription(spec.msg_cls, spec.name, cb, spec.qos_depth)
-            self._subs.append(sub)
-            self._topic_names.append(spec.name)
+        self._topic_names = [spec.name for spec in self._topics]
 
         self.create_service(Trigger, "/bag_recorder_node/start_recording", self.start_recording_callback)
         self.create_service(Trigger, "/bag_recorder_node/stop_recording", self.stop_recording_callback)
@@ -74,9 +70,23 @@ class BagRecorder(Node):
         if bool(self.get_parameter("autostart_recording").value):
             self.start_recording()
 
+    def _ensure_subscriptions(self) -> None:
+        if self._subs:
+            return
+
+        for spec in self._topics:
+            cb = self._make_write_cb(spec.name)
+            sub = self.create_subscription(spec.msg_cls, spec.name, cb, spec.qos_depth)
+            self._subs.append(sub)
+
+    def _destroy_subscriptions(self) -> None:
+        for sub in self._subs:
+            self.destroy_subscription(sub)
+        self._subs = []
+
     @staticmethod
     def _desired_target_topic_specs(robot_prefixes: List[str]) -> List[TopicSpec]:
-        from simlab_msgs.msg import ControllerPerformance, ReferenceTargets
+        from simlab.msg import ControllerPerformance, ReferenceTargets
 
         topics: List[TopicSpec] = []
         for prefix in robot_prefixes:
@@ -84,7 +94,7 @@ class BagRecorder(Node):
                 TopicSpec(
                     name=f"/{prefix}/reference/targets",
                     msg_cls=ReferenceTargets,
-                    type_str="simlab_msgs/msg/ReferenceTargets",
+                    type_str="simlab/msg/ReferenceTargets",
                     qos_depth=10,
                 )
             )
@@ -92,7 +102,7 @@ class BagRecorder(Node):
                 TopicSpec(
                     name=f"/{prefix}/performance/controller",
                     msg_cls=ControllerPerformance,
-                    type_str="simlab_msgs/msg/ControllerPerformance",
+                    type_str="simlab/msg/ControllerPerformance",
                     qos_depth=10,
                 )
             )
@@ -125,6 +135,7 @@ class BagRecorder(Node):
             )
 
         self.writer = writer
+        self._ensure_subscriptions()
         self._recording = True
         message = f"recording {len(self._topic_names)} topics to {self.bag_dir}"
         self.get_logger().info(message)
@@ -135,8 +146,9 @@ class BagRecorder(Node):
             return True, "recording is not active"
 
         path = self.bag_dir
-        self.writer = None
         self._recording = False
+        self._destroy_subscriptions()
+        self.writer = None
         message = f"stopped recording {path}"
         self.get_logger().info(message)
         return True, message

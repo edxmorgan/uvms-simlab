@@ -1,6 +1,6 @@
 from rclpy.action import ActionClient
 from rclpy.node import Node
-from simlab_msgs.action import PlanVehicle
+from simlab.action import PlanVehicle
 import numpy as np
 from typing import Any, Callable, Dict, Optional, Sequence
 

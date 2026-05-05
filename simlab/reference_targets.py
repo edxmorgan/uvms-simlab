@@ -4,7 +4,7 @@ from typing import Optional, Sequence
 import numpy as np
 
 from rclpy.node import Node
-from simlab_msgs.msg import ReferenceTargets
+from simlab.msg import ReferenceTargets
 
 
 @dataclass

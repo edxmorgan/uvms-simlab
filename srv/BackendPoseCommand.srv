@@ -1,0 +1,8 @@
+# Backend command that carries a pose.
+int32 robot_index
+string command
+geometry_msgs/Pose pose
+bool use_current_target
+---
+bool success
+string message

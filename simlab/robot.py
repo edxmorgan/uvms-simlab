@@ -31,7 +31,7 @@ from geometry_msgs.msg import PoseStamped, Pose, TwistStamped, AccelStamped
 from rclpy.qos import QoSProfile, QoSHistoryPolicy
 import copy
 from std_msgs.msg import Float32
-from ros2_control_blue_reach_5.srv import ResetSimUvms, SetSimDynamics
+from ros2_control_blue_reach_5.srv import ResetSimUvms, SetSimCameraDynamics, SetSimDynamics
 from std_srvs.srv import Trigger
 from pyPS4Controller.controller import Controller
 import threading
@@ -42,6 +42,7 @@ from std_msgs.msg import Float64MultiArray
 from simlab.controller_msg import FullRobotMsg
 from simlab.controllers import DEFAULT_CONTROLLER_CLASSES
 from simlab.dynamics_profiles import (
+    camera_dynamics_from_profile,
     is_valid_robot_dynamics_profile,
     list_robot_dynamics_profiles,
     load_robot_dynamics_profile,
@@ -62,7 +63,7 @@ from geometry_msgs.msg import Pose
 from geometry_msgs.msg import Vector3Stamped
 from enum import Enum
 from dataclasses import dataclass
-from simlab_msgs.msg import ControllerPerformance
+from simlab.msg import ControllerPerformance
 from simlab.reference_targets import ReferenceTargetPublisher
 from simlab.planner_action_client import PlannerActionClient
 from simlab.planners import visible_planner_names
@@ -587,8 +588,12 @@ class Robot(Base):
             history=QoSHistoryPolicy.KEEP_LAST,
             depth=10
         )
+        path_qos_profile = QoSProfile(
+            history=QoSHistoryPolicy.KEEP_LAST,
+            depth=5,
+        )
 
-        self.trajectory_path_publisher = self.node.create_publisher(Path, f'/{self.prefix}robotPath', qos_profile)
+        self.trajectory_path_publisher = self.node.create_publisher(Path, f'/{self.prefix}robotPath', path_qos_profile)
 
         self.mountPitch_publisher_ = self.node.create_publisher(Float32, '/alpha/cameraMountPitch', 10)
         self.light_publisher_ = self.node.create_publisher(Float32, '/alpha/lights', 10)
@@ -615,6 +620,10 @@ class Robot(Base):
         self.set_sim_dynamics_client = self.node.create_client(
             SetSimDynamics,
             f"/{self.prefix}set_sim_uvms_dynamics",
+        )
+        self.camera_dynamics_client = self.node.create_client(
+            SetSimCameraDynamics,
+            "/sim_camera_renderer_node/set_sim_camera_dynamics",
         )
         self.release_sim_uvms_client = self.node.create_client(
             Trigger,
@@ -660,8 +669,8 @@ class Robot(Base):
         self.ik_base_align_w = 0.0
 
         self.traj_path_poses = []
-        self.max_traj_pose_count = 2000  # cap RViz message size
-        self.path_publish_period = 0.1  # seconds between stored poses
+        self.max_traj_pose_count = 500  # cap RViz message size
+        self.path_publish_period = 0.25  # seconds between stored poses
         self._last_path_pub_time = None
         self._path_recording_enabled = True
         self.task_pose_in_world = None
@@ -682,26 +691,26 @@ class Robot(Base):
             self.has_joystick_interface = True
         else:
             self.node.get_logger().info(f"No joystick device found for robot {self.k_robot}.")
-        self.robot_path_pub_timer = self.node.create_timer(1.0 / 60.0, self.publish_robot_path_callback)
+        self.robot_path_pub_timer = self.node.create_timer(self.path_publish_period, self.publish_robot_path_callback)
 
         # Always visualize the plan if planner exists
         if self.planner is not None:
-            self.planner_viz_timer = self.node.create_timer(1.0 / 60.0, self.planner_viz_callback)
+            self.planner_viz_timer = self.node.create_timer(1.0 / 10.0, self.planner_viz_callback)
 
         # Trajectory-related timers only if both exist
         if self.planner is not None and self.vehicle_cart_traj is not None:
             self.traj_sampler_timer = self.node.create_timer(1.0 / 60.0, self.com_trajectory_sampler_callback)
-            self.trajectory_viz_timer = self.node.create_timer(1.0 / 60.0, self.trajectory_viz_callback)
+            self.trajectory_viz_timer = self.node.create_timer(1.0 / 20.0, self.trajectory_viz_callback)
 
         # one loop publishes
         self.control_loop_timer = self.node.create_timer(1.0 / 150.0, self.control_loop_callback)
 
         # joystick updates memory only (no publish inside)
-        self.joystick_read_timer = self.node.create_timer(1.0/60.0, self.joystick_read_callback)
+        self.joystick_read_timer = self.node.create_timer(1.0 / 30.0, self.joystick_read_callback)
 
         # Define a threshold error at which we start yaw blending.
         self.pos_blend_threshold = 1.1
-        self.world_task_pose_timer = self.node.create_timer(1.0 / 60.0, self.world_robot_task_pose_callback)
+        self.world_task_pose_timer = self.node.create_timer(1.0 / 20.0, self.world_robot_task_pose_callback)
 
         # ---------------- Control Space ----------------
         self.control_space = ControlSpace.JOINT_SPACE
@@ -1470,7 +1479,8 @@ class Robot(Base):
         self._last_path_pub_time = stamp_time
 
         tra_path_msg = Path()
-        tra_path_msg.header.stamp = now_msg
+        # Keep visualization paths stamp-less so RViz uses the latest TF instead of
+        # intermittently dropping history when transforms lag during heavy loads.
         tra_path_msg.header.frame_id = self.map_frame
 
         # Create PoseStamped from ref_pos
@@ -2512,6 +2522,58 @@ class Robot(Base):
     def list_dynamics_profiles(self) -> list[str]:
         return list_robot_dynamics_profiles()
 
+    def _apply_camera_profile_dynamics(
+        self,
+        camera_dynamics,
+        profile_name: str,
+        on_success=None,
+        on_failure=None,
+        required: bool = False,
+    ) -> None:
+        if camera_dynamics is None:
+            if on_success is not None:
+                on_success()
+            return
+
+        service_name = "/sim_camera_renderer_node/set_sim_camera_dynamics"
+        if not self.camera_dynamics_client.wait_for_service(timeout_sec=0.2):
+            self.node.get_logger().warn(f"camera dynamics service {service_name} is not ready.")
+            if required and on_failure is not None:
+                on_failure()
+            elif not required and on_success is not None:
+                on_success()
+            return
+
+        request = SetSimCameraDynamics.Request()
+        request.camera = camera_dynamics
+        future = self.camera_dynamics_client.call_async(request)
+
+        def _done_callback(done_future) -> None:
+            try:
+                response = done_future.result()
+            except Exception as exc:
+                self.node.get_logger().error(f"camera profile settings from '{profile_name}' failed: {exc}")
+                if required and on_failure is not None:
+                    on_failure()
+                elif not required and on_success is not None:
+                    on_success()
+                return
+
+            if response is not None and response.success:
+                self.node.get_logger().info(f"camera profile settings from '{profile_name}' applied.")
+                if on_success is not None:
+                    on_success()
+                return
+
+            message = "" if response is None else response.message
+            self.node.get_logger().warn(f"camera profile settings from '{profile_name}' rejected: {message}")
+            if required and on_failure is not None:
+                on_failure()
+            elif not required and on_success is not None:
+                on_success()
+
+        future.add_done_callback(_done_callback)
+
     def apply_dynamics_profile(self, profile_name: str, on_success=None, on_failure=None) -> None:
         profile = load_robot_dynamics_profile(profile_name, self.node)
         if not is_valid_robot_dynamics_profile(profile):
@@ -2519,11 +2581,28 @@ class Robot(Base):
                 on_failure()
             return
 
-        request = set_dynamics_request_from_profile(
-            profile,
-            include_vehicle=("real" not in self.prefix),
-        )
+        try:
+            request = set_dynamics_request_from_profile(
+                profile,
+                include_vehicle=("real" not in self.prefix),
+            )
+            camera_dynamics = camera_dynamics_from_profile(profile)
+        except Exception as exc:
+            self.node.get_logger().error(f"[{self.prefix}] dynamics profile '{profile_name}' is invalid: {exc}")
+            if on_failure is not None:
+                on_failure()
+            return
+
         if not (request.set_manipulator_dynamics or request.set_vehicle_dynamics):
+            if camera_dynamics is not None:
+                self._apply_camera_profile_dynamics(
+                    camera_dynamics,
+                    profile_name,
+                    on_success=on_success,
+                    on_failure=on_failure,
+                    required=True,
+                )
+                return
             self.node.get_logger().warn(
                 f"[{self.prefix}] dynamics profile '{profile_name}' has no applicable parameter sections."
             )
@@ -2554,8 +2633,13 @@ class Robot(Base):
                 self.node.get_logger().info(
                     f"[{self.prefix}] dynamics profile '{profile_name}' applied: {response.message}"
                 )
-                if on_success is not None:
-                    on_success()
+                self._apply_camera_profile_dynamics(
+                    camera_dynamics,
+                    profile_name,
+                    on_success=on_success,
+                    on_failure=on_failure,
+                    required=False,
+                )
                 return
 
             message = "" if response is None else response.message
@@ -2608,7 +2692,6 @@ class Robot(Base):
         self.traj_path_poses = []
         self._last_path_pub_time = None
         clear_msg = Path()
-        clear_msg.header.stamp = self.node.get_clock().now().to_msg()
         clear_msg.header.frame_id = self.map_frame
         self.trajectory_path_publisher.publish(clear_msg)
 

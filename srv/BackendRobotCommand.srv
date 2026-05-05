@@ -1,0 +1,10 @@
+# Generic backend command for robot-scoped controls.
+int32 robot_index
+string command
+string name
+int32 index
+float64 scalar
+float64[3] vector3
+---
+bool success
+string message

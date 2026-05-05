@@ -1,0 +1,7 @@
+# Backend command for vehicle waypoint missions.
+int32 robot_index
+string command
+int32 waypoint_index
+---
+bool success
+string message
