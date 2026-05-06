@@ -19,6 +19,7 @@ from functools import partial
 from scipy.spatial.transform import Rotation as R
 from rclpy.node import Node
 from simlab.fcl_checker import FCLWorld
+from simlab.planner_world import PlannerWorld
 try:
     from ompl import base as ob
     from ompl import geometric as og
@@ -37,7 +38,7 @@ class OmplPlanner():
                  max_abs_pitch=np.deg2rad(11.0),  # 11 degrees
                  ):
         self.rclpy_node = rclpy_node
-        fcl_world = self._resolve_fcl_world(self.rclpy_node)
+        planner_world = self._resolve_planner_world(self.rclpy_node)
         self.space = ob.SE3StateSpace()
 
         # Bounds from FCL world AABB plus padding
@@ -59,7 +60,7 @@ class OmplPlanner():
         checker = ob.StateValidityCheckerFn(
             partial(
                 self._valid_with_fcl,
-                fcl_world,
+                planner_world,
                 float(safety_margin),
                 x_min,
                 x_max,
@@ -128,7 +129,7 @@ class OmplPlanner():
 
     def _valid_with_fcl(
         self,
-        fcl_world: FCLWorld,
+        planner_world: PlannerWorld,
         safety_margin: float,
         x_min: float,
         x_max: float,
@@ -154,11 +155,9 @@ class OmplPlanner():
         pw = np.array([x, y, z], float)
 
         if safety_margin is not None and safety_margin > 0.0:
-            d = fcl_world.min_distance_xyz(pw)
-            return d >= safety_margin
-        else:
-            in_collision = fcl_world.planner_in_collision_at_xyz(pw)
-            return not in_collision
+            return planner_world.is_state_valid_xyz(pw, safety_margin=safety_margin)
+
+        return planner_world.is_state_valid_xyz(pw)
 
 
     def _resolve_fcl_world(self, rclpy_node: Node) -> FCLWorld:
@@ -173,6 +172,11 @@ class OmplPlanner():
             "FCL world is unavailable. Expected rclpy_node.fcl_world "
             "or rclpy_node.uvms_backend.fcl_world."
         )
+
+    def _resolve_planner_world(self, rclpy_node: Node) -> PlannerWorld:
+        if hasattr(rclpy_node, "planner_world") and getattr(rclpy_node, "planner_world") is not None:
+            return rclpy_node.planner_world
+        return PlannerWorld(fcl_world=self._resolve_fcl_world(rclpy_node))
 
     def _get_path_length_objective(self, si: ob.SpaceInformation, threshold: float | None = None):
         obj = ob.PathLengthOptimizationObjective(si)

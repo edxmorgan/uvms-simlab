@@ -52,7 +52,7 @@ from simlab.planner_markers import PathPlanner
 from simlab.cartesian_ruckig import VehicleCartesianRuckig
 from ruckig import Result
 from simlab.uvms_parameters import ReachParams
-from simlab.frame_utils import PoseX
+from simlab.utils.frames import PoseX
 from tf2_ros import TransformException, Buffer
 from tf2_geometry_msgs import do_transform_pose, do_transform_vector3
 from typing import Optional
@@ -579,6 +579,7 @@ class Robot(Base):
             on_result=self._on_planner_action_result,
         )
         self._accept_planner_results = True
+        self._preserve_active_plan_on_failure = False
         self.reference_pub = ReferenceTargetPublisher(
             self.node,
             self.prefix,
@@ -1696,10 +1697,10 @@ class Robot(Base):
             )
             return
 
-        if self.planner is not None:
-            self.planner.planned_result = dict(plan_result)
-
         if plan_result.get("is_success", False):
+            if self.planner is not None:
+                self.planner.planned_result = dict(plan_result)
+            self._preserve_active_plan_on_failure = False
             self.node.get_logger().info(
                 f"Planner action produced {int(plan_result.get('count', 0))} waypoints for {self.prefix}"
             )
@@ -1708,10 +1709,17 @@ class Robot(Base):
             self._start_vehicle_cartesian_ruckig(self.start_xyz, self.start_quat_wxyz, path_xyz)
             self.enable_planner_output()
         else:
+            if not self._preserve_active_plan_on_failure and self.planner is not None:
+                self.planner.planned_result = dict(plan_result)
             self.node.get_logger().warn(
                 f"Planner action failed for {self.prefix}, "
                 f"message='{plan_result.get('message', '')}'"
             )
+            if self._preserve_active_plan_on_failure:
+                self.node.get_logger().warn(
+                    f"Keeping active trajectory for {self.prefix} after failed non-destructive replan."
+                )
+            self._preserve_active_plan_on_failure = False
 
     def _start_vehicle_cartesian_ruckig(self, start_xyz, start_quat_wxyz, path_xyz: np.ndarray) -> None:
         self.vehicle_cart_traj.start_from_path(
@@ -1728,6 +1736,7 @@ class Robot(Base):
         *,
         time_limit: float = 1.0,
         robot_collision_radius: float = 0.4,
+        preempt_current: bool = True,
     ) -> bool:
         if self._replay_is_active():
             self.abrupt_planner_stop()
@@ -1747,9 +1756,12 @@ class Robot(Base):
         if pose_now is None:
             self.node.get_logger().warn("Planner action request was not sent, current pose unavailable.")
             return False
-        self.abrupt_planner_stop(publish_zero=False)
+        if preempt_current:
+            self.abrupt_planner_stop(publish_zero=False)
         self._accept_planner_results = True
-        self.hold_current_state_with_feedback()
+        self._preserve_active_plan_on_failure = not preempt_current
+        if preempt_current:
+            self.hold_current_state_with_feedback()
 
         self.start_xyz, self.start_quat_wxyz = self._pose_to_xyz_quat_wxyz(pose_now)
 
@@ -1775,6 +1787,7 @@ class Robot(Base):
             )
         else:
             self.node.get_logger().warn("Planner action request was not sent.")
+            self._preserve_active_plan_on_failure = False
         return sent
 
     def planner_viz_callback(self):
@@ -2651,15 +2664,19 @@ class Robot(Base):
 
         future.add_done_callback(_done_callback)
 
-    def release_simulation(self) -> None:
+    def release_simulation(self, on_success=None, on_failure=None) -> None:
         previous_hold = self.sim_reset_hold
 
         def _on_release_success():
             self.sim_reset_hold = False
             self._path_recording_enabled = True
+            if on_success is not None:
+                on_success()
 
         def _on_release_failure():
             self.sim_reset_hold = previous_hold
+            if on_failure is not None:
+                on_failure()
 
         self._call_uvms_service(
             client=self.release_sim_uvms_client,
@@ -2789,10 +2806,15 @@ class Robot(Base):
         self.body_vel_command = [0.0]*6
         self.body_acc_command = [0.0]*6
 
-    def hold_current_state_with_feedback(self) -> None:
-        """Hold the measured state with the selected feedback controller."""
+    def hold_pose_with_feedback(self, pose_ned_6: Sequence[float] | None = None) -> None:
+        """Hold a NED vehicle pose and current arm state with the selected feedback controller."""
         st = self.get_state()
-        pose = np.asarray(st["pose"], dtype=float).copy()
+        pose = np.asarray(st["pose"] if pose_ned_6 is None else pose_ned_6, dtype=float).copy()
+        if pose.size != 6:
+            self.node.get_logger().warn(
+                f"Feedback hold target ignored for {self.prefix}; expected 6D vehicle pose, got {pose.size}."
+            )
+            pose = np.asarray(st["pose"], dtype=float).copy()
         if pose.size >= 5:
             pose[3] = 0.0  # roll
             pose[4] = 0.0  # pitch
@@ -2803,6 +2825,10 @@ class Robot(Base):
         self.arm.dq_command = np.zeros((4,), dtype=float).tolist()
         self.arm.ddq_command = np.zeros((4,), dtype=float).tolist()
         self.enable_planner_output()
+
+    def hold_current_state_with_feedback(self) -> None:
+        """Hold the measured state with the selected feedback controller."""
+        self.hold_pose_with_feedback()
 
     def control_loop_callback(self):
         state = self.get_state()

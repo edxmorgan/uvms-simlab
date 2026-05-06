@@ -7,7 +7,9 @@ from simlab.action import PlanVehicle
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import SingleThreadedExecutor
 import tf2_ros
+from simlab.dynamic_world import DynamicWorldModel
 from simlab.fcl_checker import FCLWorld
+from simlab.planner_world import PlannerWorld
 from simlab.shutdown import install_signal_shutdown_handler, spin_until_shutdown
 from simlab.planners import DEFAULT_PLANNER_CLASSES
 
@@ -31,6 +33,15 @@ class PlannerActionServer(Node):
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
         self.fcl_world = FCLWorld(urdf_string=urdf_string, world_frame=self.world_frame, vehicle_radius=0.4)
+        self.dynamic_world = DynamicWorldModel(
+            self,
+            world_frame=self.world_frame,
+            robot_radius_provider=lambda: self.fcl_world.vehicle_radius,
+        )
+        self.planner_world = PlannerWorld(
+            fcl_world=self.fcl_world,
+            dynamic_world=self.dynamic_world,
+        )
         self._fcl_ok = False
 
         self.get_logger().info(
@@ -143,6 +154,7 @@ class PlannerActionServer(Node):
             f"radius={req.robot_collision_radius:.3f} "
             f"start_xyz={list(req.start_xyz)} goal_xyz={list(req.goal_xyz)} "
             f"env_bounds={list(self.env_bounds)} "
+            f"dynamic_obstacles={len(self.dynamic_world.obstacles)} "
             f"safety_margin={self.safety_margin:.4f}"
         )
 

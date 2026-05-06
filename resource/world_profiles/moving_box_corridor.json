@@ -1,0 +1,21 @@
+{
+  "frame_id": "world",
+  "obstacles": [
+    {
+      "id": "moving_box_low",
+      "type": "box",
+      "dimensions": [0.45, 0.35, 0.35],
+      "position": [2.0, -1.0, -1.2],
+      "linear_velocity": [0.0, 0.06, 0.0],
+      "color": [0.10, 0.72, 0.92, 0.70]
+    },
+    {
+      "id": "moving_box_high",
+      "type": "box",
+      "dimensions": [0.45, 0.35, 0.35],
+      "position": [3.2, 1.0, -0.8],
+      "linear_velocity": [0.0, -0.06, 0.0],
+      "color": [0.10, 0.72, 0.92, 0.70]
+    }
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "frame_id": "world",
+  "obstacles": [
+    {
+      "id": "static_sphere_left",
+      "type": "sphere",
+      "dimensions": [0.30],
+      "position": [1.5, -0.8, -1.0],
+      "color": [0.95, 0.42, 0.12, 0.75]
+    },
+    {
+      "id": "static_sphere_center",
+      "type": "sphere",
+      "dimensions": [0.25],
+      "position": [2.6, 0.0, -1.1],
+      "color": [0.95, 0.68, 0.18, 0.75]
+    },
+    {
+      "id": "static_sphere_right",
+      "type": "sphere",
+      "dimensions": [0.30],
+      "position": [3.7, 0.8, -1.0],
+      "color": [0.95, 0.42, 0.12, 0.75]
+    }
+  ]
+}

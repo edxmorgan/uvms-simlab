@@ -1,0 +1,22 @@
+# World-level backend command. This is intentionally not robot-scoped.
+string command
+string name
+int32 robot_index
+
+# Optional dynamic replanning controls used by set_dynamic_replanning.
+# Leave numeric fields <= 0 to keep the current value.
+bool enabled
+float64 rate
+float64 cooldown
+float64 lookahead_time
+float64 safety_margin
+float64 replan_hysteresis
+
+# Optional path-aware obstacle controls used by spawn_path_obstacle.
+# distance_ahead <= 0 uses the backend default.
+# radius <= 0 uses the backend default.
+float64 distance_ahead
+float64 radius
+---
+bool success
+string message

@@ -18,6 +18,7 @@ set(msg_files
 
 set(srv_files
   "srv/BackendRobotCommand.srv"
+  "srv/BackendWorldCommand.srv"
   "srv/BackendPoseCommand.srv"
   "srv/BackendWaypointCommand.srv"
 )
@@ -68,10 +69,18 @@ install(
     resource/whole_body
     resource/playback_profile
     resource/dynamics_profiles
+    resource/world_profiles
   DESTINATION share/${PROJECT_NAME}
 )
 
 install(FILES package.xml DESTINATION share/${PROJECT_NAME})
+
+if(BUILD_TESTING)
+  find_package(ament_cmake_pytest REQUIRED)
+  ament_add_pytest_test(test_world_profiles test/test_world_profiles.py)
+  ament_add_pytest_test(test_planner_world test/test_planner_world.py)
+  ament_add_pytest_test(test_dynamic_replanner test/test_dynamic_replanner.py)
+endif()
 
 ament_export_dependencies(rosidl_default_runtime geometry_msgs std_msgs)
 ament_package()
