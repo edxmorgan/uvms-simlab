@@ -23,7 +23,7 @@ from simlab.shutdown import install_signal_shutdown_handler, shutdown_node, spin
 from sensor_msgs.msg import PointCloud2
 import trimesh
 from ament_index_python.packages import get_package_share_directory
-from simlab.mesh_utils import collect_env_meshes, conc_env_trimesh, points_to_cloud2
+from simlab.utils.meshes import collect_env_meshes, conc_env_trimesh, points_to_cloud2
 
 class VoxelVizNode(Node):
     def __init__(self):

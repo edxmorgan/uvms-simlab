@@ -172,6 +172,7 @@ simlab/
 ├── simlab/interactive_control.py     # RViz markers + menus
 ├── simlab/vehicle_waypoint_mission.py# Vehicle waypoint queue state + RViz waypoint markers
 ├── simlab/controllers/               # One controller class per file
+├── simlab/utils/                     # Shared geometry, frame, mesh, marker, and path-obstacle helpers
 ├── simlab/uvms_parameters.py         # Shared manipulator and vehicle controller parameters
 ├── simlab/se3_ompl_planner.py        # OMPL SE(3) planning
 ├── simlab/cartesian_ruckig.py        # Ruckig trajectory generation

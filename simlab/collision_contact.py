@@ -5,7 +5,7 @@ import rclpy
 from rclpy.node import Node
 from tf2_ros import Buffer, TransformListener
 from visualization_msgs.msg import Marker
-from simlab.mesh_utils import make_marker, color, collect_env_meshes
+from simlab.utils.meshes import make_marker, color, collect_env_meshes
 from simlab.fcl_checker import FCLWorld
 from simlab.shutdown import install_signal_shutdown_handler, shutdown_node, spin_until_shutdown
 

@@ -17,9 +17,11 @@
   <exec_depend>rosidl_default_runtime</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_cmake_pytest</test_depend>
   <test_depend>ament_flake8</test_depend>
   <test_depend>ament_pep257</test_depend>
   <test_depend>python3-pytest</test_depend>
+  <test_depend>ros2_control_blue_reach_5</test_depend>
 
   <exec_depend>rclpy</exec_depend>
   <exec_depend>std_srvs</exec_depend>

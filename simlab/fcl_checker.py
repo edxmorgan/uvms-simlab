@@ -2,7 +2,7 @@
 import numpy as np
 import fcl
 from typing import Dict, Tuple
-from simlab.mesh_utils import fcl_bvh_from_mesh, collect_env_meshes, conc_env_trimesh, getAABB_OBB
+from simlab.utils.meshes import fcl_bvh_from_mesh, collect_env_meshes, conc_env_trimesh, getAABB_OBB
 
 class FCLWorld:
     """

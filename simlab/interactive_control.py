@@ -24,11 +24,11 @@ from simlab.uvms_backend import UVMSBackendCore
 from visualization_msgs.msg import InteractiveMarkerControl, InteractiveMarkerFeedback
 from interactive_markers.interactive_marker_server import InteractiveMarkerServer
 from interactive_markers.menu_handler import MenuHandler
-from simlab import interactive_utils as marker_util
+from simlab.utils import interactive_markers as marker_util
 from geometry_msgs.msg import Pose
 import numpy as np
 from simlab.uvms_parameters import ReachParams
-from simlab.frame_utils import PoseX
+from simlab.utils.frames import PoseX
 from simlab.robot import Robot, ControlSpace
 
 class InteractiveControlsNode(Node):
