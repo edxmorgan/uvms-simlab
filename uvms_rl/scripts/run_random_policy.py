@@ -24,7 +24,8 @@ def main() -> None:
 
     env = UvmsBatchEnv(
         robot_count=int(env_cfg.get("robot_count", 1024)),
-        dt=float(env_cfg.get("dt", 0.01)),
+        control_dt=float(env_cfg.get("control_dt", env_cfg.get("dt", 0.01))),
+        sim_dt=float(env_cfg.get("sim_dt", env_cfg.get("control_dt", env_cfg.get("dt", 0.01)))),
         max_episode_steps=int(env_cfg.get("max_episode_steps", 500)),
         seed=env_cfg.get("seed"),
         task=task_name,
@@ -38,7 +39,8 @@ def main() -> None:
         obs, rewards, dones, info = env.step(actions)
 
     print("task", task_name)
-    print("dt", env.dt, "hz", 1.0 / env.dt)
+    print("control_dt", env.control_dt, "control_hz", 1.0 / env.control_dt)
+    print("sim_dt", env.sim_dt, "sim_hz", 1.0 / env.sim_dt, "substeps", env.substeps)
     print("policy_obs", obs.shape)
     print("reward", rewards.shape, "mean", float(np.mean(rewards)), "first5envs", rewards[:5])
     print("done", dones.shape, "rate", float(np.mean(dones)), "first5envs", dones[:5])

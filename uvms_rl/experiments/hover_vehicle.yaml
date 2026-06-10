@@ -1,6 +1,7 @@
 env:
   robot_count: 1024
-  dt: 0.006666666666666667
+  control_dt: 0.006666666666666667
+  sim_dt: 0.006666666666666667
   max_episode_steps: 500
   seed: 7
 

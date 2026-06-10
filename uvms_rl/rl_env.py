@@ -24,6 +24,9 @@ class UvmsBatchInfo:
     tick_id: int
     sim_time: float
     step_count: float
+    control_dt: float
+    sim_dt: float
+    substeps: int
     task: dict[str, Any] = field(default_factory=dict)
 
 
@@ -40,8 +43,10 @@ class UvmsBatchEnv:
     def __init__(
         self,
         robot_count: int,
-        dt: float = 0.01,
+        dt: float | None = 0.01,
         *,
+        control_dt: float | None = None,
+        sim_dt: float | None = None,
         max_episode_steps: int = 500,
         seed: int | None = None,
         task: str | TaskBase | None = None,
@@ -49,13 +54,28 @@ class UvmsBatchEnv:
     ):
         if robot_count < 1:
             raise ValueError("robot_count must be at least 1")
-        if dt <= 0.0:
-            raise ValueError("dt must be positive")
+        if control_dt is None:
+            control_dt = 0.01 if dt is None else dt
+        if sim_dt is None:
+            sim_dt = control_dt
+        if control_dt <= 0.0:
+            raise ValueError("control_dt must be positive")
+        if sim_dt <= 0.0:
+            raise ValueError("sim_dt must be positive")
+        if sim_dt > control_dt:
+            raise ValueError("sim_dt must be less than or equal to control_dt")
+        substeps_float = control_dt / sim_dt
+        substeps = int(round(substeps_float))
+        if substeps < 1 or not np.isclose(substeps * sim_dt, control_dt, rtol=1e-7, atol=1e-12):
+            raise ValueError("control_dt must be an integer multiple of sim_dt")
         if max_episode_steps < 1:
             raise ValueError("max_episode_steps must be at least 1")
 
         self.robot_count = int(robot_count)
-        self.dt = float(dt)
+        self.control_dt = float(control_dt)
+        self.sim_dt = float(sim_dt)
+        self.substeps = int(substeps)
+        self.dt = self.control_dt
         self.max_episode_steps = int(max_episode_steps)
         self.rng = np.random.default_rng(seed)
         self.episode_steps = np.zeros(self.robot_count, dtype=np.int32)
@@ -95,7 +115,8 @@ class UvmsBatchEnv:
             )
         self._tick_id += 1
         self._core.set_actions(action_array, self._tick_id)
-        self._core.step(self.dt)
+        for _ in range(self.substeps):
+            self._core.step(self.sim_dt)
         self.episode_steps += 1
 
         sim_obs = self.sim_observations()
@@ -139,5 +160,8 @@ class UvmsBatchEnv:
             tick_id=int(self._core.tick_id),
             sim_time=float(self._core.sim_time),
             step_count=float(self._core.step_count),
+            control_dt=self.control_dt,
+            sim_dt=self.sim_dt,
+            substeps=self.substeps,
             task=dict(self._last_task_info if task_info is None else task_info),
         )
