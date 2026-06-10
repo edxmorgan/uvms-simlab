@@ -1,0 +1,26 @@
+env:
+  robot_count: 1024
+  dt: 0.006666666666666667
+  max_episode_steps: 500
+  seed: 7
+
+task:
+  name: hover_vehicle
+  target_x: [-2.0, 2.0]
+  target_y: [-2.0, 2.0]
+  target_z: [-1.5, -0.2]
+  target_yaw: [-3.14159265, 3.14159265]
+  initial_xyz_noise: 2.0
+  initial_yaw_noise: 3.14159265
+  initial_velocity_noise: 0.05
+  success_position_tolerance: 0.15
+  success_yaw_tolerance: 0.15
+  success_streak_steps: 10
+  out_of_bounds_radius: 10.0
+  position_weight: 2.0
+  yaw_weight: 0.5
+  linear_velocity_weight: 0.1
+  angular_velocity_weight: 0.05
+  action_weight: 0.01
+  success_bonus: 10.0
+  out_of_bounds_penalty: 10.0
