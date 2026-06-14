@@ -7,21 +7,20 @@ import argparse
 import numpy as np
 
 from uvms_rl import UvmsBatchEnv
-from uvms_rl.config import load_experiment_config
+from uvms_rl.config import load_experiment
 from uvms_rl.tensor import as_numpy
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="hover_vehicle", help="Packaged config name or YAML path")
+    parser.add_argument("--config", default="hover_vehicle", help="Packaged experiment name or experiment folder")
     parser.add_argument("--steps", type=int, default=100)
     parser.add_argument("--action-scale", type=float, default=0.2)
     args = parser.parse_args()
 
-    config = load_experiment_config(args.config)
-    env_cfg = config.get("env", {})
-    task_cfg = config.get("task", {})
-    task_name = task_cfg.get("name", "hover_vehicle")
+    experiment = load_experiment(args.config)
+    env_cfg = experiment.config.get("env", {})
+    task_cfg = experiment.config.get("task", {})
 
     env = UvmsBatchEnv(
         robot_count=int(env_cfg.get("robot_count", 1024)),
@@ -29,7 +28,7 @@ def main() -> None:
         sim_dt=float(env_cfg.get("sim_dt", env_cfg.get("control_dt", env_cfg.get("dt", 0.01)))),
         max_episode_steps=int(env_cfg.get("max_episode_steps", 500)),
         seed=env_cfg.get("seed"),
-        task=task_name,
+        task=experiment.task_cls,
         task_config=task_cfg,
         backend=str(env_cfg.get("backend", "cpu")),
     )
@@ -40,7 +39,8 @@ def main() -> None:
         actions = rng.uniform(-args.action_scale, args.action_scale, size=(env.robot_count, env.action_dim)).astype(np.float32)
         obs, rewards, dones, info = env.step(actions)
 
-    print("task", task_name)
+    print("experiment", experiment.name)
+    print("task", experiment.task_cls.__name__)
     print("backend", env.backend)
     print("control_dt", env.control_dt, "control_hz", 1.0 / env.control_dt)
     print("sim_dt", env.sim_dt, "sim_hz", 1.0 / env.sim_dt, "substeps", env.substeps)

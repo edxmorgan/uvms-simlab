@@ -6,7 +6,7 @@ from typing import Any
 
 import numpy as np
 
-from uvms_rl.tasks.base import TaskBase
+from uvms_rl.task_base import TaskBase
 from uvms_rl.tensor import is_torch_tensor
 
 
@@ -211,3 +211,6 @@ class HoverVehicleTask(TaskBase):
             "out_of_bounds_rate": float(torch.mean(out_of_bounds.to(torch.float32)).detach().cpu().item()),
         }
         return reward, done, info
+
+
+Task = HoverVehicleTask

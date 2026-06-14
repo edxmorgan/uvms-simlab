@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from uvms_rl import UvmsBatchEnv
+from uvms_rl.config import load_experiment
 from uvms_rl.tensor import as_numpy, torch_available
 
 
@@ -31,12 +32,14 @@ def _gpu_available():
 
 
 def test_cpu_uvms_rl_hover_vehicle_shapes_and_types():
+    experiment = load_experiment("hover_vehicle")
     env = UvmsBatchEnv(
         robot_count=16,
         control_dt=1.0 / 150.0,
         sim_dt=1.0 / 150.0,
         seed=7,
-        task="hover_vehicle",
+        task=experiment.task_cls,
+        task_config=experiment.config["task"],
         backend="cpu",
     )
 
@@ -60,12 +63,14 @@ def test_cpu_uvms_rl_hover_vehicle_shapes_and_types():
 def test_gpu_uvms_rl_hover_vehicle_returns_cuda_tensors():
     import torch
 
+    experiment = load_experiment("hover_vehicle")
     env = UvmsBatchEnv(
         robot_count=16,
         control_dt=1.0 / 150.0,
         sim_dt=1.0 / 150.0,
         seed=7,
-        task="hover_vehicle",
+        task=experiment.task_cls,
+        task_config=experiment.config["task"],
         backend="gpu",
     )
 
@@ -96,13 +101,15 @@ def test_cpu_gpu_uvms_rl_hover_vehicle_parity():
     dt = 1.0 / 150.0
     init_obs = _initial_observations(robot_count)
     actions = _actions(step_count, robot_count)
+    experiment = load_experiment("hover_vehicle")
 
     cpu = UvmsBatchEnv(
         robot_count=robot_count,
         control_dt=dt,
         sim_dt=dt,
         seed=9,
-        task="hover_vehicle",
+        task=experiment.task_cls,
+        task_config=experiment.config["task"],
         backend="cpu",
     )
     gpu = UvmsBatchEnv(
@@ -110,7 +117,8 @@ def test_cpu_gpu_uvms_rl_hover_vehicle_parity():
         control_dt=dt,
         sim_dt=dt,
         seed=9,
-        task="hover_vehicle",
+        task=experiment.task_cls,
+        task_config=experiment.config["task"],
         backend="gpu",
     )
 

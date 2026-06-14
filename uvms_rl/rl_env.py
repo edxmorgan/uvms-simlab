@@ -16,8 +16,7 @@ import numpy as np
 
 from ros2_control_blue_reach_5 import _batch_uvms_core
 from simlab.dynamics_profiles import load_robot_dynamics_profile, required_float, required_vector
-from uvms_rl.tasks.base import TaskBase
-from uvms_rl.tasks.registry import make_task
+from uvms_rl.task_base import TaskBase
 from uvms_rl.tensor import torch_available, torch_cuda_tensor_from_ptr
 
 
@@ -52,7 +51,7 @@ class UvmsBatchEnv:
         sim_dt: float | None = None,
         max_episode_steps: int = 500,
         seed: int | None = None,
-        task: str | TaskBase | None = None,
+        task: type[TaskBase] | TaskBase | None = None,
         task_config: dict[str, Any] | None = None,
         backend: str = "cpu",
         dynamics_profile: str | dict[str, Any] | None = "dory_alpha",
@@ -110,8 +109,13 @@ class UvmsBatchEnv:
 
         task_config_with_shape = dict(task_config or {})
         task_config_with_shape["action_dim"] = self.action_dim
-        if isinstance(task, str):
-            self.task = make_task(task, robot_count=self.robot_count, config=task_config_with_shape, seed=seed)
+        if isinstance(task, type) and issubclass(task, TaskBase):
+            self.task = task(robot_count=self.robot_count, config=task_config_with_shape, seed=seed)
+        elif isinstance(task, str):
+            raise TypeError(
+                "UvmsBatchEnv no longer loads tasks by registry name. "
+                "Use uvms_rl.config.load_experiment(...) and pass experiment.task_cls."
+            )
         else:
             self.task = task
         self.policy_observation_dim = (

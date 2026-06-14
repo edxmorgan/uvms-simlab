@@ -7,7 +7,6 @@ env:
   seed: 7
 
 task:
-  name: hover_vehicle
   target_x: [-2.0, 2.0]
   target_y: [-2.0, 2.0]
   target_z: [-1.5, -0.2]
