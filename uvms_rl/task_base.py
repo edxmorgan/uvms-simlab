@@ -27,6 +27,11 @@ class TaskBase(ABC):
     def reset(self, env) -> np.ndarray:
         """Return initial raw simulator observations with shape [N, 22]."""
 
+    def reset_indices(self, env, indices: np.ndarray) -> np.ndarray:
+        """Return reset raw simulator observations for selected environment rows."""
+
+        raise NotImplementedError(f"{type(self).__name__} does not implement partial reset")
+
     @abstractmethod
     def policy_observation(self, env, sim_obs: np.ndarray, actions: np.ndarray) -> np.ndarray:
         """Map raw simulator observations to task-relative policy observations."""

@@ -31,6 +31,14 @@ def _gpu_available():
     return importlib.util.find_spec("ros2_control_blue_reach_5._batch_uvms_gpu_core") is not None
 
 
+def _rsl_rl_available():
+    return (
+        importlib.util.find_spec("rsl_rl") is not None
+        and importlib.util.find_spec("tensordict") is not None
+        and importlib.util.find_spec("torch") is not None
+    )
+
+
 def test_cpu_uvms_rl_hover_vehicle_shapes_and_types():
     experiment = load_experiment("hover_vehicle")
     env = UvmsBatchEnv(
@@ -57,6 +65,48 @@ def test_cpu_uvms_rl_hover_vehicle_shapes_and_types():
     assert dones.dtype == bool
     assert info.backend == "cpu"
     assert info.tick_id == 2
+
+
+@pytest.mark.skipif(not _rsl_rl_available(), reason="RSL-RL training dependencies are not installed")
+def test_rsl_adapter_returns_tensordict_and_same_step_reset():
+    import torch
+
+    from uvms_rl.rsl_adapter import RslRlUvmsEnv
+
+    experiment = load_experiment("hover_vehicle")
+    env = UvmsBatchEnv(
+        robot_count=8,
+        control_dt=1.0 / 150.0,
+        sim_dt=1.0 / 150.0,
+        max_episode_steps=3,
+        seed=7,
+        task=experiment.task_cls,
+        task_config=experiment.config["task"],
+        backend="cpu",
+    )
+    rsl_env = RslRlUvmsEnv(env)
+
+    obs = rsl_env.get_observations()
+    assert set(obs.keys()) == {"policy"}
+    assert tuple(obs["policy"].shape) == (8, 31)
+    assert rsl_env.num_envs == 8
+    assert rsl_env.num_actions == env.action_dim
+    assert rsl_env.device == torch.device("cpu")
+    rsl_env.episode_length_buf.fill_(2)
+
+    actions = torch.zeros((8, env.action_dim), dtype=torch.float32)
+    next_obs, rewards, dones, extras = rsl_env.step(actions)
+
+    assert set(next_obs.keys()) == {"policy"}
+    assert tuple(next_obs["policy"].shape) == (8, 31)
+    assert tuple(rewards.shape) == (8,)
+    assert rewards.dtype == torch.float32
+    assert tuple(dones.shape) == (8,)
+    assert dones.dtype == torch.bool
+    assert torch.all(dones)
+    assert torch.all(extras["time_outs"])
+    assert torch.all(rsl_env.episode_length_buf == 0)
+    assert "/uvms_rl/sim_time" in extras["log"]
 
 
 @pytest.mark.skipif(not _gpu_available(), reason="UVMS GPU backend is not available")

@@ -73,6 +73,7 @@ simlab_python_entrypoint(camera_viewer simlab.opencv_camera_viewer)
 simlab_python_entrypoint(plot_replay_session simlab.replay_session_plotter)
 simlab_python_entrypoint(replay_plot_node simlab.replay_plot_node)
 simlab_python_entrypoint(uvms_rl_random_policy uvms_rl.scripts.run_random_policy)
+simlab_python_entrypoint(uvms_rl_train_rsl uvms_rl.scripts.train_rsl)
 
 install(
   DIRECTORY

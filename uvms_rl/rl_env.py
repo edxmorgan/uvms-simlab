@@ -17,7 +17,7 @@ import numpy as np
 from ros2_control_blue_reach_5 import _batch_uvms_core
 from simlab.dynamics_profiles import load_robot_dynamics_profile, required_float, required_vector
 from uvms_rl.task_base import TaskBase
-from uvms_rl.tensor import torch_available, torch_cuda_tensor_from_ptr
+from uvms_rl.tensor import as_numpy, torch_available, torch_cuda_tensor_from_ptr
 
 
 @dataclass(frozen=True)
@@ -153,8 +153,14 @@ class UvmsBatchEnv:
 
         self._core.reset(bool(hold_commands), obs_arg)
         self._apply_dynamics_profile()
+        if observations is not None and self.task is not None and hasattr(self.task, "sync_reset_observations"):
+            self.task.sync_reset_observations(self, np.asarray(obs_arg, dtype=np.float32))
         self._tick_id = int(self._core.tick_id)
         if self.backend == "gpu":
+            if self.episode_steps.is_inference():
+                self.episode_steps = self.episode_steps.clone()
+            if self._previous_actions.is_inference():
+                self._previous_actions = self._previous_actions.clone()
             self.episode_steps.zero_()
             self._previous_actions.zero_()
             if self.task is not None and hasattr(self.task, "prepare_backend"):
@@ -239,6 +245,41 @@ class UvmsBatchEnv:
 
     def observations(self) -> np.ndarray:
         return self._policy_observations(self.sim_observations(), self._previous_actions)
+
+    def reset_done(self, dones) -> np.ndarray:
+        done_mask = as_numpy(dones).astype(bool, copy=False).reshape(-1)
+        if done_mask.shape != (self.robot_count,):
+            raise ValueError(f"dones must have shape {(self.robot_count,)}, got {done_mask.shape}")
+        indices = np.flatnonzero(done_mask)
+        if indices.size == 0:
+            return self.observations()
+        if self.task is None:
+            reset_rows = np.zeros((indices.size, self.observation_dim), dtype=np.float32)
+        else:
+            reset_rows = np.asarray(self.task.reset_indices(self, indices), dtype=np.float32)
+        if reset_rows.shape != (indices.size, self.observation_dim):
+            raise ValueError(
+                f"partial reset observations must have shape {(indices.size, self.observation_dim)}, "
+                f"got {reset_rows.shape}"
+            )
+
+        state = as_numpy(self.sim_observations()).astype(np.float32, copy=True)
+        state[indices] = reset_rows
+        self._core.set_observations(state)
+        if self.backend == "gpu":
+            import torch
+
+            torch_indices = torch.as_tensor(indices, dtype=torch.long, device=self.device)
+            if self.episode_steps.is_inference():
+                self.episode_steps = self.episode_steps.clone()
+            if self._previous_actions.is_inference():
+                self._previous_actions = self._previous_actions.clone()
+            self.episode_steps[torch_indices] = 0
+            self._previous_actions[torch_indices] = 0.0
+        else:
+            self.episode_steps[indices] = 0
+            self._previous_actions[indices] = 0.0
+        return self.observations()
 
     def rewards(self) -> np.ndarray:
         if self.backend == "gpu":
