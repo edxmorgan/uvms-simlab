@@ -1,4 +1,5 @@
 env:
+  backend: cpu
   robot_count: 1024
   control_dt: 0.006666666666666667
   sim_dt: 0.006666666666666667

@@ -380,6 +380,7 @@ class Manipulator(Base):
         self.ddq = [0]*n_joint
         self.sim_period = [0.0]
         self.effort = [0]*n_joint
+        self.grasper_effort = [0.0]
         self.alpha_axis_a = f'{prefix}_axis_a'
         self.alpha_axis_b = f'{prefix}_axis_b'
         self.alpha_axis_c = f'{prefix}_axis_c'
@@ -397,6 +398,7 @@ class Manipulator(Base):
         self.grasper_q = [0.0]
         self.grasper_q_dot = [0.0]
         self.grasper_q_ddot = [0.0]
+        self.grasper_effort = [0.0]
         self.close_grasper()
 
     def open_grasper(self):
@@ -446,9 +448,14 @@ class Manipulator(Base):
             self.grasper,
             [Axis_Interface_names.manipulator_estimation_acceleration]
         )
+        self.grasper_effort = self.get_interface_value(
+            msg,
+            self.grasper,
+            [Axis_Interface_names.manipulator_effort]
+        )
     def get_state(self) -> Dict[str, np.ndarray]:
         return {
-            'arm_effort':self.effort,
+            'arm_effort': list(self.effort) + list(self.grasper_effort),
             'grasper_q': self.grasper_q,
             'grasper_qdot': self.grasper_q_dot,
             'grasper_qddot': self.grasper_q_ddot,
@@ -2166,30 +2173,37 @@ class Robot(Base):
             "q_alpha_axis_d",
             "q_alpha_axis_c",
             "q_alpha_axis_b",
+            "q_alpha_axis_a",
             "dq_alpha_axis_e",
             "dq_alpha_axis_d",
             "dq_alpha_axis_c",
             "dq_alpha_axis_b",
+            "dq_alpha_axis_a",
             "ddq_alpha_axis_e",
             "ddq_alpha_axis_d",
             "ddq_alpha_axis_c",
             "ddq_alpha_axis_b",
+            "ddq_alpha_axis_a",
             "ref_alpha_axis_e",
             "ref_alpha_axis_d",
             "ref_alpha_axis_c",
             "ref_alpha_axis_b",
+            "ref_alpha_axis_a",
             "dref_alpha_axis_e",
             "dref_alpha_axis_d",
             "dref_alpha_axis_c",
             "dref_alpha_axis_b",
+            "dref_alpha_axis_a",
             "ddref_alpha_axis_e",
             "ddref_alpha_axis_d",
             "ddref_alpha_axis_c",
             "ddref_alpha_axis_b",
+            "ddref_alpha_axis_a",
             "effort_alpha_axis_e",
             "effort_alpha_axis_d",
             "effort_alpha_axis_c",
             "effort_alpha_axis_b",
+            "effort_alpha_axis_a",
             "cmd_tau_axis_e",
             "cmd_tau_axis_d",
             "cmd_tau_axis_c",
@@ -2274,8 +2288,11 @@ class Robot(Base):
         self._replay_last_recorded_sim_time = sim_time
 
         q = list(state.get("q", []))
+        q.extend(list(state.get("grasper_q", [])))
         dq = list(state.get("dq", []))
+        dq.extend(list(state.get("grasper_qdot", [])))
         ddq = list(state.get("ddq", []))
+        ddq.extend(list(state.get("grasper_qddot", [])))
         effort = list(state.get("arm_effort", []))
         pose = list(state.get("pose", []))
         body_vel = list(state.get("body_vel", []))
@@ -2314,30 +2331,37 @@ class Robot(Base):
                 "q_alpha_axis_d": at(q, 1),
                 "q_alpha_axis_c": at(q, 2),
                 "q_alpha_axis_b": at(q, 3),
+                "q_alpha_axis_a": at(q, 4),
                 "dq_alpha_axis_e": at(dq, 0),
                 "dq_alpha_axis_d": at(dq, 1),
                 "dq_alpha_axis_c": at(dq, 2),
                 "dq_alpha_axis_b": at(dq, 3),
+                "dq_alpha_axis_a": at(dq, 4),
                 "ddq_alpha_axis_e": at(ddq, 0),
                 "ddq_alpha_axis_d": at(ddq, 1),
                 "ddq_alpha_axis_c": at(ddq, 2),
                 "ddq_alpha_axis_b": at(ddq, 3),
+                "ddq_alpha_axis_a": at(ddq, 4),
                 "ref_alpha_axis_e": at(q_ref, 0),
                 "ref_alpha_axis_d": at(q_ref, 1),
                 "ref_alpha_axis_c": at(q_ref, 2),
                 "ref_alpha_axis_b": at(q_ref, 3),
+                "ref_alpha_axis_a": at(q_ref, 4),
                 "dref_alpha_axis_e": at(dq_ref, 0),
                 "dref_alpha_axis_d": at(dq_ref, 1),
                 "dref_alpha_axis_c": at(dq_ref, 2),
                 "dref_alpha_axis_b": at(dq_ref, 3),
+                "dref_alpha_axis_a": at(dq_ref, 4),
                 "ddref_alpha_axis_e": at(ddq_ref, 0),
                 "ddref_alpha_axis_d": at(ddq_ref, 1),
                 "ddref_alpha_axis_c": at(ddq_ref, 2),
                 "ddref_alpha_axis_b": at(ddq_ref, 3),
+                "ddref_alpha_axis_a": at(ddq_ref, 4),
                 "effort_alpha_axis_e": at(effort, 0),
                 "effort_alpha_axis_d": at(effort, 1),
                 "effort_alpha_axis_c": at(effort, 2),
                 "effort_alpha_axis_b": at(effort, 3),
+                "effort_alpha_axis_a": at(effort, 4),
                 "cmd_tau_axis_e": at(arm_cmd, 0),
                 "cmd_tau_axis_d": at(arm_cmd, 1),
                 "cmd_tau_axis_c": at(arm_cmd, 2),

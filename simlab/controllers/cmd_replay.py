@@ -67,7 +67,7 @@ class CmdReplayController(ControllerTemplate):
         self.vehicle_columns = self._parse_columns(self.DEFAULT_VEHICLE_COLUMNS, expected_size=6)
         self.arm_columns = self._parse_columns(self.DEFAULT_ARM_COLUMNS, expected_size=self.arm_dof + 1)
         self.repeats = 1
-        self.enabled = bool(self._get_or_declare_parameter("cmd_replay_enabled", False, "csv_torque_playback_enabled"))
+        self.enabled = bool(self._get_or_declare_parameter("cmd_replay_enabled", False))
         self.max_sim_time_step_sec = float(
             self._get_or_declare_parameter("cmd_replay_max_sim_time_step_sec", 1.0)
         )
@@ -102,9 +102,7 @@ class CmdReplayController(ControllerTemplate):
         else:
             self.node.get_logger().info("CmdReplay has no selected profile; choose a Cmd Replay profile before playback.")
 
-    def _get_or_declare_parameter(self, name: str, default_value, legacy_name: str = None):
-        if legacy_name and self.node.has_parameter(legacy_name):
-            return self.node.get_parameter(legacy_name).value
+    def _get_or_declare_parameter(self, name: str, default_value):
         if not self.node.has_parameter(name):
             self.node.declare_parameter(name, default_value)
         return self.node.get_parameter(name).value

@@ -8,6 +8,7 @@ import numpy as np
 
 from uvms_rl import UvmsBatchEnv
 from uvms_rl.config import load_experiment_config
+from uvms_rl.tensor import as_numpy
 
 
 def main() -> None:
@@ -30,6 +31,7 @@ def main() -> None:
         seed=env_cfg.get("seed"),
         task=task_name,
         task_config=task_cfg,
+        backend=str(env_cfg.get("backend", "cpu")),
     )
     rng = np.random.default_rng(env_cfg.get("seed"))
     obs = env.reset()
@@ -39,11 +41,14 @@ def main() -> None:
         obs, rewards, dones, info = env.step(actions)
 
     print("task", task_name)
+    print("backend", env.backend)
     print("control_dt", env.control_dt, "control_hz", 1.0 / env.control_dt)
     print("sim_dt", env.sim_dt, "sim_hz", 1.0 / env.sim_dt, "substeps", env.substeps)
     print("policy_obs", obs.shape)
-    print("reward", rewards.shape, "mean", float(np.mean(rewards)), "first5envs", rewards[:5])
-    print("done", dones.shape, "rate", float(np.mean(dones)), "first5envs", dones[:5])
+    rewards_np = as_numpy(rewards)
+    dones_np = as_numpy(dones)
+    print("reward", rewards_np.shape, "mean", float(np.mean(rewards_np)), "first5envs", rewards_np[:5])
+    print("done", dones_np.shape, "rate", float(np.mean(dones_np)), "first5envs", dones_np[:5])
     print("tick", info.tick_id, "sim_time", info.sim_time)
     print("task_info", info.task)
 

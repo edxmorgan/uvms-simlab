@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 3.10)
 project(simlab)
 
+set(UVMS_ENABLE_CUDA_DYNAMICS "AUTO" CACHE STRING "Workspace-level UVMS GPU dynamics option accepted for clean colcon builds")
+set_property(CACHE UVMS_ENABLE_CUDA_DYNAMICS PROPERTY STRINGS AUTO ON OFF)
+
 find_package(ament_cmake REQUIRED)
 find_package(ament_cmake_python REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
@@ -88,6 +91,7 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_world_profiles test/test_world_profiles.py)
   ament_add_pytest_test(test_planner_world test/test_planner_world.py)
   ament_add_pytest_test(test_dynamic_replanner test/test_dynamic_replanner.py)
+  ament_add_pytest_test(test_uvms_rl_env test/test_uvms_rl_env.py)
 endif()
 
 ament_export_dependencies(rosidl_default_runtime geometry_msgs std_msgs)

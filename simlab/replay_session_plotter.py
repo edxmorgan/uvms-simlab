@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 
-ARM_AXES = ("e", "d", "c", "b")
+ARM_AXES = ("e", "d", "c", "b", "a")
 ARM_ALIAS = {
     "axis_e": "e",
     "axis_d": "d",
@@ -16,6 +16,8 @@ ARM_ALIAS = {
     "d": "d",
     "c": "c",
     "b": "b",
+    "axis_a": "a",
+    "a": "a",
 }
 VEHICLE_POSE = (
     ("x", "x [m]"),
