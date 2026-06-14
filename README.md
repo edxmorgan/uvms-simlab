@@ -32,7 +32,7 @@ A field-ready ROS 2 lab for **Underwater Vehicle–Manipulator Systems**. `uvms_
    When this repo is pulled into the workspace with `vcs import`, install the extras and rebuild.
 
    ```bash
-   cd ~/ros2_ws
+   cd ~/ros_ws
    sudo apt install ros-$ROS_DISTRO-interactive-markers ros-$ROS_DISTRO-cv-bridge
 
    sudo pip install pyPS4Controller pynput scipy casadi ruckig python-fcl trimesh pycollada
