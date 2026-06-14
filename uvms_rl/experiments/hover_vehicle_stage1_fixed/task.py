@@ -1,6 +1,6 @@
-"""Stage-1 fixed hover task alias."""
+"""Stage-1 fixed hover experiment task."""
 
-from uvms_rl.experiments.hover_vehicle.task import HoverVehicleTask
+from uvms_rl.tasks.hover_vehicle import HoverVehicleTask
 
 
 Task = HoverVehicleTask
