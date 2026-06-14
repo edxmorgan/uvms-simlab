@@ -4,58 +4,58 @@ env:
   control_dt: 0.006666666666666667
   sim_dt: 0.006666666666666667
   max_episode_steps: 300
-  seed: 7
+  seed: 11
 
 task:
-  target_x: [-0.5, 0.5]
-  target_y: [-0.5, 0.5]
-  target_z: [-0.8, -0.4]
-  target_yaw: [-0.5, 0.5]
-  initial_xyz_noise: 0.4
-  initial_yaw_noise: 0.4
-  initial_velocity_noise: 0.05
-  success_position_tolerance: 0.15
-  success_yaw_tolerance: 0.15
+  target_x: [0.0, 0.0]
+  target_y: [0.0, 0.0]
+  target_z: [-0.6, -0.6]
+  target_yaw: [0.0, 0.0]
+  initial_xyz_noise: 0.08
+  initial_yaw_noise: 0.08
+  initial_velocity_noise: 0.01
+  success_position_tolerance: 0.08
+  success_yaw_tolerance: 0.05
   success_streak_steps: 10
-  out_of_bounds_radius: 10.0
-  position_weight: 2.0
-  yaw_weight: 0.8
-  progress_weight: 25.0
-  tracking_reward_weight: 4.0
-  tracking_position_scale: 3.0
-  tracking_yaw_scale: 1.5
-  linear_velocity_weight: 0.04
+  out_of_bounds_radius: 3.0
+  position_weight: 3.0
+  yaw_weight: 1.2
+  progress_weight: 35.0
+  tracking_reward_weight: 6.0
+  tracking_position_scale: 8.0
+  tracking_yaw_scale: 3.0
+  linear_velocity_weight: 0.05
   angular_velocity_weight: 0.02
   action_weight: 0.00002
-  success_bonus: 25.0
-  out_of_bounds_penalty: 10.0
+  success_bonus: 50.0
+  out_of_bounds_penalty: 20.0
 
 trainer:
   log_root: recordings/rl_runs
   eval_steps: 300
   clip_actions: 1.0
-  action_scale: [800.0, 800.0, 800.0, 250.0, 250.0, 250.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+  action_scale: [1000.0, 1000.0, 1000.0, 312.5, 312.5, 312.5, 0.0, 0.0, 0.0, 0.0, 0.0]
   teacher:
     name: pd_hover
-    pretrain_steps: 3000
+    pretrain_steps: 1500
     pretrain_learning_rate: 0.001
-    force_kp: 1000.0
-    force_kd: 340.0
-    yaw_kp: 52.0
-    angular_kd: 18.0
+    force_kp: 1300.0
+    force_kd: 440.0
+    yaw_kp: 65.0
+    angular_kd: 22.0
   residual_teacher:
     name: pd_hover
-    force_kp: 1000.0
-    force_kd: 340.0
-    yaw_kp: 52.0
-    angular_kd: 18.0
-    residual_scale: [0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.0, 0.0, 0.0, 0.0, 0.0]
+    force_kp: 1300.0
+    force_kd: 440.0
+    yaw_kp: 65.0
+    angular_kd: 22.0
+    residual_scale: [0.03, 0.03, 0.03, 0.03, 0.03, 0.03, 0.0, 0.0, 0.0, 0.0, 0.0]
   rsl_rl:
-    num_learning_iterations: 1
+    num_learning_iterations: 3
     num_steps_per_env: 24
     save_interval: 10
     logger: tensorboard
-    run_name: hover_vehicle_teacher
+    run_name: hover_vehicle_stage1_fixed
     obs_groups:
       policy: [policy]
       critic: [policy]
@@ -64,7 +64,7 @@ trainer:
       actor_hidden_dims: [128, 128]
       critic_hidden_dims: [128, 128]
       activation: elu
-      init_noise_std: 0.05
+      init_noise_std: 0.03
       actor_obs_normalization: true
       critic_obs_normalization: true
     algorithm:

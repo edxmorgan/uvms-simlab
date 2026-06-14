@@ -16,33 +16,7 @@ from uvms_rl.rsl_adapter import RslRlUvmsEnv
 
 
 def _pd_hover_teacher_actions(env: RslRlUvmsEnv, obs, trainer: dict[str, Any]) -> torch.Tensor:
-    policy_obs = obs["policy"].to(env.device)
-    actions = torch.zeros((env.num_envs, env.num_actions), dtype=torch.float32, device=env.device)
-
-    teacher = dict(trainer.get("teacher", {}))
-    force_kp = float(teacher.get("force_kp", 120.0))
-    force_kd = float(teacher.get("force_kd", 45.0))
-    yaw_kp = float(teacher.get("yaw_kp", 8.0))
-    angular_kd = float(teacher.get("angular_kd", 3.0))
-
-    xyz_error = policy_obs[:, 0:3]
-    yaw_error = policy_obs[:, 3]
-    linear_velocity = policy_obs[:, 4:7]
-    angular_velocity = policy_obs[:, 7:10]
-
-    actions[:, 0:3] = force_kp * xyz_error - force_kd * linear_velocity
-    actions[:, 3:6] = -angular_kd * angular_velocity
-    actions[:, 5] += yaw_kp * yaw_error
-
-    if env.action_scale is None:
-        return actions
-
-    scale = env.action_scale.to(env.device)
-    finite_limits = scale > 0.0
-    actions = torch.where(finite_limits, torch.clamp(actions, -scale, scale), torch.zeros_like(actions))
-    normalized = torch.zeros_like(actions)
-    normalized[:, finite_limits] = actions[:, finite_limits] / scale[finite_limits]
-    return normalized
+    return env.teacher_actions(obs, dict(trainer.get("teacher", {})))
 
 
 def _pretrain_with_teacher(runner: OnPolicyRunner, env: RslRlUvmsEnv, trainer: dict[str, Any]) -> None:
@@ -66,7 +40,10 @@ def _pretrain_with_teacher(runner: OnPolicyRunner, env: RslRlUvmsEnv, trainer: d
     for step in range(steps):
         with torch.no_grad():
             actor_critic.update_normalization(obs)
-            target = _pd_hover_teacher_actions(env, obs.to(env.device), trainer).to(runner.device)
+            if env.residual_teacher:
+                target = torch.zeros((env.num_envs, env.num_actions), dtype=torch.float32, device=runner.device)
+            else:
+                target = _pd_hover_teacher_actions(env, obs.to(env.device), trainer).to(runner.device)
         pred = actor_critic.act_inference(obs)
         loss = torch.nn.functional.mse_loss(pred, target)
         optimizer.zero_grad(set_to_none=True)
@@ -177,6 +154,10 @@ def main() -> None:
         env.clip_actions = float(trainer["clip_actions"])
     if "action_scale" in trainer:
         env.action_scale = env._make_action_scale(trainer["action_scale"])
+    residual_teacher = dict(trainer.get("residual_teacher", {}))
+    if residual_teacher:
+        residual_scale = residual_teacher.pop("residual_scale", None)
+        env.configure_residual_teacher(residual_teacher, residual_scale)
 
     seed = int(env.cfg.get("env", {}).get("seed", 0))
     np.random.seed(seed)

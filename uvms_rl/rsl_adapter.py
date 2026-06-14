@@ -30,6 +30,8 @@ class RslRlUvmsEnv(VecEnv):
         cfg: dict[str, Any] | None = None,
         clip_actions: float | None = None,
         action_scale: float | list[float] | tuple[float, ...] | None = None,
+        residual_teacher: dict[str, Any] | None = None,
+        residual_scale: float | list[float] | tuple[float, ...] | None = None,
         reset_on_init: bool = True,
     ):
         self.unwrapped = env
@@ -40,6 +42,8 @@ class RslRlUvmsEnv(VecEnv):
         self.cfg = dict(cfg or {})
         self.clip_actions = None if clip_actions is None else float(clip_actions)
         self.action_scale = self._make_action_scale(action_scale)
+        self.residual_teacher = dict(residual_teacher or {})
+        self.residual_scale = self._make_action_scale(residual_scale)
         self.episode_length_buf = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._obs = env.reset() if reset_on_init else env.observations()
         self._sync_episode_length_buf()
@@ -59,6 +63,14 @@ class RslRlUvmsEnv(VecEnv):
         self._push_episode_length_buf()
         if self.clip_actions is not None:
             actions = torch.clamp(actions, -self.clip_actions, self.clip_actions)
+        if self.residual_teacher:
+            base_actions = self.teacher_actions(self._observation_dict(self._obs), self.residual_teacher)
+            residual_actions = actions
+            if self.residual_scale is not None:
+                residual_actions = residual_actions * self.residual_scale
+            actions = base_actions + residual_actions
+            if self.clip_actions is not None:
+                actions = torch.clamp(actions, -self.clip_actions, self.clip_actions)
         action_arg = actions.to(self.device)
         if self.action_scale is not None:
             action_arg = action_arg * self.action_scale
@@ -109,6 +121,47 @@ class RslRlUvmsEnv(VecEnv):
             backend=str(env_cfg.get("backend", "cpu")),
         )
         return cls(env, cfg=experiment.config, clip_actions=clip_actions, action_scale=action_scale)
+
+    def configure_residual_teacher(
+        self,
+        teacher: dict[str, Any] | None,
+        residual_scale: float | list[float] | tuple[float, ...] | None = None,
+    ) -> None:
+        self.residual_teacher = dict(teacher or {})
+        self.residual_scale = self._make_action_scale(residual_scale)
+
+    def teacher_actions(self, obs: TensorDict, teacher: dict[str, Any] | None = None) -> torch.Tensor:
+        teacher_cfg = dict(teacher or self.residual_teacher)
+        name = str(teacher_cfg.get("name", "")).strip().lower()
+        if name != "pd_hover":
+            raise ValueError(f"unsupported residual teacher '{name}'")
+
+        policy_obs = obs["policy"].to(self.device)
+        actions = torch.zeros((self.num_envs, self.num_actions), dtype=torch.float32, device=self.device)
+
+        force_kp = float(teacher_cfg.get("force_kp", 120.0))
+        force_kd = float(teacher_cfg.get("force_kd", 45.0))
+        yaw_kp = float(teacher_cfg.get("yaw_kp", 8.0))
+        angular_kd = float(teacher_cfg.get("angular_kd", 3.0))
+
+        xyz_error = policy_obs[:, 0:3]
+        yaw_error = policy_obs[:, 3]
+        linear_velocity = policy_obs[:, 4:7]
+        angular_velocity = policy_obs[:, 7:10]
+
+        actions[:, 0:3] = force_kp * xyz_error - force_kd * linear_velocity
+        actions[:, 3:6] = -angular_kd * angular_velocity
+        actions[:, 5] += yaw_kp * yaw_error
+
+        if self.action_scale is None:
+            return actions
+
+        scale = self.action_scale.to(self.device)
+        finite_limits = scale > 0.0
+        actions = torch.where(finite_limits, torch.clamp(actions, -scale, scale), torch.zeros_like(actions))
+        normalized = torch.zeros_like(actions)
+        normalized[:, finite_limits] = actions[:, finite_limits] / scale[finite_limits]
+        return normalized
 
     def _observation_dict(self, obs) -> TensorDict:
         policy = self._to_torch(obs, dtype=torch.float32)
