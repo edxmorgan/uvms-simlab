@@ -184,7 +184,14 @@ class CmdReplayController(ControllerTemplate):
         reset_section = manifest.get("reset", {})
         if not isinstance(reset_section, dict):
             reset_section = {}
-        dynamics_profile_name = str(reset_section.get("robot_dynamics_profile", "dory_alpha"))
+        dynamics_profile_name = str(reset_section.get("robot_dynamics_profile", "")).strip()
+        if not dynamics_profile_name:
+            self.node.get_logger().error(
+                f"CmdReplay profile '{profile_name}' replay.json must set reset.robot_dynamics_profile."
+            )
+            self.stop_playback()
+            self.lifecycle_state = CmdReplayState.ERROR
+            return False
         dynamics_profile = load_robot_dynamics_profile(dynamics_profile_name, self.node)
         if not is_valid_robot_dynamics_profile(dynamics_profile):
             self.node.get_logger().error(
@@ -194,6 +201,9 @@ class CmdReplayController(ControllerTemplate):
             self.stop_playback()
             self.lifecycle_state = CmdReplayState.ERROR
             return False
+        self.node.get_logger().info(
+            f"CmdReplay active robot dynamics profile for '{profile_name}': {dynamics_profile_name}."
+        )
 
         self.stop_playback()
         self.profile_name = profile_name

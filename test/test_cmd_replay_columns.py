@@ -27,19 +27,25 @@ from simlab.mcap_to_replay_profile import _replay_manifest
 
 
 class _Logger:
+    def __init__(self):
+        self.messages = []
+
     def warn(self, *_args, **_kwargs):
-        pass
+        self.messages.append(("warn", _args))
 
     def error(self, *_args, **_kwargs):
-        pass
+        self.messages.append(("error", _args))
 
     def info(self, *_args, **_kwargs):
-        pass
+        self.messages.append(("info", _args))
 
 
 class _Node:
+    def __init__(self):
+        self.logger = _Logger()
+
     def get_logger(self):
-        return _Logger()
+        return self.logger
 
 
 def _controller(vehicle_mode="replay_command", manipulator_mode="replay_command"):
@@ -79,6 +85,17 @@ def _controller(vehicle_mode="replay_command", manipulator_mode="replay_command"
         expected_size=5,
     )
     controller.times_sec = np.array([], dtype=float)
+    controller.profile_name = ""
+    controller.enabled = False
+    controller._auto_start_pending = False
+    controller._repeat_reset_requested = False
+    controller._current_pass = 0
+    controller._run_start_sim_time = None
+    controller._last_sim_time = None
+    controller._sample_time_sec = 0.0
+    controller._reported_done = False
+    controller._warned_time_jump = False
+    controller.lifecycle_state = None
     return controller
 
 
@@ -215,3 +232,27 @@ def test_generated_manifest_columns_follow_selected_modes():
     ]
     assert "manipulator_velocity" in manifest["columns"]
     assert "manipulator_acceleration" in manifest["columns"]
+
+
+def test_replay_profile_requires_explicit_dynamics_profile(tmp_path):
+    profile_dir = tmp_path / "missing_dynamics_profile"
+    profile_dir.mkdir()
+    (profile_dir / "replay.json").write_text(
+        """
+{
+  "playback": {"repeats": 1},
+  "subsystem_mode": {"vehicle": "replay_command", "manipulator": "replay_command"},
+  "reset": {},
+  "columns": {}
+}
+""",
+        encoding="utf-8",
+    )
+
+    controller = _controller()
+    controller.profiles_root = tmp_path
+
+    assert controller.load_profile("missing_dynamics_profile") is False
+    assert controller.lifecycle_state.value == "error"
+    errors = [args[0] for level, args in controller.node.logger.messages if level == "error"]
+    assert any("reset.robot_dynamics_profile" in message for message in errors)

@@ -1,5 +1,6 @@
 env:
   backend: cpu
+  dynamics_profile: dory_alpha
   robot_count: 1024
   control_dt: 0.006666666666666667
   sim_dt: 0.006666666666666667
@@ -9,7 +10,7 @@ env:
 task:
   target_x: [-0.5, 0.5]
   target_y: [-0.5, 0.5]
-  target_z: [-0.8, -0.4]
+  target_z: [0.4, 0.8]
   target_yaw: [-0.5, 0.5]
   initial_xyz_noise: 0.4
   initial_yaw_noise: 0.4

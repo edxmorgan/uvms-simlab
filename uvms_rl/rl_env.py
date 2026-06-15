@@ -54,8 +54,13 @@ class UvmsBatchEnv:
         task: type[TaskBase] | TaskBase | None = None,
         task_config: dict[str, Any] | None = None,
         backend: str = "cpu",
-        dynamics_profile: str | dict[str, Any] | None = "dory_alpha",
+        dynamics_profile: str | dict[str, Any] | None = None,
     ):
+        if dynamics_profile is None:
+            raise ValueError(
+                "dynamics_profile must be provided explicitly. "
+                "Use an experiment config env.dynamics_profile entry so RL and hardware sim use the same dynamics."
+            )
         if robot_count < 1:
             raise ValueError("robot_count must be at least 1")
         if control_dt is None:

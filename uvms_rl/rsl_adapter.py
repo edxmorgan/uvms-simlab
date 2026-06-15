@@ -110,6 +110,15 @@ class RslRlUvmsEnv(VecEnv):
             env_cfg["backend"] = backend
         if robot_count is not None:
             env_cfg["robot_count"] = int(robot_count)
+        if "dynamics_profile" not in env_cfg:
+            raise ValueError(f"experiment '{experiment.name}' is missing env.dynamics_profile")
+        dynamics_profile = env_cfg["dynamics_profile"]
+        print(
+            "uvms_rl active profile:",
+            f"experiment={experiment.name}",
+            f"backend={env_cfg.get('backend', 'cpu')}",
+            f"dynamics_profile={dynamics_profile}",
+        )
         env = UvmsBatchEnv(
             robot_count=int(env_cfg.get("robot_count", 1024)),
             control_dt=float(env_cfg.get("control_dt", env_cfg.get("dt", 0.01))),
@@ -119,6 +128,7 @@ class RslRlUvmsEnv(VecEnv):
             task=experiment.task_cls,
             task_config=task_cfg,
             backend=str(env_cfg.get("backend", "cpu")),
+            dynamics_profile=dynamics_profile,
         )
         return cls(env, cfg=experiment.config, clip_actions=clip_actions, action_scale=action_scale)
 

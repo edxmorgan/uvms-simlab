@@ -37,6 +37,17 @@ class HoverVehicleTask(TaskBase):
     def __init__(self, robot_count: int, config: dict[str, Any] | None = None, seed: int | None = None):
         super().__init__(robot_count=robot_count, config=config, seed=seed)
         self.action_dim = int(self.config.get("action_dim", 11))
+        self.minimum_depth = float(self.config.get("minimum_depth", 0.0))
+        self.allow_negative_z = bool(self.config.get("allow_negative_z", False))
+        z_low, z_high = _range_pair(self.config, "target_z", (0.2, 1.5))
+        if z_low > z_high:
+            raise ValueError("target_z low value must be less than or equal to high value")
+        if not self.allow_negative_z and z_low < self.minimum_depth:
+            raise ValueError(
+                "target_z is below the minimum valid depth. "
+                "UVMS dynamics use NED coordinates, so z is positive depth/down. "
+                "Set allow_negative_z: true only for explicit above-surface tests."
+            )
         self.target_xyz_tensor = None
         self.target_yaw_tensor = None
         self.success_streak_tensor = None
@@ -66,7 +77,7 @@ class HoverVehicleTask(TaskBase):
             return obs
         x_low, x_high = _range_pair(cfg, "target_x", (-2.0, 2.0))
         y_low, y_high = _range_pair(cfg, "target_y", (-2.0, 2.0))
-        z_low, z_high = _range_pair(cfg, "target_z", (-1.5, -0.2))
+        z_low, z_high = _range_pair(cfg, "target_z", (0.2, 1.5))
         yaw_low, yaw_high = _range_pair(cfg, "target_yaw", (-np.pi, np.pi))
 
         target_xyz = np.column_stack(
@@ -226,7 +237,13 @@ class HoverVehicleTask(TaskBase):
         success = self.success_streak >= required_streak
 
         timeout = env.episode_steps >= env.max_episode_steps
-        out_of_bounds = np.linalg.norm(xyz, axis=1) > float(cfg.get("out_of_bounds_radius", 10.0))
+        if self.allow_negative_z:
+            surface_violation = np.zeros(self.robot_count, dtype=bool)
+        else:
+            surface_violation = xyz[:, 2] < self.minimum_depth
+        out_of_bounds = (
+            np.linalg.norm(xyz, axis=1) > float(cfg.get("out_of_bounds_radius", 10.0))
+        ) | surface_violation
 
         reward += success.astype(np.float32) * float(cfg.get("success_bonus", 10.0))
         reward -= out_of_bounds.astype(np.float32) * float(cfg.get("out_of_bounds_penalty", 10.0))
@@ -238,6 +255,7 @@ class HoverVehicleTask(TaskBase):
             "success_rate": float(np.mean(success)),
             "timeout_rate": float(np.mean(timeout)),
             "out_of_bounds_rate": float(np.mean(out_of_bounds)),
+            "surface_violation_rate": float(np.mean(surface_violation)),
             "mean_progress": float(np.mean(progress)),
             "mean_tracking_reward": float(np.mean(tracking_reward)),
         }
@@ -314,7 +332,13 @@ class HoverVehicleTask(TaskBase):
         success = self.success_streak_tensor >= required_streak
 
         timeout = env.episode_steps >= env.max_episode_steps
-        out_of_bounds = torch.linalg.norm(xyz, dim=1) > float(cfg.get("out_of_bounds_radius", 10.0))
+        if self.allow_negative_z:
+            surface_violation = torch.zeros_like(timeout, dtype=torch.bool)
+        else:
+            surface_violation = xyz[:, 2] < self.minimum_depth
+        out_of_bounds = (
+            torch.linalg.norm(xyz, dim=1) > float(cfg.get("out_of_bounds_radius", 10.0))
+        ) | surface_violation
 
         reward = reward + success.to(torch.float32) * float(cfg.get("success_bonus", 10.0))
         reward = reward - out_of_bounds.to(torch.float32) * float(cfg.get("out_of_bounds_penalty", 10.0))
@@ -326,6 +350,7 @@ class HoverVehicleTask(TaskBase):
             "success_rate": float(torch.mean(success.to(torch.float32)).detach().cpu().item()),
             "timeout_rate": float(torch.mean(timeout.to(torch.float32)).detach().cpu().item()),
             "out_of_bounds_rate": float(torch.mean(out_of_bounds.to(torch.float32)).detach().cpu().item()),
+            "surface_violation_rate": float(torch.mean(surface_violation.to(torch.float32)).detach().cpu().item()),
             "mean_progress": float(torch.mean(progress).detach().cpu().item()),
             "mean_tracking_reward": float(torch.mean(tracking_reward).detach().cpu().item()),
         }

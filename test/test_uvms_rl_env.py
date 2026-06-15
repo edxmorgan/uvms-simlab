@@ -41,6 +41,7 @@ def _rsl_rl_available():
 
 def test_cpu_uvms_rl_hover_vehicle_shapes_and_types():
     experiment = load_experiment("hover_vehicle")
+    env_cfg = experiment.config["env"]
     env = UvmsBatchEnv(
         robot_count=16,
         control_dt=1.0 / 150.0,
@@ -49,6 +50,7 @@ def test_cpu_uvms_rl_hover_vehicle_shapes_and_types():
         task=experiment.task_cls,
         task_config=experiment.config["task"],
         backend="cpu",
+        dynamics_profile=env_cfg["dynamics_profile"],
     )
 
     obs = env.reset()
@@ -74,6 +76,7 @@ def test_rsl_adapter_returns_tensordict_and_same_step_reset():
     from uvms_rl.rsl_adapter import RslRlUvmsEnv
 
     experiment = load_experiment("hover_vehicle")
+    env_cfg = experiment.config["env"]
     env = UvmsBatchEnv(
         robot_count=8,
         control_dt=1.0 / 150.0,
@@ -83,6 +86,7 @@ def test_rsl_adapter_returns_tensordict_and_same_step_reset():
         task=experiment.task_cls,
         task_config=experiment.config["task"],
         backend="cpu",
+        dynamics_profile=env_cfg["dynamics_profile"],
     )
     rsl_env = RslRlUvmsEnv(env)
 
@@ -114,6 +118,7 @@ def test_gpu_uvms_rl_hover_vehicle_returns_cuda_tensors():
     import torch
 
     experiment = load_experiment("hover_vehicle")
+    env_cfg = experiment.config["env"]
     env = UvmsBatchEnv(
         robot_count=16,
         control_dt=1.0 / 150.0,
@@ -122,6 +127,7 @@ def test_gpu_uvms_rl_hover_vehicle_returns_cuda_tensors():
         task=experiment.task_cls,
         task_config=experiment.config["task"],
         backend="gpu",
+        dynamics_profile=env_cfg["dynamics_profile"],
     )
 
     obs = env.reset()
@@ -152,6 +158,7 @@ def test_cpu_gpu_uvms_rl_hover_vehicle_parity():
     init_obs = _initial_observations(robot_count)
     actions = _actions(step_count, robot_count)
     experiment = load_experiment("hover_vehicle")
+    env_cfg = experiment.config["env"]
 
     cpu = UvmsBatchEnv(
         robot_count=robot_count,
@@ -161,6 +168,7 @@ def test_cpu_gpu_uvms_rl_hover_vehicle_parity():
         task=experiment.task_cls,
         task_config=experiment.config["task"],
         backend="cpu",
+        dynamics_profile=env_cfg["dynamics_profile"],
     )
     gpu = UvmsBatchEnv(
         robot_count=robot_count,
@@ -170,6 +178,7 @@ def test_cpu_gpu_uvms_rl_hover_vehicle_parity():
         task=experiment.task_cls,
         task_config=experiment.config["task"],
         backend="gpu",
+        dynamics_profile=env_cfg["dynamics_profile"],
     )
 
     cpu.reset()
@@ -201,3 +210,8 @@ def test_cpu_gpu_uvms_rl_hover_vehicle_parity():
     assert max_sim_error < 5e-3
     assert max_policy_error < 5e-3
     assert max_reward_error < 5e-3
+
+
+def test_uvms_batch_env_requires_explicit_dynamics_profile():
+    with pytest.raises(ValueError, match="dynamics_profile must be provided explicitly"):
+        UvmsBatchEnv(robot_count=1)
