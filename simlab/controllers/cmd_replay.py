@@ -66,8 +66,24 @@ class CmdReplayController(ControllerTemplate):
         self.time_column = self.DEFAULT_TIME_COLUMN
         self.vehicle_columns = self._parse_columns(self.DEFAULT_VEHICLE_COLUMNS, expected_size=6)
         self.arm_columns = self._parse_columns(self.DEFAULT_ARM_COLUMNS, expected_size=self.arm_dof + 1)
+        self.vehicle_reference_velocity_columns = self._parse_columns(
+            self.DEFAULT_VEHICLE_REFERENCE_VEL_COLUMNS,
+            expected_size=6,
+        )
+        self.vehicle_reference_acceleration_columns = self._parse_columns(
+            self.DEFAULT_VEHICLE_REFERENCE_ACC_COLUMNS,
+            expected_size=6,
+        )
+        self.arm_reference_velocity_columns = self._parse_columns(
+            self.DEFAULT_ARM_REFERENCE_VELOCITY_COLUMNS,
+            expected_size=self.arm_dof + 1,
+        )
+        self.arm_reference_acceleration_columns = self._parse_columns(
+            self.DEFAULT_ARM_REFERENCE_ACCELERATION_COLUMNS,
+            expected_size=self.arm_dof + 1,
+        )
         self.repeats = 1
-        self.enabled = bool(self._get_or_declare_parameter("cmd_replay_enabled", False, "csv_torque_playback_enabled"))
+        self.enabled = bool(self._get_or_declare_parameter("cmd_replay_enabled", False))
         self.max_sim_time_step_sec = float(
             self._get_or_declare_parameter("cmd_replay_max_sim_time_step_sec", 1.0)
         )
@@ -102,9 +118,7 @@ class CmdReplayController(ControllerTemplate):
         else:
             self.node.get_logger().info("CmdReplay has no selected profile; choose a Cmd Replay profile before playback.")
 
-    def _get_or_declare_parameter(self, name: str, default_value, legacy_name: str = None):
-        if legacy_name and self.node.has_parameter(legacy_name):
-            return self.node.get_parameter(legacy_name).value
+    def _get_or_declare_parameter(self, name: str, default_value):
         if not self.node.has_parameter(name):
             self.node.declare_parameter(name, default_value)
         return self.node.get_parameter(name).value
@@ -186,16 +200,32 @@ class CmdReplayController(ControllerTemplate):
         self.config_path = str(manifest_path)
         self.csv_path = str(profile_dir / csv_name)
         self.time_column = str(manifest.get("time_column", self.DEFAULT_TIME_COLUMN))
+        self.subsystem_mode = self._merge_subsystem_mode(self._default_subsystem_mode(), subsystem_mode)
         self.vehicle_columns = self._parse_columns(
-            columns.get("vehicle", self.DEFAULT_VEHICLE_COLUMNS),
+            columns.get("vehicle", self._default_vehicle_columns_for_mode()),
             expected_size=6,
         )
         self.arm_columns = self._parse_columns(
-            columns.get("manipulator", self.DEFAULT_ARM_COLUMNS),
+            columns.get("manipulator", self._default_manipulator_columns_for_mode()),
             expected_size=self.arm_dof + 1,
         )
         self.repeats = max(1, int(playback.get("repeats", 1)))
-        self.subsystem_mode = self._merge_subsystem_mode(self._default_subsystem_mode(), subsystem_mode)
+        self.vehicle_reference_velocity_columns = self._parse_columns(
+            columns.get("vehicle_velocity", self.DEFAULT_VEHICLE_REFERENCE_VEL_COLUMNS),
+            expected_size=6,
+        )
+        self.vehicle_reference_acceleration_columns = self._parse_columns(
+            columns.get("vehicle_acceleration", self.DEFAULT_VEHICLE_REFERENCE_ACC_COLUMNS),
+            expected_size=6,
+        )
+        self.arm_reference_velocity_columns = self._parse_columns(
+            columns.get("manipulator_velocity", self.DEFAULT_ARM_REFERENCE_VELOCITY_COLUMNS),
+            expected_size=self.arm_dof + 1,
+        )
+        self.arm_reference_acceleration_columns = self._parse_columns(
+            columns.get("manipulator_acceleration", self.DEFAULT_ARM_REFERENCE_ACCELERATION_COLUMNS),
+            expected_size=self.arm_dof + 1,
+        )
         self.recording_config = self._merge_recording_config(self._default_recording_config(), recording)
         self._warned_invalid_feedback_controller = False
         self.reset_config = self._merge_reset_config(
@@ -288,6 +318,16 @@ class CmdReplayController(ControllerTemplate):
 
     def feedback_controller_name(self) -> str:
         return str(self.subsystem_mode.get("feedback_controller", "PID"))
+
+    def _default_vehicle_columns_for_mode(self) -> str:
+        if self.vehicle_subsystem_mode() == "track_reference":
+            return self.DEFAULT_VEHICLE_REFERENCE_POSE_COLUMNS
+        return self.DEFAULT_VEHICLE_COLUMNS
+
+    def _default_manipulator_columns_for_mode(self) -> str:
+        if self.manipulator_subsystem_mode() == "track_reference":
+            return self.DEFAULT_ARM_REFERENCE_POSITION_COLUMNS
+        return self.DEFAULT_ARM_COLUMNS
 
     def _load_reset_config(self, config_path: str) -> None:
         path = Path(os.path.expanduser(config_path))
@@ -452,62 +492,74 @@ class CmdReplayController(ControllerTemplate):
             return
 
         self.times_sec = np.asarray(data[self.time_column], dtype=float).reshape(-1)
-        self.vehicle_commands = self._command_matrix_from_columns(
-            data,
-            names,
-            self.vehicle_columns,
-            "vehicle",
-        )
-        self.arm_commands = self._command_matrix_from_columns(
-            data,
-            names,
-            self.arm_columns,
-            "arm",
-        )
-        vehicle_tracks_reference = self.vehicle_subsystem_mode() == "track_reference"
-        manipulator_tracks_reference = self.manipulator_subsystem_mode() == "track_reference"
-        self.vehicle_reference_pose = self._command_matrix_from_columns(
-            data,
-            names,
-            self._parse_columns(self.DEFAULT_VEHICLE_REFERENCE_POSE_COLUMNS, expected_size=6),
-            "vehicle reference pose",
-            warn_missing=vehicle_tracks_reference,
-        )
-        self.vehicle_reference_vel = self._command_matrix_from_columns(
-            data,
-            names,
-            self._parse_columns(self.DEFAULT_VEHICLE_REFERENCE_VEL_COLUMNS, expected_size=6),
-            "vehicle reference velocity",
-            warn_missing=vehicle_tracks_reference,
-        )
-        self.vehicle_reference_acc = self._command_matrix_from_columns(
-            data,
-            names,
-            self._parse_columns(self.DEFAULT_VEHICLE_REFERENCE_ACC_COLUMNS, expected_size=6),
-            "vehicle reference acceleration",
-            warn_missing=False,
-        )
-        self.arm_reference_position = self._command_matrix_from_columns(
-            data,
-            names,
-            self._parse_columns(self.DEFAULT_ARM_REFERENCE_POSITION_COLUMNS, expected_size=self.arm_dof + 1),
-            "arm reference position",
-            warn_missing=manipulator_tracks_reference,
-        )
-        self.arm_reference_velocity = self._command_matrix_from_columns(
-            data,
-            names,
-            self._parse_columns(self.DEFAULT_ARM_REFERENCE_VELOCITY_COLUMNS, expected_size=self.arm_dof + 1),
-            "arm reference velocity",
-            warn_missing=manipulator_tracks_reference,
-        )
-        self.arm_reference_acceleration = self._command_matrix_from_columns(
-            data,
-            names,
-            self._parse_columns(self.DEFAULT_ARM_REFERENCE_ACCELERATION_COLUMNS, expected_size=self.arm_dof + 1),
-            "arm reference acceleration",
-            warn_missing=False,
-        )
+        rows = int(self.times_sec.size)
+        vehicle_mode = self.vehicle_subsystem_mode()
+        manipulator_mode = self.manipulator_subsystem_mode()
+
+        self.vehicle_commands = np.zeros((rows, 6), dtype=float)
+        self.vehicle_reference_pose = np.zeros((rows, 6), dtype=float)
+        self.vehicle_reference_vel = np.zeros((rows, 6), dtype=float)
+        self.vehicle_reference_acc = np.zeros((rows, 6), dtype=float)
+        self.arm_commands = np.zeros((rows, self.arm_dof + 1), dtype=float)
+        self.arm_reference_position = np.zeros((rows, self.arm_dof + 1), dtype=float)
+        self.arm_reference_velocity = np.zeros((rows, self.arm_dof + 1), dtype=float)
+        self.arm_reference_acceleration = np.zeros((rows, self.arm_dof + 1), dtype=float)
+
+        if vehicle_mode == "replay_command":
+            self.vehicle_commands = self._command_matrix_from_columns(
+                data,
+                names,
+                self.vehicle_columns,
+                "vehicle command",
+            )
+        elif vehicle_mode == "track_reference":
+            self.vehicle_reference_pose = self._command_matrix_from_columns(
+                data,
+                names,
+                self.vehicle_columns,
+                "vehicle reference pose",
+            )
+            self.vehicle_reference_vel = self._command_matrix_from_columns(
+                data,
+                names,
+                self.vehicle_reference_velocity_columns,
+                "vehicle reference velocity",
+            )
+            self.vehicle_reference_acc = self._command_matrix_from_columns(
+                data,
+                names,
+                self.vehicle_reference_acceleration_columns,
+                "vehicle reference acceleration",
+                warn_missing=False,
+            )
+
+        if manipulator_mode == "replay_command":
+            self.arm_commands = self._command_matrix_from_columns(
+                data,
+                names,
+                self.arm_columns,
+                "arm command",
+            )
+        elif manipulator_mode == "track_reference":
+            self.arm_reference_position = self._command_matrix_from_columns(
+                data,
+                names,
+                self.arm_columns,
+                "arm reference position",
+            )
+            self.arm_reference_velocity = self._command_matrix_from_columns(
+                data,
+                names,
+                self.arm_reference_velocity_columns,
+                "arm reference velocity",
+            )
+            self.arm_reference_acceleration = self._command_matrix_from_columns(
+                data,
+                names,
+                self.arm_reference_acceleration_columns,
+                "arm reference acceleration",
+                warn_missing=False,
+            )
 
         order = np.argsort(self.times_sec)
         self.times_sec = self.times_sec[order]

@@ -80,6 +80,7 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_world_profiles test/test_world_profiles.py)
   ament_add_pytest_test(test_planner_world test/test_planner_world.py)
   ament_add_pytest_test(test_dynamic_replanner test/test_dynamic_replanner.py)
+  ament_add_pytest_test(test_cmd_replay_columns test/test_cmd_replay_columns.py)
 endif()
 
 ament_export_dependencies(rosidl_default_runtime geometry_msgs std_msgs)

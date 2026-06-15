@@ -2,20 +2,26 @@
   "csv": "commands.csv",
   "time_column": "time_sec",
   "columns": {
-    "vehicle": [
-      "vehicle_fx",
-      "vehicle_fy",
-      "vehicle_fz",
-      "vehicle_tx",
-      "vehicle_ty",
-      "vehicle_tz"
-    ],
     "manipulator": [
-      "tau_axis_e",
-      "tau_axis_d",
-      "tau_axis_c",
-      "tau_axis_b",
-      "tau_axis_a"
+      "arm_ref_axis_e",
+      "arm_ref_axis_d",
+      "arm_ref_axis_c",
+      "arm_ref_axis_b",
+      "arm_ref_axis_a"
+    ],
+    "manipulator_velocity": [
+      "arm_dref_axis_e",
+      "arm_dref_axis_d",
+      "arm_dref_axis_c",
+      "arm_dref_axis_b",
+      "arm_dref_axis_a"
+    ],
+    "manipulator_acceleration": [
+      "arm_ddref_axis_e",
+      "arm_ddref_axis_d",
+      "arm_ddref_axis_c",
+      "arm_ddref_axis_b",
+      "arm_ddref_axis_a"
     ]
   },
   "playback": {
