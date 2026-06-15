@@ -71,6 +71,12 @@ TARGET_COLUMNS = (
     "arm_ddref_axis_b",
     "arm_ddref_axis_a",
 )
+VEHICLE_REFERENCE_POSE_COLUMNS = TARGET_COLUMNS[0:6]
+VEHICLE_REFERENCE_VELOCITY_COLUMNS = TARGET_COLUMNS[6:12]
+VEHICLE_REFERENCE_ACCELERATION_COLUMNS = TARGET_COLUMNS[12:18]
+ARM_REFERENCE_POSITION_COLUMNS = TARGET_COLUMNS[18:23]
+ARM_REFERENCE_VELOCITY_COLUMNS = TARGET_COLUMNS[23:28]
+ARM_REFERENCE_ACCELERATION_COLUMNS = TARGET_COLUMNS[28:33]
 REFERENCE_TOPIC_TYPE = "simlab/msg/ReferenceTargets"
 
 
@@ -311,13 +317,24 @@ def _write_commands_csv(path: Path, rows: list[dict[str, float]]) -> None:
 
 
 def _replay_manifest(args, reset: dict[str, list[float]]) -> dict:
+    columns = {}
+    if args.vehicle_mode == "replay_command":
+        columns["vehicle"] = list(VEHICLE_COLUMNS)
+    if args.vehicle_mode == "track_reference":
+        columns["vehicle"] = list(VEHICLE_REFERENCE_POSE_COLUMNS)
+        columns["vehicle_velocity"] = list(VEHICLE_REFERENCE_VELOCITY_COLUMNS)
+        columns["vehicle_acceleration"] = list(VEHICLE_REFERENCE_ACCELERATION_COLUMNS)
+    if args.manipulator_mode == "replay_command":
+        columns["manipulator"] = list(ARM_COLUMNS)
+    if args.manipulator_mode == "track_reference":
+        columns["manipulator"] = list(ARM_REFERENCE_POSITION_COLUMNS)
+        columns["manipulator_velocity"] = list(ARM_REFERENCE_VELOCITY_COLUMNS)
+        columns["manipulator_acceleration"] = list(ARM_REFERENCE_ACCELERATION_COLUMNS)
+
     return {
         "csv": "commands.csv",
         "time_column": "time_sec",
-        "columns": {
-            "vehicle": list(VEHICLE_COLUMNS),
-            "manipulator": list(ARM_COLUMNS),
-        },
+        "columns": columns,
         "playback": {
             "repeats": int(args.repeats),
         },

@@ -9,13 +9,6 @@
       "vehicle_tx",
       "vehicle_ty",
       "vehicle_tz"
-    ],
-    "manipulator": [
-      "tau_axis_e",
-      "tau_axis_d",
-      "tau_axis_c",
-      "tau_axis_b",
-      "tau_axis_a"
     ]
   },
   "playback": {

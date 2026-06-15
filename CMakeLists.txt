@@ -91,6 +91,7 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_world_profiles test/test_world_profiles.py)
   ament_add_pytest_test(test_planner_world test/test_planner_world.py)
   ament_add_pytest_test(test_dynamic_replanner test/test_dynamic_replanner.py)
+  ament_add_pytest_test(test_cmd_replay_columns test/test_cmd_replay_columns.py)
   ament_add_pytest_test(test_uvms_rl_env test/test_uvms_rl_env.py)
 endif()
 

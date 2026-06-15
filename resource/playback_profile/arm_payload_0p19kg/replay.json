@@ -2,14 +2,6 @@
   "csv": "commands.csv",
   "time_column": "time_sec",
   "columns": {
-    "vehicle": [
-      "vehicle_fx",
-      "vehicle_fy",
-      "vehicle_fz",
-      "vehicle_tx",
-      "vehicle_ty",
-      "vehicle_tz"
-    ],
     "manipulator": [
       "tau_axis_e",
       "tau_axis_d",
