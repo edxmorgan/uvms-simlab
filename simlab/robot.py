@@ -681,8 +681,8 @@ class Robot(Base):
         self.max_traj_vel = np.array([0.15, 0.15, 0.10], dtype=float)
         self.max_traj_acc = np.array([0.1, 0.1, 0.1], dtype=float)
         self.max_traj_jerk = np.array([0.05, 0.05, 0.05], dtype=float)
+        self.trajectory_sample_period = 1.0 / 60.0
         self.max_yaw_command_rate = 1.0
-        self.yaw_command_dt = 1.0 / 60.0
 
         self.node_name = node.get_name()
         # Search for joystick device in /dev/input
@@ -704,7 +704,10 @@ class Robot(Base):
 
         # Trajectory-related timers only if both exist
         if self.planner is not None and self.vehicle_cart_traj is not None:
-            self.traj_sampler_timer = self.node.create_timer(1.0 / 60.0, self.com_trajectory_sampler_callback)
+            self.traj_sampler_timer = self.node.create_timer(
+                self.trajectory_sample_period,
+                self.com_trajectory_sampler_callback,
+            )
             self.trajectory_viz_timer = self.node.create_timer(1.0 / 20.0, self.trajectory_viz_callback)
 
         # one loop publishes
@@ -1955,7 +1958,7 @@ class Robot(Base):
                 # angles near +/-pi can command a full turn through zero.
                 target_yaw = self.normalize_angle(float(rpy_cmd_ned[2]), adjusted_yaw)
                 blended_yaw = adjusted_yaw + self.yaw_blend_factor * (target_yaw - adjusted_yaw)
-                max_yaw_step = float(self.max_yaw_command_rate) * float(self.yaw_command_dt)
+                max_yaw_step = float(self.max_yaw_command_rate) * float(self.trajectory_sample_period)
                 rpy_cmd_ned[2] = self.continuous_vehicle_command_yaw(
                     blended_yaw,
                     fallback_yaw=self.ned_pose[5],
