@@ -473,6 +473,8 @@ class Robot(Base):
         self.menu_handle = None
         self.final_goal_map_ned_6 = None
         self.yaw_blend_factor = 0.0
+        self._last_vehicle_cmd_yaw = None
+        self._last_vehicle_cmd_yaw_step = 0.0
         self.tf_buffer = tf_buffer
         self.task_based_controller = False
 
@@ -679,6 +681,8 @@ class Robot(Base):
         self.max_traj_vel = np.array([0.15, 0.15, 0.10], dtype=float)
         self.max_traj_acc = np.array([0.1, 0.1, 0.1], dtype=float)
         self.max_traj_jerk = np.array([0.05, 0.05, 0.05], dtype=float)
+        self.max_yaw_command_rate = 1.0
+        self.yaw_command_dt = 1.0 / 60.0
 
         self.node_name = node.get_name()
         # Search for joystick device in /dev/input
@@ -759,6 +763,7 @@ class Robot(Base):
 
     def set_controller(self, name: str, activate: bool = True) -> bool:
         previous_controller = self.active_controller_instance()
+        self.reset_vehicle_command_yaw_memory()
         if activate and self.control_mode == ControlMode.REPLAY_SETTLE and name != "CmdReplay":
             self.cancel_replay_settle(mark_failed=True)
             self.control_mode = ControlMode.PLANNER
@@ -1534,6 +1539,30 @@ class Robot(Base):
         adjusted_desired_yaw = current_yaw + angle_diff
         return adjusted_desired_yaw
 
+    def reset_vehicle_command_yaw_memory(self) -> None:
+        self._last_vehicle_cmd_yaw = None
+        self._last_vehicle_cmd_yaw_step = 0.0
+
+    def continuous_vehicle_command_yaw(
+        self,
+        desired_yaw: float,
+        fallback_yaw: float | None = None,
+        max_step: float | None = None,
+    ) -> float:
+        reference_yaw = self._last_vehicle_cmd_yaw
+        if reference_yaw is None:
+            reference_yaw = float(self.ned_pose[5] if fallback_yaw is None else fallback_yaw)
+        command_yaw = self.normalize_angle(float(desired_yaw), float(reference_yaw))
+        delta = command_yaw - float(reference_yaw)
+        if max_step is not None and max_step > 0.0:
+            if abs(delta) > (0.5 * np.pi) and abs(self._last_vehicle_cmd_yaw_step) > 1e-12:
+                delta = np.copysign(abs(delta), self._last_vehicle_cmd_yaw_step)
+            delta = np.clip(delta, -float(max_step), float(max_step))
+            command_yaw = float(reference_yaw) + float(delta)
+        self._last_vehicle_cmd_yaw = command_yaw
+        self._last_vehicle_cmd_yaw_step = float(delta)
+        return command_yaw
+
     def publish_vehicle_and_arm(
         self,
         wrench_body_6: Sequence[float],
@@ -1722,6 +1751,7 @@ class Robot(Base):
             self._preserve_active_plan_on_failure = False
 
     def _start_vehicle_cartesian_ruckig(self, start_xyz, start_quat_wxyz, path_xyz: np.ndarray) -> None:
+        self.reset_vehicle_command_yaw_memory()
         self.vehicle_cart_traj.start_from_path(
             current_position=list(start_xyz),
             path_xyz=path_xyz,
@@ -1924,7 +1954,13 @@ class Robot(Base):
                 # Blend on the unwrapped shortest yaw arc. Directly averaging
                 # angles near +/-pi can command a full turn through zero.
                 target_yaw = self.normalize_angle(float(rpy_cmd_ned[2]), adjusted_yaw)
-                rpy_cmd_ned[2] = adjusted_yaw + self.yaw_blend_factor * (target_yaw - adjusted_yaw)
+                blended_yaw = adjusted_yaw + self.yaw_blend_factor * (target_yaw - adjusted_yaw)
+                max_yaw_step = float(self.max_yaw_command_rate) * float(self.yaw_command_dt)
+                rpy_cmd_ned[2] = self.continuous_vehicle_command_yaw(
+                    blended_yaw,
+                    fallback_yaw=self.ned_pose[5],
+                    max_step=max_yaw_step,
+                )
 
                 cmd_J_UV = self.vehicle_J(rpy_cmd_ned).full()
                 self.node.get_logger().debug(f"v_cmd_ned {tw6_map_ned} : active.")
@@ -2117,6 +2153,7 @@ class Robot(Base):
     def set_control_mode(self, mode: ControlMode):
         if mode == self.control_mode:
             return
+        self.reset_vehicle_command_yaw_memory()
         if self.control_mode == ControlMode.REPLAY and mode != ControlMode.REPLAY:
             self._stop_replay_session_recording("mode_exit")
         if mode == ControlMode.PLANNER and self.control_mode == ControlMode.REPLAY_SETTLE:
