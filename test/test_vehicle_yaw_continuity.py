@@ -42,6 +42,7 @@ def test_vehicle_command_yaw_unwraps_against_previous_command():
     robot = Robot.__new__(Robot)
     robot.ned_pose = [0.0, 0.0, 0.0, 0.0, 0.0, -2.10]
     robot._last_vehicle_cmd_yaw = None
+    robot._last_vehicle_target_yaw = None
     robot._last_vehicle_cmd_yaw_step = 0.0
 
     max_step = 0.02
@@ -61,6 +62,7 @@ def test_vehicle_reference_pose_unwraps_before_controller_dispatch():
     robot = Robot.__new__(Robot)
     robot.ned_pose = [0.0, 0.0, 0.0, 0.0, 0.0, -2.107]
     robot._last_vehicle_cmd_yaw = None
+    robot._last_vehicle_target_yaw = None
     robot._last_vehicle_cmd_yaw_step = 0.0
     positive_branch = np.zeros(6)
     negative_branch = np.zeros(6)
@@ -74,3 +76,17 @@ def test_vehicle_reference_pose_unwraps_before_controller_dispatch():
     assert abs(second[5] - first[5]) < 0.5
     assert second[5] > 0.0
     assert negative_branch[5] == -5.046
+
+
+def test_vehicle_command_yaw_keeps_shortest_turn_when_direction_changes():
+    robot = Robot.__new__(Robot)
+    robot.ned_pose = [0.0, 0.0, 0.0, 0.0, 0.0, 2.0]
+    robot._last_vehicle_cmd_yaw = 2.0
+    robot._last_vehicle_target_yaw = 2.0
+    robot._last_vehicle_cmd_yaw_step = 0.02
+
+    command = robot.continuous_vehicle_command_yaw(0.0, fallback_yaw=robot.ned_pose[5], max_step=0.02)
+
+    assert command < 2.0
+    assert abs(command - 1.98) < 1e-12
+    assert robot._last_vehicle_cmd_yaw_step < 0.0

@@ -474,6 +474,7 @@ class Robot(Base):
         self.final_goal_map_ned_6 = None
         self.yaw_blend_factor = 0.0
         self._last_vehicle_cmd_yaw = None
+        self._last_vehicle_target_yaw = None
         self._last_vehicle_cmd_yaw_step = 0.0
         self.tf_buffer = tf_buffer
         self.task_based_controller = False
@@ -1544,6 +1545,7 @@ class Robot(Base):
 
     def reset_vehicle_command_yaw_memory(self) -> None:
         self._last_vehicle_cmd_yaw = None
+        self._last_vehicle_target_yaw = None
         self._last_vehicle_cmd_yaw_step = 0.0
 
     def continuous_vehicle_command_yaw(
@@ -1552,16 +1554,20 @@ class Robot(Base):
         fallback_yaw: float | None = None,
         max_step: float | None = None,
     ) -> float:
-        reference_yaw = self._last_vehicle_cmd_yaw
-        if reference_yaw is None:
-            reference_yaw = float(self.ned_pose[5] if fallback_yaw is None else fallback_yaw)
-        command_yaw = self.normalize_angle(float(desired_yaw), float(reference_yaw))
-        delta = command_yaw - float(reference_yaw)
+        command_reference_yaw = self._last_vehicle_cmd_yaw
+        if command_reference_yaw is None:
+            command_reference_yaw = float(self.ned_pose[5] if fallback_yaw is None else fallback_yaw)
+
+        target_reference_yaw = self._last_vehicle_target_yaw
+        if target_reference_yaw is None:
+            target_reference_yaw = float(command_reference_yaw)
+        target_yaw = self.normalize_angle(float(desired_yaw), float(target_reference_yaw))
+        self._last_vehicle_target_yaw = float(target_yaw)
+
+        delta = float(target_yaw) - float(command_reference_yaw)
         if max_step is not None and max_step > 0.0:
-            if abs(delta) > (0.5 * np.pi) and abs(self._last_vehicle_cmd_yaw_step) > 1e-12:
-                delta = np.copysign(abs(delta), self._last_vehicle_cmd_yaw_step)
             delta = np.clip(delta, -float(max_step), float(max_step))
-            command_yaw = float(reference_yaw) + float(delta)
+        command_yaw = float(command_reference_yaw) + float(delta)
         self._last_vehicle_cmd_yaw = command_yaw
         self._last_vehicle_cmd_yaw_step = float(delta)
         return command_yaw
