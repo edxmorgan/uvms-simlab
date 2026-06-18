@@ -35,7 +35,6 @@ if simlab_action is None:
     sys.modules["simlab.action"] = simlab_action
 simlab_action.PlanVehicle = object
 
-from simlab.controllers.pid import LowLevelPidController
 from simlab.robot import Robot
 
 
@@ -58,19 +57,20 @@ def test_vehicle_command_yaw_unwraps_against_previous_command():
     assert third > second
 
 
-def test_pid_yaw_guard_preserves_target_continuity_across_equivalent_branches():
-    controller = object.__new__(LowLevelPidController)
-    controller._last_vehicle_pid_target_yaw = None
-    state = np.zeros(12)
-    state[5] = -2.107
+def test_vehicle_reference_pose_unwraps_before_controller_dispatch():
+    robot = Robot.__new__(Robot)
+    robot.ned_pose = [0.0, 0.0, 0.0, 0.0, 0.0, -2.107]
+    robot._last_vehicle_cmd_yaw = None
+    robot._last_vehicle_cmd_yaw_step = 0.0
     positive_branch = np.zeros(6)
     negative_branch = np.zeros(6)
     positive_branch[5] = 0.852
     negative_branch[5] = -5.046
 
-    first = controller._normalize_target_yaw_for_pid(state, positive_branch)
-    second = controller._normalize_target_yaw_for_pid(state, negative_branch)
+    first = robot.continuous_vehicle_reference_pose(positive_branch, fallback_yaw=robot.ned_pose[5])
+    second = robot.continuous_vehicle_reference_pose(negative_branch, fallback_yaw=robot.ned_pose[5])
 
-    assert abs((first[5] - state[5]) - 2.959) < 1e-6
+    assert abs((first[5] - robot.ned_pose[5]) - 2.959) < 1e-6
     assert abs(second[5] - first[5]) < 0.5
     assert second[5] > 0.0
+    assert negative_branch[5] == -5.046

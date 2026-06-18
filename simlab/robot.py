@@ -1566,6 +1566,22 @@ class Robot(Base):
         self._last_vehicle_cmd_yaw_step = float(delta)
         return command_yaw
 
+    def continuous_vehicle_reference_pose(
+        self,
+        target_pose: Sequence[float],
+        fallback_yaw: float | None = None,
+        max_step: float | None = None,
+    ) -> np.ndarray:
+        target = np.asarray(target_pose, dtype=float).copy()
+        if target.shape[0] < 6:
+            raise ValueError("vehicle target pose must contain 6 values")
+        target[5] = self.continuous_vehicle_command_yaw(
+            float(target[5]),
+            fallback_yaw=fallback_yaw,
+            max_step=max_step,
+        )
+        return target
+
     def publish_vehicle_and_arm(
         self,
         wrench_body_6: Sequence[float],
@@ -2947,7 +2963,11 @@ class Robot(Base):
             self.arm.ddq_command = [0.0] * 4
 
             veh_state_vec = np.array(list(state["pose"]) + list(state["body_vel"]), dtype=float)
-            target_ned_pose = np.asarray(self.pose_command, dtype=float)
+            target_ned_pose = self.continuous_vehicle_reference_pose(
+                self.pose_command,
+                fallback_yaw=state["pose"][5],
+            )
+            self.pose_command = target_ned_pose.tolist()
             target_body_vel = np.asarray(self.body_vel_command, dtype=float)
             target_body_acc = np.asarray(self.body_acc_command, dtype=float)
             q_ref = np.asarray(arm_target, dtype=float).tolist()
@@ -3035,17 +3055,25 @@ class Robot(Base):
                 cmd_body_wrench = active_controller.vehicle_command_at(sample_index)
             elif vehicle_mode == "track_reference" and feedback_spec is not None:
                 target_pos, target_vel, target_acc = active_controller.vehicle_reference_at(sample_index)
+                target_pos = self.continuous_vehicle_reference_pose(
+                    target_pos,
+                    fallback_yaw=state["pose"][5],
+                )
                 cmd_body_wrench = feedback_spec.vehicle_fn(
                     state=veh_state_vec,
-                    target_pos=np.asarray(target_pos, dtype=float),
+                    target_pos=target_pos,
                     target_vel=np.asarray(target_vel, dtype=float),
                     target_acc=np.asarray(target_acc, dtype=float),
                     dt=state["dt"],
                 )
             elif vehicle_mode == "hold_initial" and feedback_spec is not None:
+                target_pos = self.continuous_vehicle_reference_pose(
+                    active_controller.initial_vehicle_pose(),
+                    fallback_yaw=state["pose"][5],
+                )
                 cmd_body_wrench = feedback_spec.vehicle_fn(
                     state=veh_state_vec,
-                    target_pos=np.asarray(active_controller.initial_vehicle_pose(), dtype=float),
+                    target_pos=target_pos,
                     target_vel=np.zeros(6, dtype=float),
                     target_acc=np.zeros(6, dtype=float),
                     dt=state["dt"],

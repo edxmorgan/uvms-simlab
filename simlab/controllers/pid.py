@@ -24,7 +24,6 @@ class LowLevelPidController(ControllerTemplate):
         self.uv_pid_controller = ca.Function.load(uv_pid_controller_path)
         self.arm_params, self.vehicle_params = select_robot_params(self.robot_prefix)
         self.vehicle_pid_i_buffer = np.zeros(6, dtype=float)
-        self._last_vehicle_pid_target_yaw = None
         self.vehicle_i_limit = self.vehicle_params.i_limit
         self.vehicle_model_params = self.vehicle_params.model_params
         self.kp = self.vehicle_params.pid_kp
@@ -69,22 +68,8 @@ class LowLevelPidController(ControllerTemplate):
 
     def reset_controller_state(self) -> None:
         self.vehicle_pid_i_buffer = np.zeros(6, dtype=float)
-        self._last_vehicle_pid_target_yaw = None
         self.arm_pid_i_buffer = np.zeros(self.arm_dof + 1, dtype=float)
 
-    @staticmethod
-    def _unwrap_yaw_to_reference(desired_yaw: float, reference_yaw: float) -> float:
-        yaw_error = float(desired_yaw) - float(reference_yaw)
-        return float(reference_yaw) + (yaw_error + np.pi) % (2.0 * np.pi) - np.pi
-
-    def _normalize_target_yaw_for_pid(self, state: np.ndarray, target_pos: np.ndarray) -> np.ndarray:
-        target = np.asarray(target_pos, dtype=float).copy()
-        reference_yaw = self._last_vehicle_pid_target_yaw
-        if reference_yaw is None:
-            reference_yaw = float(state[5])
-        target[5] = self._unwrap_yaw_to_reference(target[5], reference_yaw)
-        self._last_vehicle_pid_target_yaw = float(target[5])
-        return target
 
     def vehicle_controller(
         self,
@@ -96,7 +81,6 @@ class LowLevelPidController(ControllerTemplate):
     ) -> np.ndarray:
         state = self.vector(state, 12, "state")
         target_pos = self.vector(target_pos, 6, "target_pos")
-        target_pos = self._normalize_target_yaw_for_pid(state, target_pos)
         target_vel = self.vector(target_vel, 6, "target_vel")
 
         buf = np.zeros(6, dtype=float)
