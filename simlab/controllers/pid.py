@@ -70,6 +70,7 @@ class LowLevelPidController(ControllerTemplate):
         self.vehicle_pid_i_buffer = np.zeros(6, dtype=float)
         self.arm_pid_i_buffer = np.zeros(self.arm_dof + 1, dtype=float)
 
+
     def vehicle_controller(
         self,
         state: np.ndarray,

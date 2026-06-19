@@ -480,6 +480,9 @@ class Robot(Base):
         self.menu_handle = None
         self.final_goal_map_ned_6 = None
         self.yaw_blend_factor = 0.0
+        self._last_vehicle_cmd_yaw = None
+        self._last_vehicle_target_yaw = None
+        self._last_vehicle_cmd_yaw_step = 0.0
         self.tf_buffer = tf_buffer
         self.task_based_controller = False
 
@@ -686,6 +689,8 @@ class Robot(Base):
         self.max_traj_vel = np.array([0.15, 0.15, 0.10], dtype=float)
         self.max_traj_acc = np.array([0.1, 0.1, 0.1], dtype=float)
         self.max_traj_jerk = np.array([0.05, 0.05, 0.05], dtype=float)
+        self.trajectory_sample_period = 1.0 / 60.0
+        self.max_yaw_command_rate = 1.0
 
         self.node_name = node.get_name()
         # Search for joystick device in /dev/input
@@ -707,7 +712,10 @@ class Robot(Base):
 
         # Trajectory-related timers only if both exist
         if self.planner is not None and self.vehicle_cart_traj is not None:
-            self.traj_sampler_timer = self.node.create_timer(1.0 / 60.0, self.com_trajectory_sampler_callback)
+            self.traj_sampler_timer = self.node.create_timer(
+                self.trajectory_sample_period,
+                self.com_trajectory_sampler_callback,
+            )
             self.trajectory_viz_timer = self.node.create_timer(1.0 / 20.0, self.trajectory_viz_callback)
 
         # one loop publishes
@@ -766,6 +774,7 @@ class Robot(Base):
 
     def set_controller(self, name: str, activate: bool = True) -> bool:
         previous_controller = self.active_controller_instance()
+        self.reset_vehicle_command_yaw_memory()
         if activate and self.control_mode == ControlMode.REPLAY_SETTLE and name != "CmdReplay":
             self.cancel_replay_settle(mark_failed=True)
             self.control_mode = ControlMode.PLANNER
@@ -1541,6 +1550,51 @@ class Robot(Base):
         adjusted_desired_yaw = current_yaw + angle_diff
         return adjusted_desired_yaw
 
+    def reset_vehicle_command_yaw_memory(self) -> None:
+        self._last_vehicle_cmd_yaw = None
+        self._last_vehicle_target_yaw = None
+        self._last_vehicle_cmd_yaw_step = 0.0
+
+    def continuous_vehicle_command_yaw(
+        self,
+        desired_yaw: float,
+        fallback_yaw: float | None = None,
+        max_step: float | None = None,
+    ) -> float:
+        command_reference_yaw = self._last_vehicle_cmd_yaw
+        if command_reference_yaw is None:
+            command_reference_yaw = float(self.ned_pose[5] if fallback_yaw is None else fallback_yaw)
+
+        target_reference_yaw = self._last_vehicle_target_yaw
+        if target_reference_yaw is None:
+            target_reference_yaw = float(command_reference_yaw)
+        target_yaw = self.normalize_angle(float(desired_yaw), float(target_reference_yaw))
+        self._last_vehicle_target_yaw = float(target_yaw)
+
+        delta = float(target_yaw) - float(command_reference_yaw)
+        if max_step is not None and max_step > 0.0:
+            delta = np.clip(delta, -float(max_step), float(max_step))
+        command_yaw = float(command_reference_yaw) + float(delta)
+        self._last_vehicle_cmd_yaw = command_yaw
+        self._last_vehicle_cmd_yaw_step = float(delta)
+        return command_yaw
+
+    def continuous_vehicle_reference_pose(
+        self,
+        target_pose: Sequence[float],
+        fallback_yaw: float | None = None,
+        max_step: float | None = None,
+    ) -> np.ndarray:
+        target = np.asarray(target_pose, dtype=float).copy()
+        if target.shape[0] < 6:
+            raise ValueError("vehicle target pose must contain 6 values")
+        target[5] = self.continuous_vehicle_command_yaw(
+            float(target[5]),
+            fallback_yaw=fallback_yaw,
+            max_step=max_step,
+        )
+        return target
+
     def publish_vehicle_and_arm(
         self,
         wrench_body_6: Sequence[float],
@@ -1729,6 +1783,7 @@ class Robot(Base):
             self._preserve_active_plan_on_failure = False
 
     def _start_vehicle_cartesian_ruckig(self, start_xyz, start_quat_wxyz, path_xyz: np.ndarray) -> None:
+        self.reset_vehicle_command_yaw_memory()
         self.vehicle_cart_traj.start_from_path(
             current_position=list(start_xyz),
             path_xyz=path_xyz,
@@ -1931,7 +1986,13 @@ class Robot(Base):
                 # Blend on the unwrapped shortest yaw arc. Directly averaging
                 # angles near +/-pi can command a full turn through zero.
                 target_yaw = self.normalize_angle(float(rpy_cmd_ned[2]), adjusted_yaw)
-                rpy_cmd_ned[2] = adjusted_yaw + self.yaw_blend_factor * (target_yaw - adjusted_yaw)
+                blended_yaw = adjusted_yaw + self.yaw_blend_factor * (target_yaw - adjusted_yaw)
+                max_yaw_step = float(self.max_yaw_command_rate) * float(self.trajectory_sample_period)
+                rpy_cmd_ned[2] = self.continuous_vehicle_command_yaw(
+                    blended_yaw,
+                    fallback_yaw=self.ned_pose[5],
+                    max_step=max_yaw_step,
+                )
 
                 cmd_J_UV = self.vehicle_J(rpy_cmd_ned).full()
                 self.node.get_logger().debug(f"v_cmd_ned {tw6_map_ned} : active.")
@@ -2124,6 +2185,7 @@ class Robot(Base):
     def set_control_mode(self, mode: ControlMode):
         if mode == self.control_mode:
             return
+        self.reset_vehicle_command_yaw_memory()
         if self.control_mode == ControlMode.REPLAY and mode != ControlMode.REPLAY:
             self._stop_replay_session_recording("mode_exit")
         if mode == ControlMode.PLANNER and self.control_mode == ControlMode.REPLAY_SETTLE:
@@ -2931,7 +2993,11 @@ class Robot(Base):
             self.arm.ddq_command = [0.0] * 4
 
             veh_state_vec = np.array(list(state["pose"]) + list(state["body_vel"]), dtype=float)
-            target_ned_pose = np.asarray(self.pose_command, dtype=float)
+            target_ned_pose = self.continuous_vehicle_reference_pose(
+                self.pose_command,
+                fallback_yaw=state["pose"][5],
+            )
+            self.pose_command = target_ned_pose.tolist()
             target_body_vel = np.asarray(self.body_vel_command, dtype=float)
             target_body_acc = np.asarray(self.body_acc_command, dtype=float)
             q_ref = np.asarray(arm_target, dtype=float).tolist()
@@ -3019,17 +3085,25 @@ class Robot(Base):
                 cmd_body_wrench = active_controller.vehicle_command_at(sample_index)
             elif vehicle_mode == "track_reference" and feedback_spec is not None:
                 target_pos, target_vel, target_acc = active_controller.vehicle_reference_at(sample_index)
+                target_pos = self.continuous_vehicle_reference_pose(
+                    target_pos,
+                    fallback_yaw=state["pose"][5],
+                )
                 cmd_body_wrench = feedback_spec.vehicle_fn(
                     state=veh_state_vec,
-                    target_pos=np.asarray(target_pos, dtype=float),
+                    target_pos=target_pos,
                     target_vel=np.asarray(target_vel, dtype=float),
                     target_acc=np.asarray(target_acc, dtype=float),
                     dt=state["dt"],
                 )
             elif vehicle_mode == "hold_initial" and feedback_spec is not None:
+                target_pos = self.continuous_vehicle_reference_pose(
+                    active_controller.initial_vehicle_pose(),
+                    fallback_yaw=state["pose"][5],
+                )
                 cmd_body_wrench = feedback_spec.vehicle_fn(
                     state=veh_state_vec,
-                    target_pos=np.asarray(active_controller.initial_vehicle_pose(), dtype=float),
+                    target_pos=target_pos,
                     target_vel=np.zeros(6, dtype=float),
                     target_acc=np.zeros(6, dtype=float),
                     dt=state["dt"],
