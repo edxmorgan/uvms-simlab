@@ -115,7 +115,7 @@ class VehicleCartesianRuckig:
 
     def check_finished(self, yaw_blend_factor, yaw_error):
         """Check if the trajectory is finished and if the yaw blend factor and yaw error is sufficient to consider it done."""
-        if self.last_result == Result.Finished and yaw_blend_factor < self.yaw_finish_threshold and abs(yaw_error) < self.yaw_error_threshold:
+        if self.last_result == Result.Finished and yaw_blend_factor >= self.yaw_finish_threshold and abs(yaw_error) < self.yaw_error_threshold:
             self.rclpy_node.get_logger().info("Ruckig trajectory finished")
             self.active = False
 
