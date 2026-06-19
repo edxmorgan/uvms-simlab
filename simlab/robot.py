@@ -1987,7 +1987,7 @@ class Robot(Base):
                     max_step=max_yaw_step,
                 )
                 yaw_error = self.ned_pose[5] - self.normalize_angle(float(target_yaw), float(self.ned_pose[5]))
-                self.vehicle_cart_traj.check_finished(goal_xyz_error, yaw_error)
+                self.vehicle_cart_traj.check_finished(self.yaw_blend_factor, yaw_error)
      #            self.node.get_logger().info(
 					# f"goal_xyz_error={goal_xyz_error:.3f}, yaw_error={yaw_error:.3f}, ")
 
