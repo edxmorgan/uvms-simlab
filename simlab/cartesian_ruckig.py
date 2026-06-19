@@ -33,6 +33,7 @@ class VehicleCartesianRuckig:
         self.out = OutputParameter(dofs, max_waypoints)
         self.active = False
         self.yaw_finish_threshold = 0.95
+        self.yaw_error_threshold = 0.05
         self.last_result = None
         self.last_yaw_blend_factor = 0.0
 
@@ -106,11 +107,17 @@ class VehicleCartesianRuckig:
                 f"duration {self.out.trajectory.duration:0.4f} s"
             )
 
-        if res == Result.Finished and yaw_blend_factor >= self.yaw_finish_threshold:
-            self.rclpy_node.get_logger().info("Ruckig trajectory finished")
-            self.active = False
+        # if res == Result.Finished and yaw_blend_factor >= self.yaw_finish_threshold:
+        #     self.rclpy_node.get_logger().info("Ruckig trajectory finished")
+        #     self.active = False
 
         return pos, vel, acc, res
+
+    def check_finished(self, yaw_blend_factor, yaw_error):
+        """Check if the trajectory is finished and if the yaw blend factor and yaw error is sufficient to consider it done."""
+        if self.last_result == Result.Finished and yaw_blend_factor < self.yaw_finish_threshold and abs(yaw_error) < self.yaw_error_threshold:
+            self.rclpy_node.get_logger().info("Ruckig trajectory finished")
+            self.active = False
 
     def close(self):
         self.active = False

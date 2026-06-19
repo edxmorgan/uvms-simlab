@@ -1986,6 +1986,10 @@ class Robot(Base):
                     fallback_yaw=self.ned_pose[5],
                     max_step=max_yaw_step,
                 )
+                yaw_error = self.ned_pose[5] - self.normalize_angle(float(target_yaw), float(self.ned_pose[5]))
+                self.vehicle_cart_traj.check_finished(goal_xyz_error, yaw_error)
+     #            self.node.get_logger().info(
+					# f"goal_xyz_error={goal_xyz_error:.3f}, yaw_error={yaw_error:.3f}, ")
 
                 cmd_J_UV = self.vehicle_J(rpy_cmd_ned).full()
                 self.node.get_logger().debug(f"v_cmd_ned {tw6_map_ned} : active.")
