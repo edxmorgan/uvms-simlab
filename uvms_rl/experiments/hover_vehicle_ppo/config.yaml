@@ -5,19 +5,19 @@ env:
   control_dt: 0.006666666666666667
   sim_dt: 0.006666666666666667
   max_episode_steps: 600
-  seed: 7
+  seed: 17
 
 task:
-  target_x: [-0.5, 0.5]
-  target_y: [-0.5, 0.5]
-  target_z: [0.4, 0.8]
-  target_yaw: [-0.5, 0.5]
-  initial_xyz_noise: 0.4
-  initial_yaw_noise: 0.4
+  target_x: [-0.25, 0.25]
+  target_y: [-0.25, 0.25]
+  target_z: [0.45, 0.75]
+  target_yaw: [-0.25, 0.25]
+  initial_xyz_noise: 0.25
+  initial_yaw_noise: 0.25
   initial_velocity_noise: 0.05
-  success_position_tolerance: 0.05
-  success_yaw_tolerance: 0.05
-  success_streak_steps: 30
+  success_position_tolerance: 0.08
+  success_yaw_tolerance: 0.08
+  success_streak_steps: 15
   success_terminates: false
   out_of_bounds_radius: 10.0
   position_weight: 8.0
@@ -29,37 +29,24 @@ task:
   linear_velocity_weight: 0.04
   angular_velocity_weight: 0.02
   action_weight: 0.000005
-  success_bonus: 0.0
+  success_bonus: 2.0
   out_of_bounds_penalty: 10.0
 
 trainer:
   log_root: recordings/rl_runs
   eval_steps: 600
-  best_eval_interval: 25
-  early_stop_patience: 150
+  eval_envs: 4096
+  best_eval_interval: 50
+  early_stop_patience: 500
   clip_actions: 1.0
-  action_scale: [800.0, 800.0, 800.0, 250.0, 250.0, 250.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-  teacher:
-    name: pd_hover
-    pretrain_steps: 3000
-    pretrain_learning_rate: 0.001
-    force_kp: 1000.0
-    force_kd: 340.0
-    yaw_kp: 52.0
-    angular_kd: 18.0
-  residual_teacher:
-    name: pd_hover
-    force_kp: 1000.0
-    force_kd: 340.0
-    yaw_kp: 52.0
-    angular_kd: 18.0
-    residual_scale: [0.005, 0.005, 0.005, 0.005, 0.005, 0.005, 0.0, 0.0, 0.0, 0.0, 0.0]
+  zero_actor_output: true
+  action_scale: [300.0, 300.0, 300.0, 100.0, 100.0, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0]
   rsl_rl:
-    num_learning_iterations: 1
+    num_learning_iterations: 1000
     num_steps_per_env: 24
-    save_interval: 10
+    save_interval: 50
     logger: tensorboard
-    run_name: hover_vehicle_residual_pid
+    run_name: hover_vehicle_ppo
     obs_groups:
       policy: [policy]
       critic: [policy]
@@ -68,22 +55,22 @@ trainer:
       actor_hidden_dims: [128, 128]
       critic_hidden_dims: [128, 128]
       activation: elu
-      init_noise_std: 0.005
+      init_noise_std: 0.04
       actor_obs_normalization: true
       critic_obs_normalization: true
     algorithm:
       class_name: PPO
-      num_learning_epochs: 2
-      num_mini_batches: 4
-      clip_param: 0.05
+      num_learning_epochs: 4
+      num_mini_batches: 8
+      clip_param: 0.2
       gamma: 0.99
       lam: 0.95
       value_loss_coef: 1.0
-      entropy_coef: 0.0
-      learning_rate: 0.000001
+      entropy_coef: 0.0002
+      learning_rate: 0.0003
       max_grad_norm: 1.0
       use_clipped_value_loss: true
-      schedule: adaptive
-      desired_kl: 0.002
+      schedule: fixed
+      desired_kl: 0.01
       rnd_cfg:
       symmetry_cfg:

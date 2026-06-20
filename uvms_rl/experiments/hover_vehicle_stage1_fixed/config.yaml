@@ -4,7 +4,7 @@ env:
   robot_count: 1024
   control_dt: 0.006666666666666667
   sim_dt: 0.006666666666666667
-  max_episode_steps: 300
+  max_episode_steps: 600
   seed: 11
 
 task:
@@ -15,25 +15,28 @@ task:
   initial_xyz_noise: 0.08
   initial_yaw_noise: 0.08
   initial_velocity_noise: 0.01
-  success_position_tolerance: 0.08
-  success_yaw_tolerance: 0.05
-  success_streak_steps: 10
+  success_position_tolerance: 0.02
+  success_yaw_tolerance: 0.02
+  success_streak_steps: 30
+  success_terminates: false
   out_of_bounds_radius: 3.0
-  position_weight: 3.0
-  yaw_weight: 1.2
-  progress_weight: 35.0
-  tracking_reward_weight: 6.0
-  tracking_position_scale: 8.0
-  tracking_yaw_scale: 3.0
+  position_weight: 12.0
+  yaw_weight: 5.0
+  progress_weight: 60.0
+  tracking_reward_weight: 15.0
+  tracking_position_scale: 160.0
+  tracking_yaw_scale: 60.0
   linear_velocity_weight: 0.05
   angular_velocity_weight: 0.02
-  action_weight: 0.00002
-  success_bonus: 50.0
+  action_weight: 0.000005
+  success_bonus: 0.0
   out_of_bounds_penalty: 20.0
 
 trainer:
   log_root: recordings/rl_runs
-  eval_steps: 300
+  eval_steps: 600
+  best_eval_interval: 25
+  early_stop_patience: 150
   clip_actions: 1.0
   action_scale: [1000.0, 1000.0, 1000.0, 312.5, 312.5, 312.5, 0.0, 0.0, 0.0, 0.0, 0.0]
   teacher:
@@ -50,7 +53,7 @@ trainer:
     force_kd: 440.0
     yaw_kp: 65.0
     angular_kd: 22.0
-    residual_scale: [0.03, 0.03, 0.03, 0.03, 0.03, 0.03, 0.0, 0.0, 0.0, 0.0, 0.0]
+    residual_scale: [0.005, 0.005, 0.005, 0.005, 0.005, 0.005, 0.0, 0.0, 0.0, 0.0, 0.0]
   rsl_rl:
     num_learning_iterations: 3
     num_steps_per_env: 24
@@ -65,22 +68,22 @@ trainer:
       actor_hidden_dims: [128, 128]
       critic_hidden_dims: [128, 128]
       activation: elu
-      init_noise_std: 0.03
+      init_noise_std: 0.005
       actor_obs_normalization: true
       critic_obs_normalization: true
     algorithm:
       class_name: PPO
       num_learning_epochs: 2
       num_mini_batches: 4
-      clip_param: 0.2
+      clip_param: 0.05
       gamma: 0.99
       lam: 0.95
       value_loss_coef: 1.0
       entropy_coef: 0.0
-      learning_rate: 0.00001
+      learning_rate: 0.000001
       max_grad_norm: 1.0
       use_clipped_value_loss: true
       schedule: adaptive
-      desired_kl: 0.01
+      desired_kl: 0.002
       rnd_cfg:
       symmetry_cfg:

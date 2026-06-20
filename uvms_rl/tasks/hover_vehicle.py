@@ -29,6 +29,44 @@ def _wrap_to_pi_torch(angle):
     return torch.remainder(angle + torch.pi, 2.0 * torch.pi) - torch.pi
 
 
+def _world_to_body_np(euler: np.ndarray, vector: np.ndarray) -> np.ndarray:
+    phi = euler[:, 0]
+    theta = euler[:, 1]
+    psi = euler[:, 2]
+    sp, cp = np.sin(phi), np.cos(phi)
+    st, ct = np.sin(theta), np.cos(theta)
+    sy, cy = np.sin(psi), np.cos(psi)
+    x, y, z = vector[:, 0], vector[:, 1], vector[:, 2]
+    return np.stack(
+        [
+            cy * ct * x + sy * ct * y - st * z,
+            (-sy * cp + cy * st * sp) * x + (cy * cp + sp * st * sy) * y + ct * sp * z,
+            (sy * sp + cy * cp * st) * x + (-cy * sp + st * sy * cp) * y + ct * cp * z,
+        ],
+        axis=1,
+    ).astype(np.float32)
+
+
+def _world_to_body_torch(euler, vector):
+    import torch
+
+    phi = euler[:, 0]
+    theta = euler[:, 1]
+    psi = euler[:, 2]
+    sp, cp = torch.sin(phi), torch.cos(phi)
+    st, ct = torch.sin(theta), torch.cos(theta)
+    sy, cy = torch.sin(psi), torch.cos(psi)
+    x, y, z = vector[:, 0], vector[:, 1], vector[:, 2]
+    return torch.stack(
+        [
+            cy * ct * x + sy * ct * y - st * z,
+            (-sy * cp + cy * st * sp) * x + (cy * cp + sp * st * sy) * y + ct * sp * z,
+            (sy * sp + cy * cp * st) * x + (-cy * sp + st * sy * cp) * y + ct * cp * z,
+        ],
+        dim=1,
+    )
+
+
 class HoverVehicleTask(TaskBase):
     """Reach and hold a target xyz/yaw with the vehicle base."""
 
@@ -55,8 +93,8 @@ class HoverVehicleTask(TaskBase):
 
     @property
     def policy_observation_dim(self) -> int:
-        # xyz error, yaw error, uvw, pqr, arm q, arm qd, previous action
-        return 3 + 1 + 3 + 3 + 5 + 5 + self.action_dim
+        # body xyz error, yaw error, roll/pitch, depth/target depth, uvw, pqr, arm q, arm qd, previous action
+        return 3 + 1 + 2 + 2 + 3 + 3 + 5 + 5 + self.action_dim
 
     def reset(self, env) -> np.ndarray:
         indices = np.arange(self.robot_count, dtype=np.int64)
@@ -177,25 +215,38 @@ class HoverVehicleTask(TaskBase):
 
             self._require_torch_targets(env)
             xyz = sim_obs[:, 0:3]
+            euler = sim_obs[:, 3:6]
             yaw = sim_obs[:, 5]
             uvw = sim_obs[:, 6:9]
             pqr = sim_obs[:, 9:12]
             arm_q = sim_obs[:, 12:17]
             arm_qd = sim_obs[:, 17:22]
-            xyz_error = self.target_xyz_tensor - xyz
+            world_xyz_error = self.target_xyz_tensor - xyz
+            body_xyz_error = _world_to_body_torch(euler, world_xyz_error)
             yaw_error = _wrap_to_pi_torch(self.target_yaw_tensor - yaw)[:, None]
-            return torch.cat([xyz_error, yaw_error, uvw, pqr, arm_q, arm_qd, actions], dim=1)
+            attitude = euler[:, 0:2]
+            depth_context = torch.stack([xyz[:, 2], self.target_xyz_tensor[:, 2]], dim=1)
+            return torch.cat(
+                [body_xyz_error, yaw_error, attitude, depth_context, uvw, pqr, arm_q, arm_qd, actions],
+                dim=1,
+            )
 
         xyz = sim_obs[:, 0:3]
+        euler = sim_obs[:, 3:6]
         yaw = sim_obs[:, 5]
         uvw = sim_obs[:, 6:9]
         pqr = sim_obs[:, 9:12]
         arm_q = sim_obs[:, 12:17]
         arm_qd = sim_obs[:, 17:22]
 
-        xyz_error = self.target_xyz - xyz
+        world_xyz_error = self.target_xyz - xyz
+        body_xyz_error = _world_to_body_np(euler, world_xyz_error)
         yaw_error = _wrap_to_pi(self.target_yaw - yaw)[:, None]
-        return np.concatenate([xyz_error, yaw_error, uvw, pqr, arm_q, arm_qd, actions], axis=1).astype(np.float32)
+        attitude = euler[:, 0:2].astype(np.float32)
+        depth_context = np.column_stack([xyz[:, 2], self.target_xyz[:, 2]]).astype(np.float32)
+        return np.concatenate(
+            [body_xyz_error, yaw_error, attitude, depth_context, uvw, pqr, arm_q, arm_qd, actions], axis=1
+        ).astype(np.float32)
 
     def reward_done(self, env, sim_obs: np.ndarray, actions: np.ndarray):
         if is_torch_tensor(sim_obs):
@@ -232,6 +283,7 @@ class HoverVehicleTask(TaskBase):
         pos_tol = float(cfg.get("success_position_tolerance", 0.15))
         yaw_tol = float(cfg.get("success_yaw_tolerance", 0.15))
         required_streak = int(cfg.get("success_streak_steps", 10))
+        success_terminates = bool(cfg.get("success_terminates", True))
         success_now = (pos_err < pos_tol) & (yaw_err < yaw_tol)
         self.success_streak = np.where(success_now, self.success_streak + 1, 0)
         success = self.success_streak >= required_streak
@@ -247,11 +299,12 @@ class HoverVehicleTask(TaskBase):
 
         reward += success.astype(np.float32) * float(cfg.get("success_bonus", 10.0))
         reward -= out_of_bounds.astype(np.float32) * float(cfg.get("out_of_bounds_penalty", 10.0))
-        done = success | timeout | out_of_bounds
+        done = (success if success_terminates else np.zeros_like(success)) | timeout | out_of_bounds
 
         info = {
             "mean_position_error": float(np.mean(pos_err)),
             "mean_yaw_error": float(np.mean(yaw_err)),
+            "success_now_rate": float(np.mean(success_now)),
             "success_rate": float(np.mean(success)),
             "timeout_rate": float(np.mean(timeout)),
             "out_of_bounds_rate": float(np.mean(out_of_bounds)),
@@ -323,6 +376,7 @@ class HoverVehicleTask(TaskBase):
         pos_tol = float(cfg.get("success_position_tolerance", 0.15))
         yaw_tol = float(cfg.get("success_yaw_tolerance", 0.15))
         required_streak = int(cfg.get("success_streak_steps", 10))
+        success_terminates = bool(cfg.get("success_terminates", True))
         success_now = (pos_err < pos_tol) & (yaw_err < yaw_tol)
         self.success_streak_tensor = torch.where(
             success_now,
@@ -342,11 +396,12 @@ class HoverVehicleTask(TaskBase):
 
         reward = reward + success.to(torch.float32) * float(cfg.get("success_bonus", 10.0))
         reward = reward - out_of_bounds.to(torch.float32) * float(cfg.get("out_of_bounds_penalty", 10.0))
-        done = success | timeout | out_of_bounds
+        done = (success if success_terminates else torch.zeros_like(success)) | timeout | out_of_bounds
 
         info = {
             "mean_position_error": float(torch.mean(pos_err).detach().cpu().item()),
             "mean_yaw_error": float(torch.mean(yaw_err).detach().cpu().item()),
+            "success_now_rate": float(torch.mean(success_now.to(torch.float32)).detach().cpu().item()),
             "success_rate": float(torch.mean(success.to(torch.float32)).detach().cpu().item()),
             "timeout_rate": float(torch.mean(timeout.to(torch.float32)).detach().cpu().item()),
             "out_of_bounds_rate": float(torch.mean(out_of_bounds.to(torch.float32)).detach().cpu().item()),

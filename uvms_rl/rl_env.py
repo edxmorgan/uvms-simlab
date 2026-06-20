@@ -130,15 +130,17 @@ class UvmsBatchEnv:
     @staticmethod
     def _normalize_backend(backend: str) -> str:
         backend_name = str(backend).strip().lower()
-        if backend_name in {"", "cpu"}:
+        if backend_name == "cpu":
             return "cpu"
         if backend_name == "gpu":
             return "gpu"
-        raise ValueError(f"unknown uvms_rl backend '{backend}'")
+        raise ValueError(f"unknown uvms_rl backend '{backend}'. Expected 'cpu' or 'gpu'.")
 
     def _make_core(self, backend: str):
         if backend == "cpu":
             return _batch_uvms_core.BatchUvmsCore(self.robot_count)
+        if backend != "gpu":
+            raise ValueError(f"unknown uvms_rl backend '{backend}'. Expected 'cpu' or 'gpu'.")
         try:
             from ros2_control_blue_reach_5 import _batch_uvms_gpu_core
         except ImportError as exc:

@@ -146,22 +146,35 @@ class RslRlUvmsEnv(VecEnv):
         if name != "pd_hover":
             raise ValueError(f"unsupported residual teacher '{name}'")
 
-        policy_obs = obs["policy"].to(self.device)
+        state = self._to_torch(self.unwrapped.sim_observations(), dtype=torch.float32)
         actions = torch.zeros((self.num_envs, self.num_actions), dtype=torch.float32, device=self.device)
 
         force_kp = float(teacher_cfg.get("force_kp", 120.0))
         force_kd = float(teacher_cfg.get("force_kd", 45.0))
         yaw_kp = float(teacher_cfg.get("yaw_kp", 8.0))
         angular_kd = float(teacher_cfg.get("angular_kd", 3.0))
+        roll_pitch_kp = float(teacher_cfg.get("roll_pitch_kp", yaw_kp))
 
-        xyz_error = policy_obs[:, 0:3]
-        yaw_error = policy_obs[:, 3]
-        linear_velocity = policy_obs[:, 4:7]
-        angular_velocity = policy_obs[:, 7:10]
+        target_xyz, target_yaw = self._teacher_targets()
+        pose_error = torch.zeros((self.num_envs, 6), dtype=torch.float32, device=self.device)
+        pose_error[:, 0:3] = target_xyz - state[:, 0:3]
+        pose_error[:, 3] = -state[:, 3]
+        pose_error[:, 4] = -state[:, 4]
+        pose_error[:, 5] = self._wrap_to_pi(target_yaw - state[:, 5])
 
-        actions[:, 0:3] = force_kp * xyz_error - force_kd * linear_velocity
-        actions[:, 3:6] = -angular_kd * angular_velocity
-        actions[:, 5] += yaw_kp * yaw_error
+        ned_velocity = self._ned_velocity_from_body(state[:, 3:6], state[:, 6:12])
+        kp = torch.tensor(
+            [force_kp, force_kp, force_kp, roll_pitch_kp, roll_pitch_kp, yaw_kp],
+            dtype=torch.float32,
+            device=self.device,
+        )
+        kd = torch.tensor(
+            [force_kd, force_kd, force_kd, angular_kd, angular_kd, angular_kd],
+            dtype=torch.float32,
+            device=self.device,
+        )
+        pid_ned = kp * pose_error - kd * ned_velocity
+        actions[:, 0:6] = self._body_wrench_from_ned_pid(state[:, 3:6], pid_ned) + self._restoring_wrench(state)
 
         if self.action_scale is None:
             return actions
@@ -172,6 +185,114 @@ class RslRlUvmsEnv(VecEnv):
         normalized = torch.zeros_like(actions)
         normalized[:, finite_limits] = actions[:, finite_limits] / scale[finite_limits]
         return normalized
+
+    def _teacher_targets(self) -> tuple[torch.Tensor, torch.Tensor]:
+        task = self.unwrapped.task
+        if task is None or not hasattr(task, "target_xyz") or not hasattr(task, "target_yaw"):
+            raise RuntimeError("pd_hover teacher requires a task with target_xyz and target_yaw")
+        if getattr(self.unwrapped, "backend", "cpu") == "gpu" and getattr(task, "target_xyz_tensor", None) is not None:
+            return task.target_xyz_tensor.to(self.device), task.target_yaw_tensor.to(self.device)
+        target_xyz = torch.as_tensor(task.target_xyz, dtype=torch.float32, device=self.device)
+        target_yaw = torch.as_tensor(task.target_yaw, dtype=torch.float32, device=self.device)
+        return target_xyz, target_yaw
+
+    @staticmethod
+    def _wrap_to_pi(angle: torch.Tensor) -> torch.Tensor:
+        return torch.remainder(angle + torch.pi, 2.0 * torch.pi) - torch.pi
+
+    def _ned_velocity_from_body(self, euler: torch.Tensor, body_velocity: torch.Tensor) -> torch.Tensor:
+        uvw = body_velocity[:, 0:3]
+        pqr = body_velocity[:, 3:6]
+        return torch.cat([self._rotation_times(euler, uvw), self._angular_transform_times(euler, pqr)], dim=1)
+
+    def _body_wrench_from_ned_pid(self, euler: torch.Tensor, pid_ned: torch.Tensor) -> torch.Tensor:
+        force = self._rotation_transpose_times(euler, pid_ned[:, 0:3])
+        torque = self._angular_transform_transpose_times(euler, pid_ned[:, 3:6])
+        return torch.cat([force, torque], dim=1)
+
+    def _rotation_terms(self, euler: torch.Tensor):
+        phi = euler[:, 0]
+        theta = euler[:, 1]
+        psi = euler[:, 2]
+        return torch.sin(phi), torch.cos(phi), torch.sin(theta), torch.cos(theta), torch.sin(psi), torch.cos(psi)
+
+    def _rotation_times(self, euler: torch.Tensor, vector: torch.Tensor) -> torch.Tensor:
+        sp, cp, st, ct, sy, cy = self._rotation_terms(euler)
+        x, y, z = vector[:, 0], vector[:, 1], vector[:, 2]
+        return torch.stack(
+            [
+                cy * ct * x + (-sy * cp + cy * st * sp) * y + (sy * sp + cy * cp * st) * z,
+                sy * ct * x + (cy * cp + sp * st * sy) * y + (-cy * sp + st * sy * cp) * z,
+                -st * x + ct * sp * y + ct * cp * z,
+            ],
+            dim=1,
+        )
+
+    def _rotation_transpose_times(self, euler: torch.Tensor, vector: torch.Tensor) -> torch.Tensor:
+        sp, cp, st, ct, sy, cy = self._rotation_terms(euler)
+        x, y, z = vector[:, 0], vector[:, 1], vector[:, 2]
+        return torch.stack(
+            [
+                cy * ct * x + sy * ct * y - st * z,
+                (-sy * cp + cy * st * sp) * x + (cy * cp + sp * st * sy) * y + ct * sp * z,
+                (sy * sp + cy * cp * st) * x + (-cy * sp + st * sy * cp) * y + ct * cp * z,
+            ],
+            dim=1,
+        )
+
+    def _angular_transform_terms(self, euler: torch.Tensor):
+        phi = euler[:, 0]
+        theta = euler[:, 1]
+        sp = torch.sin(phi)
+        cp = torch.cos(phi)
+        raw_ct = torch.cos(theta)
+        ct = torch.where(raw_ct.abs() < 1e-6, torch.copysign(torch.full_like(raw_ct, 1e-6), raw_ct), raw_ct)
+        tt = torch.sin(theta) / ct
+        return sp, cp, ct, tt
+
+    def _angular_transform_times(self, euler: torch.Tensor, vector: torch.Tensor) -> torch.Tensor:
+        sp, cp, ct, tt = self._angular_transform_terms(euler)
+        p, q, r = vector[:, 0], vector[:, 1], vector[:, 2]
+        return torch.stack([p + sp * tt * q + cp * tt * r, cp * q - sp * r, sp / ct * q + cp / ct * r], dim=1)
+
+    def _angular_transform_transpose_times(self, euler: torch.Tensor, vector: torch.Tensor) -> torch.Tensor:
+        sp, cp, ct, tt = self._angular_transform_terms(euler)
+        x, y, z = vector[:, 0], vector[:, 1], vector[:, 2]
+        return torch.stack([x, sp * tt * x + cp * y + sp / ct * z, cp * tt * x - sp * y + cp / ct * z], dim=1)
+
+    def _restoring_wrench(self, state: torch.Tensor) -> torch.Tensor:
+        profile = getattr(self.unwrapped, "_dynamics_profile", None) or {}
+        vehicle = profile.get("vehicle") if isinstance(profile, dict) else None
+        if not isinstance(vehicle, dict):
+            return torch.zeros((self.num_envs, 6), dtype=torch.float32, device=self.device)
+        weight = float(vehicle["weight"])
+        buoyancy = float(vehicle["buoyancy"])
+        x_gw_x_bb = float(vehicle["x_g_weight_minus_x_b_buoyancy"])
+        y_gw_y_bb = float(vehicle["y_g_weight_minus_y_b_buoyancy"])
+        z_gw_z_bb = float(vehicle["z_g_weight_minus_z_b_buoyancy"])
+
+        z = state[:, 2]
+        phi = state[:, 3]
+        theta = state[:, 4]
+        sp = torch.sin(phi)
+        cp = torch.cos(phi)
+        st = torch.sin(theta)
+        ct = torch.cos(theta)
+        w = torch.full_like(z, weight)
+        b = torch.full_like(z, buoyancy)
+        dynamic_b = w + (b - w) * (z / 3.0)
+        mb = torch.where(z < 3.0, dynamic_b, b)
+        mb = torch.where(z < 0.0, torch.zeros_like(mb), mb)
+        mb = torch.where(z == 0.0, w, mb)
+
+        g = torch.zeros((self.num_envs, 6), dtype=torch.float32, device=self.device)
+        g[:, 0] = (w - mb) * st
+        g[:, 1] = -(w - mb) * ct * sp
+        g[:, 2] = -(w - mb) * ct * cp
+        g[:, 3] = -y_gw_y_bb * ct * cp + z_gw_z_bb * ct * sp
+        g[:, 4] = z_gw_z_bb * st + x_gw_x_bb * ct * cp
+        g[:, 5] = -x_gw_x_bb * ct * sp - y_gw_y_bb * st
+        return g
 
     def _observation_dict(self, obs) -> TensorDict:
         policy = self._to_torch(obs, dtype=torch.float32)
