@@ -65,6 +65,9 @@ class DynamicWorldModel:
             self.node.destroy_subscription(self.subscription)
             self.subscription = None
 
+    def update_from_msg(self, msg: DynamicObstacleArray) -> None:
+        self._obstacles_callback(msg)
+
     def _obstacles_callback(self, msg: DynamicObstacleArray) -> None:
         frame_id = msg.header.frame_id or self.world_frame
         if frame_id != self.world_frame:

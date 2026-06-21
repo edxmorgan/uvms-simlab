@@ -65,6 +65,7 @@ class InteractiveControlsNode(Node):
         robot_select_menu_handle = self.menu_handler.insert("Robots", callback=self.noop_menu_callback)
         waypoints_parent = self.menu_handler.insert("Waypoints", callback=self.noop_menu_callback)
         path_planner_root = self.menu_handler.insert("Path Planner", callback=self.noop_menu_callback)
+        dynamic_obstacles_root = self.menu_handler.insert("Dynamic Obstacles", callback=self.noop_menu_callback)
         csv_playback_root = self.menu_handler.insert("Cmd Replay", callback=self.noop_menu_callback)
         self.dynamics_profile_root = self.menu_handler.insert("Dynamics Profile", callback=self.noop_menu_callback)
         recording_root = self.menu_handler.insert("Data Recording", callback=self.noop_menu_callback)
@@ -93,6 +94,33 @@ class InteractiveControlsNode(Node):
             "Stop",
             parent=waypoints_parent,
             callback=self.stop_vehicle_waypoints,
+        )
+        self.path_obstacle_distance_ahead = 4.0
+        self.path_obstacle_radius = 0.8
+        self.add_path_obstacle_handle = self.menu_handler.insert(
+            "Add Path Obstacle",
+            parent=dynamic_obstacles_root,
+            callback=self.add_path_obstacle,
+        )
+        self.clear_dynamic_obstacles_handle = self.menu_handler.insert(
+            "Clear Obstacles",
+            parent=dynamic_obstacles_root,
+            callback=self.clear_dynamic_obstacles,
+        )
+        self.enable_dynamic_replanning_handle = self.menu_handler.insert(
+            "Enable Replanning",
+            parent=dynamic_obstacles_root,
+            callback=self.enable_dynamic_replanning,
+        )
+        self.disable_dynamic_replanning_handle = self.menu_handler.insert(
+            "Disable Replanning",
+            parent=dynamic_obstacles_root,
+            callback=self.disable_dynamic_replanning,
+        )
+        self.dynamic_replanning_status_handle = self.menu_handler.insert(
+            "Status",
+            parent=dynamic_obstacles_root,
+            callback=self.dynamic_replanning_status,
         )
         self.reset_sim_handle = self.menu_handler.insert(
             "Reset",
@@ -308,6 +336,7 @@ class InteractiveControlsNode(Node):
         # Initial application of menu and markers
         self._apply_joint_control_mode(robot = self.uvms_backend.robot_selected)
         self._refresh_robot_menu_state(self.uvms_backend.robot_selected.k_robot)
+        self._refresh_dynamic_replanning_menu_state()
         self._refresh_vehicle_waypoint_delete_menu()
 
     def reset_simulation(self, feedback: InteractiveMarkerFeedback):
@@ -347,6 +376,68 @@ class InteractiveControlsNode(Node):
 
     def stop_vehicle_waypoints(self, feedback: InteractiveMarkerFeedback):
         self.uvms_backend.stop_selected_vehicle_waypoints()
+
+    def _log_backend_menu_result(self, ok: bool, message: str) -> None:
+        if ok:
+            self.get_logger().info(message)
+        else:
+            self.get_logger().warn(message)
+
+    def add_path_obstacle(self, feedback: InteractiveMarkerFeedback):
+        del feedback
+        selected_robot = self.uvms_backend.robot_selected
+        if selected_robot is None:
+            self.get_logger().warn("No selected robot for path obstacle placement.")
+            return
+        if not getattr(self.uvms_backend, "dynamic_replanning_enabled", False):
+            ok, message = self.uvms_backend.set_dynamic_replanning(enabled=True)
+            self._log_backend_menu_result(ok, message)
+            if not ok:
+                self._refresh_dynamic_replanning_menu_state()
+                return
+        ok, message = self.uvms_backend.spawn_path_obstacle(
+            selected_robot.k_robot,
+            distance_ahead=self.path_obstacle_distance_ahead,
+            radius=self.path_obstacle_radius,
+        )
+        self._log_backend_menu_result(ok, message)
+        self._refresh_dynamic_replanning_menu_state()
+
+    def clear_dynamic_obstacles(self, feedback: InteractiveMarkerFeedback):
+        del feedback
+        ok, message = self.uvms_backend.clear_dynamic_obstacles()
+        self._log_backend_menu_result(ok, message)
+
+    def enable_dynamic_replanning(self, feedback: InteractiveMarkerFeedback):
+        del feedback
+        ok, message = self.uvms_backend.set_dynamic_replanning(enabled=True)
+        self._log_backend_menu_result(ok, message)
+        self._refresh_dynamic_replanning_menu_state()
+
+    def disable_dynamic_replanning(self, feedback: InteractiveMarkerFeedback):
+        del feedback
+        ok, message = self.uvms_backend.set_dynamic_replanning(enabled=False)
+        self._log_backend_menu_result(ok, message)
+        self._refresh_dynamic_replanning_menu_state()
+
+    def dynamic_replanning_status(self, feedback: InteractiveMarkerFeedback):
+        del feedback
+        ok, message = self.uvms_backend.dynamic_replanning_status()
+        self._log_backend_menu_result(ok, message)
+        self._refresh_dynamic_replanning_menu_state()
+
+    def _refresh_dynamic_replanning_menu_state(self) -> None:
+        enabled = bool(getattr(self.uvms_backend, "dynamic_replanning_enabled", False))
+        self.menu_handler.setCheckState(
+            self.enable_dynamic_replanning_handle,
+            MenuHandler.CHECKED if enabled else MenuHandler.UNCHECKED,
+        )
+        self.menu_handler.setCheckState(
+            self.disable_dynamic_replanning_handle,
+            MenuHandler.UNCHECKED if enabled else MenuHandler.CHECKED,
+        )
+        self.menu_handler.reApply(self.server)
+        self.server.applyChanges()
 
     def _refresh_robot_menu_state(self, selected_k_robot: int) -> None:
         selected_robot = self.uvms_backend.robot_selected

@@ -44,6 +44,7 @@ class PlannerActionClient:
         planner_name: str,
         time_limit: float,
         robot_collision_radius: float,
+        dynamic_obstacle_prediction_speed: float = 0.0,
     ) -> bool:
         if self._busy:
             self._node.get_logger().warn(f"{self._tag} action already running; ignoring request.")
@@ -60,11 +61,13 @@ class PlannerActionClient:
         goal_msg.planner_name = str(planner_name)
         goal_msg.time_limit = float(time_limit)
         goal_msg.robot_collision_radius = float(robot_collision_radius)
+        goal_msg.dynamic_obstacle_prediction_speed = max(0.0, float(dynamic_obstacle_prediction_speed))
         self._busy = True
         self._node.get_logger().info(
             f"{self._tag} sending planner request "
             f"planner={goal_msg.planner_name} "
             f"radius={goal_msg.robot_collision_radius:.3f} "
+            f"dynamic_speed={goal_msg.dynamic_obstacle_prediction_speed:.3f} "
             f"start={goal_msg.start_xyz} goal={goal_msg.goal_xyz}"
         )
         send_future = self._action_client.send_goal_async(

@@ -21,5 +21,6 @@ class PlannerTemplate(ABC):
         goal_quat_wxyz,
         time_limit: float,
         robot_collision_radius: float,
+        dynamic_obstacle_prediction_speed: float = 0.0,
     ) -> Dict[str, Any]:
         """Return the planner result dict consumed by PlannerActionServer."""

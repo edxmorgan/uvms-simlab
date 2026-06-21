@@ -7,6 +7,7 @@ A field-ready ROS 2 lab for **Underwater Vehicle–Manipulator Systems**. `uvms_
 
 - **Direct RViz manipulation** – interactive markers drive the vehicle and arm-base targets without custom plugins.
 - **Vehicle waypoint missions** – save multiple vehicle waypoints from RViz and execute them sequentially.
+- **Dynamic obstacle source plugins** – RViz/manual obstacle insertion is routed through a pluggable source registry.
 - **Collision + clearance monitoring** – FCL-backed checks visualize contacts, environment bounds, and clearance markers.
 - **SE(3) planning with live visualization** – OMPL planners + Ruckig execution stream candidate paths and waypoints to RViz.
 - **Control modes** – PS4 teleop, joint-space torque control, or direct thruster PWM via launch args.
@@ -174,8 +175,9 @@ simlab/
 ├── simlab/controllers/               # One controller class per file
 ├── simlab/utils/                     # Shared geometry, frame, mesh, marker, and path-obstacle helpers
 ├── simlab/uvms_parameters.py         # Shared manipulator and vehicle controller parameters
-├── simlab/se3_ompl_planner.py        # OMPL SE(3) planning
-├── simlab/cartesian_ruckig.py        # Ruckig trajectory generation
+├── simlab/planners/                  # Planner plugins, including OMPL SE(3) planning
+├── simlab/trajectory_generators/     # Vehicle trajectory generator plugins
+├── simlab/dynamic_obstacle_sources/  # Dynamic obstacle creation source plugins
 ├── simlab/joystick_control.py        # PS4 teleop node
 ├── simlab/joint_control.py           # Joint-space torque control
 ├── simlab/direct_thruster_control.py # Thruster PWM keyboard control

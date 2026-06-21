@@ -1,32 +1,18 @@
-# cartesian_ruckig.py
+from __future__ import annotations
 
-# Copyright (C) 2025 Edward Morgan
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or (at your
-# option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY, without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program. If not, see <https://www.gnu.org/licenses/>.
-
-#!/usr/bin/env python3
-
-# cartesian_ruckig.py
-
-from ruckig import Ruckig, InputParameter, OutputParameter, Result, RuckigError
 import numpy as np
 from rclpy.node import Node
+from ruckig import InputParameter, OutputParameter, Result, Ruckig, RuckigError
 
-class VehicleCartesianRuckig:
+from simlab.trajectory_generators.base import VehicleTrajectoryGeneratorTemplate
+
+
+class RuckigVehicleTrajectoryGenerator(VehicleTrajectoryGeneratorTemplate):
+    registry_name = "ruckig"
+
     def __init__(self, rclpy_node: Node, dofs: int, control_dt: float, max_waypoints: int):
         if dofs != 3:
-            raise ValueError("CartesianRuckig is intended for 3 DoF position (x, y, z)")
+            raise ValueError("RuckigVehicleTrajectoryGenerator is intended for 3 DoF position (x, y, z)")
         self.rclpy_node = rclpy_node
         self.otg = Ruckig(dofs, control_dt, max_waypoints)
         self.inp = InputParameter(dofs)
@@ -60,7 +46,6 @@ class VehicleCartesianRuckig:
         self.inp.current_velocity = [0.0, 0.0, 0.0]
         self.inp.current_acceleration = [0.0, 0.0, 0.0]
 
-        # All inner waypoints as intermediate positions
         if path_xyz.shape[0] > 2:
             intermediate = [row.tolist() for row in path_xyz[1:-1]]
         else:
@@ -86,12 +71,11 @@ class VehicleCartesianRuckig:
         try:
             res = self.otg.update(self.inp, self.out)
         except RuckigError as exc:
-            self.rclpy_node.get_logger().error(
-                f"Ruckig update failed: {exc}"
-            )
+            self.rclpy_node.get_logger().error(f"Ruckig update failed: {exc}")
             self.active = False
             self.last_result = Result.Error
             return None, None, None, Result.Error
+
         pos = list(self.out.new_position)
         vel = list(self.out.new_velocity)
         acc = list(self.out.new_acceleration)
@@ -102,7 +86,7 @@ class VehicleCartesianRuckig:
 
         if self.out.new_calculation:
             self.rclpy_node.get_logger().info(
-                f"Ruckig new trajectory, calculation {self.out.calculation_duration:0.1f} µs, "
+                f"Ruckig new trajectory, calculation {self.out.calculation_duration:0.1f} us, "
                 f"duration {self.out.trajectory.duration:0.4f} s"
             )
 

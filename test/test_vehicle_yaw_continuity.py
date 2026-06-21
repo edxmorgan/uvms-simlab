@@ -1,41 +1,8 @@
-import sys
-import types
-
 import numpy as np
 
-control_msgs_msg = sys.modules.get("control_msgs.msg")
-if control_msgs_msg is not None:
-    if not hasattr(control_msgs_msg, "DynamicInterfaceGroupValues"):
-        control_msgs_msg.DynamicInterfaceGroupValues = object
-    if not hasattr(control_msgs_msg, "DynamicJointState"):
-        control_msgs_msg.DynamicJointState = object
-    if not hasattr(control_msgs_msg, "InterfaceValue"):
-        control_msgs_msg.InterfaceValue = object
+from scipy.spatial.transform import Rotation as R
 
-simlab_msg = sys.modules.get("simlab.msg")
-if simlab_msg is None:
-    simlab_msg = types.ModuleType("simlab.msg")
-    sys.modules["simlab.msg"] = simlab_msg
-if not hasattr(simlab_msg, "ControllerPerformance"):
-    simlab_msg.ControllerPerformance = object
-if not hasattr(simlab_msg, "ReferenceTargets"):
-    simlab_msg.ReferenceTargets = object
-
-simlab_srv = sys.modules.get("simlab.srv")
-if simlab_srv is None:
-    simlab_srv = types.ModuleType("simlab.srv")
-    sys.modules["simlab.srv"] = simlab_srv
-simlab_srv.ResetSimVehicle = object
-simlab_srv.ResetSimManipulator = object
-simlab_srv.ResetSimRobotState = object
-
-simlab_action = sys.modules.get("simlab.action")
-if simlab_action is None:
-    simlab_action = types.ModuleType("simlab.action")
-    sys.modules["simlab.action"] = simlab_action
-simlab_action.PlanVehicle = object
-
-from simlab.robot import Robot
+from simlab.robot import Robot, yaw_only_quat_wxyz
 
 
 def test_vehicle_command_yaw_unwraps_against_previous_command():
@@ -90,3 +57,34 @@ def test_vehicle_command_yaw_keeps_shortest_turn_when_direction_changes():
     assert command < 2.0
     assert abs(command - 1.98) < 1e-12
     assert robot._last_vehicle_cmd_yaw_step < 0.0
+
+
+def test_vehicle_path_heading_yaw_uses_ned_direction():
+    robot = Robot.__new__(Robot)
+
+    north_yaw = robot._yaw_from_ned_direction([1.0, 0.0, 0.0], fallback_yaw=1.0)
+    east_yaw = robot._yaw_from_ned_direction([0.0, 1.0, 0.0], fallback_yaw=0.0)
+
+    assert north_yaw == 0.0
+    assert east_yaw == np.pi / 2.0
+
+
+def test_vehicle_path_heading_yaw_holds_when_direction_is_too_small():
+    robot = Robot.__new__(Robot)
+
+    yaw = robot._yaw_from_ned_direction([0.001, 0.0, 0.0], fallback_yaw=1.25, speed_threshold=0.03)
+
+    assert yaw == 1.25
+
+
+def test_planner_yaw_only_quaternion_removes_transient_roll_pitch():
+    quat_xyzw = R.from_euler("xyz", [0.2, -0.25, 1.1]).as_quat()
+    quat_wxyz = [quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2]]
+
+    projected = yaw_only_quat_wxyz(quat_wxyz)
+    projected_xyzw = [projected[1], projected[2], projected[3], projected[0]]
+    roll, pitch, yaw = R.from_quat(projected_xyzw).as_euler("xyz", degrees=False)
+
+    assert abs(roll) < 1e-12
+    assert abs(pitch) < 1e-12
+    assert abs(yaw - 1.1) < 1e-12

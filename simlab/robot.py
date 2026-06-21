@@ -14,6 +14,7 @@
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 import csv
+import json
 from datetime import datetime
 from pathlib import Path as FilePath
 
@@ -49,7 +50,7 @@ from simlab.dynamics_profiles import (
     set_dynamics_request_from_profile,
 )
 from simlab.planner_markers import PathPlanner
-from simlab.cartesian_ruckig import VehicleCartesianRuckig
+from simlab.trajectory_generators import VehicleTrajectoryGeneratorTemplate
 from ruckig import Result
 from simlab.uvms_parameters import ReachParams
 from simlab.utils.frames import PoseX
@@ -68,6 +69,22 @@ from simlab.reference_targets import ReferenceTargetPublisher
 from simlab.planner_action_client import PlannerActionClient
 from simlab.planners import visible_planner_names
 from simlab.performance_metrics import ControllerPerformanceMetrics
+
+
+def parameter_or_default(node: Node, name: str, default):
+    parameter = node.get_parameter_or(name, default)
+    return getattr(parameter, "value", parameter)
+
+
+def yaw_only_quat_wxyz(quat_wxyz: Sequence[float]) -> np.ndarray:
+    quat = np.asarray(quat_wxyz, dtype=float).reshape(4)
+    norm = float(np.linalg.norm(quat))
+    if not np.isfinite(norm) or norm <= 1e-12:
+        return np.array([1.0, 0.0, 0.0, 0.0], dtype=float)
+    quat = quat / norm
+    yaw = R.from_quat([quat[1], quat[2], quat[3], quat[0]]).as_euler("xyz", degrees=False)[2]
+    quat_xyzw = R.from_euler("z", yaw).as_quat()
+    return np.array([quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2]], dtype=float)
 
 class ControlSpace(str, Enum):
     JOINT_SPACE = "joint_space"
@@ -476,9 +493,10 @@ class Robot(Base):
                   world_frame: str = "world",
                   create_subscriptions: bool = True):
         self.planner: PathPlanner = planner
-        self.vehicle_cart_traj: VehicleCartesianRuckig = vehicle_cart_traj
+        self.vehicle_cart_traj: VehicleTrajectoryGeneratorTemplate = vehicle_cart_traj
         self.menu_handle = None
         self.final_goal_map_ned_6 = None
+        self.last_vehicle_goal_pose_world = None
         self.yaw_blend_factor = 0.0
         self._last_vehicle_cmd_yaw = None
         self._last_vehicle_target_yaw = None
@@ -660,6 +678,9 @@ class Robot(Base):
         self._replay_record_writer = None
         self._replay_record_path = None
         self._replay_record_controller = None
+        self._replay_obstacle_record_path = None
+        self._replay_obstacle_record = None
+        self.dynamic_obstacle_snapshot_provider = None
         self._replay_last_cmd_body_wrench = [0.0] * 6
         self._replay_last_cmd_arm_tau = [0.0] * 5
         self._replay_last_recorded_sim_time = None
@@ -691,6 +712,15 @@ class Robot(Base):
         self.max_traj_jerk = np.array([0.05, 0.05, 0.05], dtype=float)
         self.trajectory_sample_period = 1.0 / 60.0
         self.max_yaw_command_rate = 1.0
+        self.vehicle_path_yaw_mode = str(
+            parameter_or_default(self.node, "vehicle_path_yaw_mode", "path_heading")
+        ).strip().lower()
+        self.vehicle_path_yaw_speed_threshold = float(
+            parameter_or_default(self.node, "vehicle_path_yaw_speed_threshold", 0.03)
+        )
+        self.vehicle_path_yaw_lookahead_points = int(
+            parameter_or_default(self.node, "vehicle_path_yaw_lookahead_points", 4)
+        )
 
         self.node_name = node.get_name()
         # Search for joystick device in /dev/input
@@ -1523,23 +1553,72 @@ class Robot(Base):
         Return a yaw that points along the current horizontal velocity.
         If the vehicle is moving slower than speed_threshold, do not change yaw.
         """
-        vx = float(self.ned_vel[0])
-        vy = float(self.ned_vel[1])
+        return self._yaw_from_ned_direction(
+            self.ned_vel[:3],
+            fallback_yaw=float(self.ned_pose[5]),
+            speed_threshold=speed_threshold,
+        )
 
-        # Only use translational velocity here
-        linear_speed = np.hypot(vx, vy)
+    def _yaw_from_ned_direction(
+        self,
+        direction_ned: Sequence[float],
+        *,
+        fallback_yaw: float,
+        speed_threshold: float = 0.03,
+    ) -> float:
+        direction = np.asarray(direction_ned, dtype=float).reshape(-1)
+        if direction.size < 2:
+            return float(fallback_yaw)
+        horizontal_speed = float(np.hypot(direction[0], direction[1]))
+        if horizontal_speed < float(speed_threshold):
+            return float(fallback_yaw)
+        desired_yaw = float(np.arctan2(direction[1], direction[0]))
+        return self.normalize_angle(desired_yaw, float(fallback_yaw))
 
-        current_yaw = float(self.ned_pose[5])
+    def _path_heading_reference_yaw_ned(
+        self,
+        velocity_ned: Sequence[float],
+        path_xyz_world_nwu: np.ndarray,
+        target_xyz_world_nwu: np.ndarray,
+        nearest_idx: int,
+        fallback_yaw: float,
+    ) -> float:
+        speed_threshold = max(0.0, float(getattr(self, "vehicle_path_yaw_speed_threshold", 0.03)))
+        yaw = self._yaw_from_ned_direction(
+            velocity_ned,
+            fallback_yaw=fallback_yaw,
+            speed_threshold=speed_threshold,
+        )
+        if yaw != float(fallback_yaw):
+            return yaw
 
-        # If we are basically not translating, keep current yaw
-        if linear_speed < speed_threshold:
-            return current_yaw
+        path = np.asarray(path_xyz_world_nwu, dtype=float).reshape(-1, 3)
+        target = np.asarray(target_xyz_world_nwu, dtype=float).reshape(3)
+        if path.shape[0] < 2:
+            return float(fallback_yaw)
 
-        # Otherwise compute the yaw that faces the velocity direction
-        desired_yaw = np.arctan2(vy, vx)
+        max_offset = max(1, int(getattr(self, "vehicle_path_yaw_lookahead_points", 4)))
+        start = min(max(0, int(nearest_idx) + 1), path.shape[0] - 1)
+        stop = min(path.shape[0], start + max_offset)
+        for candidate in path[start:stop]:
+            direction_world_nwu = np.asarray(candidate, dtype=float) - target
+            if np.linalg.norm(direction_world_nwu[:2]) < speed_threshold:
+                continue
+            vect6_world_nwu = np.zeros(6, dtype=float)
+            vect6_world_nwu[:3] = direction_world_nwu
+            vect6_map_ned = self.world_nwu_vect6_to_map_ned_vect6(
+                vect6_world_nwu,
+                warn_context=f"path heading world->map ({self.prefix})",
+            )
+            if vect6_map_ned is None:
+                return float(fallback_yaw)
+            return self._yaw_from_ned_direction(
+                vect6_map_ned[:3],
+                fallback_yaw=fallback_yaw,
+                speed_threshold=speed_threshold,
+            )
 
-        # Smooth shortest path from current to desired
-        return self.normalize_angle(desired_yaw, current_yaw)
+        return float(fallback_yaw)
 
     def normalize_angle(self, desired_yaw, current_yaw):
         # Compute the smallest angular difference
@@ -1759,6 +1838,7 @@ class Robot(Base):
             return
 
         if plan_result.get("is_success", False):
+            preserve_yaw_memory = bool(self._preserve_active_plan_on_failure)
             if self.planner is not None:
                 self.planner.planned_result = dict(plan_result)
             self._preserve_active_plan_on_failure = False
@@ -1767,7 +1847,12 @@ class Robot(Base):
             )
     
             path_xyz = np.asarray(self.planner.planned_result["xyz"], dtype=float)
-            self._start_vehicle_cartesian_ruckig(self.start_xyz, self.start_quat_wxyz, path_xyz)
+            self._start_vehicle_trajectory(
+                self.start_xyz,
+                self.start_quat_wxyz,
+                path_xyz,
+                preserve_yaw_memory=preserve_yaw_memory,
+            )
             self.enable_planner_output()
         else:
             if not self._preserve_active_plan_on_failure and self.planner is not None:
@@ -1782,8 +1867,16 @@ class Robot(Base):
                 )
             self._preserve_active_plan_on_failure = False
 
-    def _start_vehicle_cartesian_ruckig(self, start_xyz, start_quat_wxyz, path_xyz: np.ndarray) -> None:
-        self.reset_vehicle_command_yaw_memory()
+    def _start_vehicle_trajectory(
+        self,
+        start_xyz,
+        start_quat_wxyz,
+        path_xyz: np.ndarray,
+        *,
+        preserve_yaw_memory: bool = False,
+    ) -> None:
+        if not preserve_yaw_memory:
+            self.reset_vehicle_command_yaw_memory()
         self.vehicle_cart_traj.start_from_path(
             current_position=list(start_xyz),
             path_xyz=path_xyz,
@@ -1799,6 +1892,7 @@ class Robot(Base):
         time_limit: float = 1.0,
         robot_collision_radius: float = 0.4,
         preempt_current: bool = True,
+        dynamic_obstacle_prediction_speed: float = 0.0,
     ) -> bool:
         if self._replay_is_active():
             self.abrupt_planner_stop()
@@ -1825,13 +1919,15 @@ class Robot(Base):
         if preempt_current:
             self.hold_current_state_with_feedback()
 
-        self.start_xyz, self.start_quat_wxyz = self._pose_to_xyz_quat_wxyz(pose_now)
+        self.start_xyz, start_quat_wxyz_raw = self._pose_to_xyz_quat_wxyz(pose_now)
 
-        goal_xyz, goal_quat_wxyz = self._get_vehicle_goal_from_marker(goal_pose)
+        goal_xyz, goal_quat_wxyz_raw = self._get_vehicle_goal_from_marker(goal_pose)
+        self.start_quat_wxyz = yaw_only_quat_wxyz(start_quat_wxyz_raw)
+        goal_quat_wxyz = yaw_only_quat_wxyz(goal_quat_wxyz_raw)
 
         self._log_plan_context(self.start_xyz, self.start_quat_wxyz, goal_xyz, goal_quat_wxyz)
 
-        self._save_vehicle_goal_from_target(goal_xyz, goal_quat_wxyz)
+        self._save_vehicle_goal_from_target(goal_xyz, goal_quat_wxyz_raw)
 
         sent = self.planner_action_client.send_goal(
             start_xyz=self.start_xyz,
@@ -1840,10 +1936,12 @@ class Robot(Base):
             goal_quat_wxyz=goal_quat_wxyz,
             planner_name=self.planner_name,
             time_limit=float(time_limit),
-            robot_collision_radius=float(robot_collision_radius)
+            robot_collision_radius=float(robot_collision_radius),
+            dynamic_obstacle_prediction_speed=max(0.0, float(dynamic_obstacle_prediction_speed)),
         )
 
         if sent:
+            self.last_vehicle_goal_pose_world = copy.deepcopy(goal_pose)
             self.node.get_logger().info(
                 f"Submitted planner action request for {self.prefix}"
             )
@@ -1926,15 +2024,17 @@ class Robot(Base):
             wp_err_trans, wp_err_rot, wp_err_joint, goal_err_trans, goal_err_rot = self.compute_errors()
             goal_xyz_error = np.linalg.norm(goal_err_trans)
 
-            # Calculate the blend factor.
-            # When pos_error >= pos_blend_threshold, blend_factor will be 0 (full velocity_yaw).
-            # When pos_error == 0, blend_factor will be 1 (full target_yaw).
+            # Calculate the blend factor. Far from the final waypoint, use
+            # the path tangent as yaw reference so the vehicle does not strafe
+            # through waypoint missions. Near the final waypoint, blend to the
+            # goal orientation while preserving continuous, rate-limited yaw.
             self.yaw_blend_factor = np.clip((self.pos_blend_threshold - goal_xyz_error) / self.pos_blend_threshold, 0.0, 1.0)
             # self.get_logger().info(
             #     f"{robot.yaw_blend_factor} yaw_blend_factor"
             # )
-            # Get the velocity-based yaw.
-            adjusted_yaw = self.orient_towards_velocity()
+            hold_yaw = self._last_vehicle_cmd_yaw
+            if hold_yaw is None:
+                hold_yaw = float(self.ned_pose[5])
 
             pos_nwu, vel_nwu, acc_nwu, res = self.vehicle_cart_traj.update(self.yaw_blend_factor)
             if pos_nwu is None:
@@ -1983,10 +2083,24 @@ class Robot(Base):
             if target_pose_map_ned is not None and tw6_map_ned is not None and acc6_map_ned is not None:
                 p_cmd_ned, rpy_cmd_ned = target_pose_map_ned
 
+                yaw_mode = str(getattr(self, "vehicle_path_yaw_mode", "path_heading")).strip().lower()
+                if yaw_mode == "hold":
+                    path_yaw = float(hold_yaw)
+                elif yaw_mode == "goal":
+                    path_yaw = self.normalize_angle(float(rpy_cmd_ned[2]), float(hold_yaw))
+                else:
+                    path_yaw = self._path_heading_reference_yaw_ned(
+                        tw6_map_ned[:3],
+                        path_xyz,
+                        target_pose_nwu,
+                        idx,
+                        float(hold_yaw),
+                    )
+
                 # Blend on the unwrapped shortest yaw arc. Directly averaging
                 # angles near +/-pi can command a full turn through zero.
-                target_yaw = self.normalize_angle(float(rpy_cmd_ned[2]), adjusted_yaw)
-                blended_yaw = adjusted_yaw + self.yaw_blend_factor * (target_yaw - adjusted_yaw)
+                goal_yaw = self.normalize_angle(float(rpy_cmd_ned[2]), float(path_yaw))
+                blended_yaw = float(path_yaw) + self.yaw_blend_factor * (goal_yaw - float(path_yaw))
                 max_yaw_step = float(self.max_yaw_command_rate) * float(self.trajectory_sample_period)
                 rpy_cmd_ned[2] = self.continuous_vehicle_command_yaw(
                     blended_yaw,
@@ -2214,6 +2328,123 @@ class Robot(Base):
         token = "".join(ch if ch.isalnum() or ch in ("-", "_", ".") else "_" for ch in str(value))
         return token.strip("_") or "unknown"
 
+
+    def _dynamic_obstacle_snapshot_for_recording(self):
+        provider = getattr(self, "dynamic_obstacle_snapshot_provider", None)
+        if not callable(provider):
+            return None
+        try:
+            return provider()
+        except Exception as exc:
+            self.node.get_logger().warn(f"Failed to read dynamic obstacle snapshot for replay recording: {exc}")
+            return None
+
+    @staticmethod
+    def _msg_time_to_recording_dict(stamp) -> dict:
+        if stamp is None:
+            return {"sec": 0, "nanosec": 0}
+        return {
+            "sec": int(getattr(stamp, "sec", 0)),
+            "nanosec": int(getattr(stamp, "nanosec", 0)),
+        }
+
+    @staticmethod
+    def _vector3_to_recording_dict(value) -> dict:
+        return {
+            "x": float(getattr(value, "x", 0.0)),
+            "y": float(getattr(value, "y", 0.0)),
+            "z": float(getattr(value, "z", 0.0)),
+        }
+
+    @staticmethod
+    def _quat_to_recording_dict(value) -> dict:
+        return {
+            "x": float(getattr(value, "x", 0.0)),
+            "y": float(getattr(value, "y", 0.0)),
+            "z": float(getattr(value, "z", 0.0)),
+            "w": float(getattr(value, "w", 1.0)),
+        }
+
+    @staticmethod
+    def _rgba_to_recording_dict(value) -> dict:
+        return {
+            "r": float(getattr(value, "r", 0.0)),
+            "g": float(getattr(value, "g", 0.0)),
+            "b": float(getattr(value, "b", 0.0)),
+            "a": float(getattr(value, "a", 1.0)),
+        }
+
+    def _dynamic_obstacle_summary_for_recording(self, msg=None) -> tuple[int, str]:
+        if msg is None:
+            msg = self._dynamic_obstacle_snapshot_for_recording()
+        obstacles = list(getattr(msg, "obstacles", []) or []) if msg is not None else []
+        ids = []
+        for index, obstacle in enumerate(obstacles):
+            obstacle_id = str(getattr(obstacle, "id", "")).strip() or f"obstacle_{index}"
+            ids.append(obstacle_id)
+        return len(ids), ",".join(ids)
+
+    def _dynamic_obstacle_array_to_recording_dict(self, msg) -> dict:
+        header = getattr(msg, "header", None)
+        obstacles = []
+        for index, obstacle in enumerate(list(getattr(msg, "obstacles", []) or [])):
+            pose = getattr(obstacle, "pose", None)
+            twist = getattr(obstacle, "twist", None)
+            obstacles.append(
+                {
+                    "id": str(getattr(obstacle, "id", "")).strip() or f"obstacle_{index}",
+                    "collision_type": int(getattr(obstacle, "collision_type", 0)),
+                    "collision_dimensions": [float(v) for v in list(getattr(obstacle, "collision_dimensions", []) or [])],
+                    "visual_type": int(getattr(obstacle, "visual_type", 0)),
+                    "visual_dimensions": [float(v) for v in list(getattr(obstacle, "visual_dimensions", []) or [])],
+                    "visual_mesh_resource": str(getattr(obstacle, "visual_mesh_resource", "")),
+                    "pose": {
+                        "position": self._vector3_to_recording_dict(getattr(pose, "position", None)),
+                        "orientation": self._quat_to_recording_dict(getattr(pose, "orientation", None)),
+                    },
+                    "twist": {
+                        "linear": self._vector3_to_recording_dict(getattr(twist, "linear", None)),
+                        "angular": self._vector3_to_recording_dict(getattr(twist, "angular", None)),
+                    },
+                    "color": self._rgba_to_recording_dict(getattr(obstacle, "color", None)),
+                }
+            )
+        return {
+            "frame_id": str(getattr(header, "frame_id", "")),
+            "stamp": self._msg_time_to_recording_dict(getattr(header, "stamp", None)),
+            "obstacles": obstacles,
+        }
+
+    def _write_replay_obstacle_record(self) -> None:
+        if self._replay_obstacle_record_path is None or self._replay_obstacle_record is None:
+            return
+        try:
+            self._replay_obstacle_record_path.write_text(
+                json.dumps(self._replay_obstacle_record, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            self.node.get_logger().warn(f"Failed to write CmdReplay dynamic obstacle sidecar: {exc}")
+
+    def _append_replay_obstacle_snapshot(self, event: str) -> None:
+        if self._replay_obstacle_record is None:
+            return
+        msg = self._dynamic_obstacle_snapshot_for_recording()
+        if msg is None:
+            return
+        count, ids = self._dynamic_obstacle_summary_for_recording(msg)
+        self._replay_obstacle_record.setdefault("snapshots", []).append(
+            {
+                "event": str(event),
+                "wall_time_sec": self.node.get_clock().now().nanoseconds * 1e-9,
+                "sim_time_sec": float(getattr(self, "sim_time", 0.0)),
+                "dynamic_obstacle_count": count,
+                "dynamic_obstacle_ids": ids,
+                "dynamic_obstacles": self._dynamic_obstacle_array_to_recording_dict(msg),
+            }
+        )
+        self._write_replay_obstacle_record()
+
     def _start_replay_session_recording(self, replay_controller, state: Dict) -> None:
         if self._replay_record_handle is not None:
             return
@@ -2231,6 +2462,8 @@ class Robot(Base):
             "replay_time_sec",
             "profile",
             "pass_index",
+            "dynamic_obstacle_count",
+            "dynamic_obstacle_ids",
             "q_alpha_axis_e",
             "q_alpha_axis_d",
             "q_alpha_axis_c",
@@ -2327,6 +2560,16 @@ class Robot(Base):
         self._replay_record_writer = csv.DictWriter(self._replay_record_handle, fieldnames=fieldnames)
         self._replay_record_writer.writeheader()
         self._replay_record_path = path
+        self._replay_obstacle_record_path = path.with_name(f"{path.stem}_dynamic_obstacles.json")
+        self._replay_obstacle_record = {
+            "schema": "simlab_cmd_replay_dynamic_obstacles_v1",
+            "csv": path.name,
+            "profile": getattr(replay_controller, "profile_name", ""),
+            "pass_index": pass_index,
+            "robot_prefix": self.prefix,
+            "snapshots": [],
+        }
+        self._append_replay_obstacle_snapshot("start")
         self._replay_record_controller = replay_controller
         self._replay_last_cmd_body_wrench = [0.0] * 6
         self._replay_last_cmd_arm_tau = [0.0] * 5
@@ -2362,6 +2605,7 @@ class Robot(Base):
         body_forces = list(state.get("body_forces", []))
         arm_cmd = list(cmd_arm_tau)
         vehicle_cmd = list(cmd_body_wrench)
+        obstacle_count, obstacle_ids = self._dynamic_obstacle_summary_for_recording()
         sample_index = (
             replay_controller.current_sample_index()
             if hasattr(replay_controller, "current_sample_index")
@@ -2389,6 +2633,8 @@ class Robot(Base):
                 "replay_time_sec": float(getattr(replay_controller, "_sample_time_sec", 0.0)),
                 "profile": getattr(replay_controller, "profile_name", ""),
                 "pass_index": int(getattr(replay_controller, "_current_pass", 0)) + 1,
+                "dynamic_obstacle_count": obstacle_count,
+                "dynamic_obstacle_ids": obstacle_ids,
                 "q_alpha_axis_e": at(q, 0),
                 "q_alpha_axis_d": at(q, 1),
                 "q_alpha_axis_c": at(q, 2),
@@ -2486,22 +2732,30 @@ class Robot(Base):
         if self._replay_record_handle is None:
             return
         path = self._replay_record_path
+        obstacle_path = self._replay_obstacle_record_path
+        self._append_replay_obstacle_snapshot("stop")
         self._replay_record_handle.flush()
         self._replay_record_handle.close()
         self._replay_record_handle = None
         self._replay_record_writer = None
         self._replay_record_path = None
         self._replay_record_controller = None
+        self._replay_obstacle_record_path = None
+        self._replay_obstacle_record = None
         self._replay_last_cmd_body_wrench = [0.0] * 6
         self._replay_last_cmd_arm_tau = [0.0] * 5
         self._replay_last_recorded_sim_time = None
-        self.node.get_logger().info(f"Saved CmdReplay session ({reason}) to {path}.")
+        message = f"Saved CmdReplay session ({reason}) to {path}."
+        if obstacle_path is not None:
+            message += f" Dynamic obstacles: {obstacle_path}."
+        self.node.get_logger().info(message)
     
     def abrupt_planner_stop(self, *, publish_zero: bool = True):
         self.disable_planner_output()
         self._accept_planner_results = False
         self.planner_action_client.cancel_active_goal()
         self.final_goal_map_ned_6 = None
+        self.last_vehicle_goal_pose_world = None
         if self.planner is not None:
             self.planner.planned_result = None
             stamp_now = self.node.get_clock().now().to_msg()

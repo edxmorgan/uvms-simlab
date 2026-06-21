@@ -10,6 +10,7 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.serialization import serialize_message
 from std_srvs.srv import Trigger
+from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
 
 import rosbag2_py
 
@@ -19,7 +20,16 @@ class TopicSpec:
     name: str
     msg_cls: Any
     type_str: str
-    qos_depth: int = 10
+    qos_depth: Any = 10
+
+
+def transient_local_qos(depth: int = 1) -> QoSProfile:
+    return QoSProfile(
+        history=QoSHistoryPolicy.KEEP_LAST,
+        depth=int(depth),
+        durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+        reliability=QoSReliabilityPolicy.RELIABLE,
+    )
 
 
 class BagRecorder(Node):
@@ -51,6 +61,7 @@ class BagRecorder(Node):
         self._subs = []
         self._topic_names: List[str] = []
         self._topics = list(topics)
+        self._topics.extend(self._dynamic_obstacle_topic_specs())
         self._topics.extend(self._desired_target_topic_specs(robot_prefixes))
 
         self._topic_names = [spec.name for spec in self._topics]
@@ -83,6 +94,27 @@ class BagRecorder(Node):
         for sub in self._subs:
             self.destroy_subscription(sub)
         self._subs = []
+
+    @staticmethod
+    def _dynamic_obstacle_topic_specs() -> List[TopicSpec]:
+        from ros2_control_blue_reach_5.msg import DynamicObstacleArray
+        from visualization_msgs.msg import MarkerArray
+
+        qos = transient_local_qos(depth=1)
+        return [
+            TopicSpec(
+                name="/dynamic_obstacles",
+                msg_cls=DynamicObstacleArray,
+                type_str="ros2_control_blue_reach_5/msg/DynamicObstacleArray",
+                qos_depth=qos,
+            ),
+            TopicSpec(
+                name="/dynamic_obstacle_markers",
+                msg_cls=MarkerArray,
+                type_str="visualization_msgs/msg/MarkerArray",
+                qos_depth=qos,
+            ),
+        ]
 
     @staticmethod
     def _desired_target_topic_specs(robot_prefixes: List[str]) -> List[TopicSpec]:

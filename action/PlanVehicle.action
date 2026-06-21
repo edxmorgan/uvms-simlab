@@ -5,6 +5,9 @@ float64[] goal_quat_wxyz
 string planner_name
 float64 time_limit
 float64 robot_collision_radius
+# Optional speed used by planners to time-index dynamic obstacle predictions.
+# <= 0 keeps current-snapshot dynamic obstacle checks.
+float64 dynamic_obstacle_prediction_speed
 ---
 bool success
 bool is_success

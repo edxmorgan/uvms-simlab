@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import copy
 import time
-from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import numpy as np
 
+from simlab.dynamic_replanners.base import (
+    DynamicReplannerTemplate,
+    ReplanDecision,
+    TimedPathSample,
+)
 from simlab.robot import ControlMode
 
 if TYPE_CHECKING:
@@ -14,28 +19,10 @@ if TYPE_CHECKING:
     from simlab.vehicle_waypoint_mission import VehicleWaypointMission
 
 
-@dataclass(frozen=True)
-class ReplanDecision:
-    action: str
-    reason: str = ""
-    obstacle_id: str = ""
-    clearance_m: float | None = None
-    path_signature: str = ""
-    t_offset_s: float | None = None
-
-    @property
-    def should_replan(self) -> bool:
-        return self.action == "replan"
-
-
-@dataclass(frozen=True)
-class TimedPathSample:
-    xyz: np.ndarray
-    t_offset: float
-
-
-class DynamicReplanner:
+class ClearanceHysteresisReplanner(DynamicReplannerTemplate):
     """Per-robot event-triggered replanning supervisor."""
+
+    registry_name = "clearance_hysteresis"
 
     def __init__(
         self,
@@ -67,6 +54,7 @@ class DynamicReplanner:
         self._last_replan_clearance_m: float | None = None
         self._last_replan_path_signature = ""
         self._last_same_path_suppression_log_time = 0.0
+        self._last_hysteresis_suppression_log_time = 0.0
         self.replan_count = 0
         self.last_replan_reason = ""
 
@@ -97,9 +85,6 @@ class DynamicReplanner:
             self.replan_hysteresis_m = max(0.0, float(replan_hysteresis_m))
 
     def tick(self) -> None:
-        if not self.mission.executing or self.mission.active_index is None:
-            return
-
         if self._stop_if_current_dynamic_collision():
             return
 
@@ -116,8 +101,11 @@ class DynamicReplanner:
         if self._is_hysteresis_suppressed(decision):
             return
 
-        goal_pose = self.mission.active_waypoint()
+        goal_pose = self._active_goal_pose()
         if goal_pose is None:
+            self.node.get_logger().warn(
+                f"[DynamicReplanner] cannot replan {self.robot.prefix}: active goal pose is unavailable."
+            )
             return
 
         self._last_replan_time = time.monotonic()
@@ -129,12 +117,13 @@ class DynamicReplanner:
         self.node.get_logger().warn(
             f"[DynamicReplanner] replanning {self.robot.prefix}: {decision.reason}"
         )
-        planner_radius = float(self.backend.fcl_world.vehicle_radius) + self.safety_margin_m
+        planner_radius = float(self.backend.fcl_world.vehicle_radius)
         self.robot.plan_vehicle_trajectory_action(
             goal_pose=goal_pose,
             time_limit=1.0,
             robot_collision_radius=planner_radius,
             preempt_current=False,
+            dynamic_obstacle_prediction_speed=self._nominal_vehicle_speed(self.robot),
         )
 
     def _stop_if_current_dynamic_collision(self) -> bool:
@@ -166,6 +155,14 @@ class DynamicReplanner:
             f"{clearance.distance_m:.3f} m <= stop margin {self.collision_stop_margin_m:.3f} m"
         )
         return True
+
+    def _active_goal_pose(self):
+        if self.mission.executing and self.mission.active_index is not None:
+            return self.mission.active_waypoint()
+        goal_pose = getattr(self.robot, "last_vehicle_goal_pose_world", None)
+        if goal_pose is None:
+            return None
+        return copy.deepcopy(goal_pose)
 
     def evaluate(self) -> ReplanDecision:
         robot = self.robot
@@ -199,6 +196,7 @@ class DynamicReplanner:
         self._last_replan_clearance_m = None
         self._last_replan_path_signature = ""
         self._last_same_path_suppression_log_time = 0.0
+        self._last_hysteresis_suppression_log_time = 0.0
         self.last_replan_reason = ""
         if reset_count:
             self.replan_count = 0
@@ -217,12 +215,15 @@ class DynamicReplanner:
         if decision.clearance_m < improvement_threshold:
             return False
 
-        self.node.get_logger().info(
-            f"[DynamicReplanner] suppressing repeat replan for {self.robot.prefix}: "
-            f"clearance to '{decision.obstacle_id}' is {decision.clearance_m:.3f} m, "
-            f"last trigger was {self._last_replan_clearance_m:.3f} m "
-            f"(hysteresis {self.replan_hysteresis_m:.3f} m)"
-        )
+        now = time.monotonic()
+        if now - self._last_hysteresis_suppression_log_time >= 2.0:
+            self._last_hysteresis_suppression_log_time = now
+            self.node.get_logger().info(
+                f"[DynamicReplanner] suppressing repeat replan for {self.robot.prefix}: "
+                f"clearance to '{decision.obstacle_id}' is {decision.clearance_m:.3f} m, "
+                f"last trigger was {self._last_replan_clearance_m:.3f} m "
+                f"(hysteresis {self.replan_hysteresis_m:.3f} m)"
+            )
         return True
 
     def _is_same_path_attempt_suppressed(self, decision: ReplanDecision) -> bool:
@@ -380,3 +381,7 @@ class DynamicReplanner:
             TimedPathSample(xyz=xyz, t_offset=max(0.0, distance / speed))
             for xyz, distance in zip(samples, distances)
         ]
+
+
+
+DynamicReplanner = ClearanceHysteresisReplanner

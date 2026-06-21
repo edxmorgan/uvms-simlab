@@ -76,6 +76,7 @@ class PlannerActionServer(Node):
             and len(goal_request.goal_xyz) == 3
             and len(goal_request.goal_quat_wxyz) == 4
             and goal_request.robot_collision_radius > 0.0
+            and goal_request.dynamic_obstacle_prediction_speed >= 0.0
             and goal_request.planner_name in self._planners
         )
         if not valid:
@@ -86,6 +87,7 @@ class PlannerActionServer(Node):
                 f"goal_xyz={len(goal_request.goal_xyz)} "
                 f"goal_quat={len(goal_request.goal_quat_wxyz)} "
                 f"radius={goal_request.robot_collision_radius:.4f} "
+                f"dynamic_speed={goal_request.dynamic_obstacle_prediction_speed:.4f} "
                 f"planner='{goal_request.planner_name}'"
             )
             return GoalResponse.REJECT
@@ -94,6 +96,7 @@ class PlannerActionServer(Node):
             f"{self._tag} received goal "
             f"planner={goal_request.planner_name} "
             f"radius={goal_request.robot_collision_radius:.3f} "
+            f"dynamic_speed={goal_request.dynamic_obstacle_prediction_speed:.3f} "
             f"start={list(goal_request.start_xyz)} goal={list(goal_request.goal_xyz)} "
             f"time_limit={goal_request.time_limit:.3f}s "
         )
@@ -152,6 +155,7 @@ class PlannerActionServer(Node):
             f"{self._tag} input summary "
             f"planner={req.planner_name} "
             f"radius={req.robot_collision_radius:.3f} "
+            f"dynamic_speed={req.dynamic_obstacle_prediction_speed:.3f} "
             f"start_xyz={list(req.start_xyz)} goal_xyz={list(req.goal_xyz)} "
             f"env_bounds={list(self.env_bounds)} "
             f"dynamic_obstacles={len(self.dynamic_world.obstacles)} "
@@ -179,6 +183,7 @@ class PlannerActionServer(Node):
                 goal_quat_wxyz=req.goal_quat_wxyz,
                 time_limit=float(req.time_limit),
                 robot_collision_radius=float(req.robot_collision_radius),
+                dynamic_obstacle_prediction_speed=float(req.dynamic_obstacle_prediction_speed),
             )
         except Exception as ex:
             goal_handle.abort()
