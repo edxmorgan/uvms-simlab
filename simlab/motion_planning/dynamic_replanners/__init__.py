@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from simlab.dynamic_replanners.base import (
+from simlab.motion_planning.dynamic_replanners.base import (
     DynamicReplannerTemplate,
     ReplanDecision,
     TimedPathSample,
 )
-from simlab.dynamic_replanners.clearance_hysteresis import ClearanceHysteresisReplanner
+from simlab.motion_planning.dynamic_replanners.clearance_hysteresis import ClearanceHysteresisReplanner
 
 DEFAULT_DYNAMIC_REPLANNER_CLASSES = [ClearanceHysteresisReplanner]
 

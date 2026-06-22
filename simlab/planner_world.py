@@ -8,6 +8,9 @@ from simlab.dynamic_world import DynamicClearance, DynamicWorldModel
 from simlab.fcl_checker import FCLWorld
 
 
+DYNAMIC_CLEARANCE_TOLERANCE_M = 1e-4
+
+
 @dataclass(frozen=True)
 class PlannerWorldClearance:
     source: str
@@ -51,7 +54,10 @@ class PlannerWorld:
         if self.fcl_world.planner_in_collision_at_xyz(point):
             return True
         dynamic_clearance = self._dynamic_clearance(point, t_offset=t_offset)
-        return dynamic_clearance is not None and dynamic_clearance.distance_m <= 0.0
+        return (
+            dynamic_clearance is not None
+            and dynamic_clearance.distance_m < -DYNAMIC_CLEARANCE_TOLERANCE_M
+        )
 
     def is_state_valid_xyz(
         self,
@@ -62,7 +68,7 @@ class PlannerWorld:
     ) -> bool:
         margin = max(0.0, float(safety_margin))
         if margin > 0.0:
-            return self.min_clearance_xyz(xyz, t_offset=t_offset).distance_m >= margin
+            return self.min_clearance_xyz(xyz, t_offset=t_offset).distance_m >= (margin - DYNAMIC_CLEARANCE_TOLERANCE_M)
         return not self.in_collision_xyz(xyz, t_offset=t_offset)
 
     def _dynamic_clearance(self, xyz: np.ndarray, *, t_offset: float) -> DynamicClearance | None:

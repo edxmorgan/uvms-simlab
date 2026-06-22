@@ -6,11 +6,12 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from simlab.dynamic_replanners.base import (
+from simlab.motion_planning.dynamic_replanners.base import (
     DynamicReplannerTemplate,
     ReplanDecision,
     TimedPathSample,
 )
+from simlab.planner_world import DYNAMIC_CLEARANCE_TOLERANCE_M
 from simlab.robot import ControlMode
 
 if TYPE_CHECKING:
@@ -117,7 +118,7 @@ class ClearanceHysteresisReplanner(DynamicReplannerTemplate):
         self.node.get_logger().warn(
             f"[DynamicReplanner] replanning {self.robot.prefix}: {decision.reason}"
         )
-        planner_radius = float(self.backend.fcl_world.vehicle_radius)
+        planner_radius = float(self.backend.fcl_world.vehicle_radius) + self.safety_margin_m
         self.robot.plan_vehicle_trajectory_action(
             goal_pose=goal_pose,
             time_limit=1.0,
@@ -143,7 +144,8 @@ class ClearanceHysteresisReplanner(DynamicReplannerTemplate):
             dtype=float,
         )
         clearance = dynamic_world.min_clearance_xyz(current_xyz)
-        if clearance is None or clearance.distance_m > self.collision_stop_margin_m:
+        stop_threshold = self.collision_stop_margin_m - DYNAMIC_CLEARANCE_TOLERANCE_M
+        if clearance is None or clearance.distance_m >= stop_threshold:
             return False
 
         self.mission.stop()

@@ -49,10 +49,10 @@ from simlab.srv import (
 from ros2_control_blue_reach_5.msg import DynamicObstacleArray
 from ros2_control_blue_reach_5.srv import ResetSimUvms, SetDynamicObstacles
 from simlab.planner_markers import PathPlanner
-from simlab.trajectory_generators import vehicle_trajectory_generator_class
+from simlab.motion_planning.trajectory_generators import vehicle_trajectory_generator_class
 from simlab.dynamic_obstacle_sources import DynamicObstacleSourceRequest, dynamic_obstacle_source_class
-from simlab.dynamic_replanners import dynamic_replanner_class
-from simlab.dynamic_replanners.base import DynamicReplannerTemplate
+from simlab.motion_planning.dynamic_replanners import dynamic_replanner_class
+from simlab.motion_planning.dynamic_replanners.base import DynamicReplannerTemplate
 from simlab.dynamic_world import DynamicWorldModel
 from simlab.utils.frames import PoseX
 from simlab.vehicle_waypoint_mission import (
@@ -589,12 +589,9 @@ class UVMSBackendCore:
         if not self.dynamic_obstacles_client.wait_for_service(timeout_sec=0.2):
             self.node.get_logger().warn(f"dynamic obstacle service {service_name} is not ready.")
             return False
-        self.dynamic_obstacle_snapshot = copy.deepcopy(obstacle_msg)
-        if self.dynamic_world is not None:
-            self.dynamic_world.update_from_msg(obstacle_msg)
-
+        requested_obstacles = copy.deepcopy(obstacle_msg)
         request = SetDynamicObstacles.Request()
-        request.obstacles = obstacle_msg
+        request.obstacles = requested_obstacles
         future = self.dynamic_obstacles_client.call_async(request)
 
         def _done_callback(done_future) -> None:
@@ -604,6 +601,9 @@ class UVMSBackendCore:
                 self.node.get_logger().warn(f"{label} failed: {exc}")
                 return
             if response is not None and response.success:
+                self.dynamic_obstacle_snapshot = copy.deepcopy(requested_obstacles)
+                if self.dynamic_world is not None:
+                    self.dynamic_world.update_from_msg(requested_obstacles)
                 self.node.get_logger().info(f"{label} applied: {response.message}")
             else:
                 message = "" if response is None else response.message

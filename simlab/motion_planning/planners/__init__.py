@@ -1,5 +1,5 @@
-from simlab.planners.base import PlannerTemplate
-from simlab.planners.ompl import BitStarPlanner, RrtConnectPlanner, RrtStarPlanner
+from simlab.motion_planning.planners.base import PlannerTemplate
+from simlab.motion_planning.planners.ompl import BitStarPlanner, RrtConnectPlanner, RrtStarPlanner
 
 
 DEFAULT_PLANNER_CLASSES = [

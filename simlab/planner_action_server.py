@@ -11,7 +11,7 @@ from simlab.dynamic_world import DynamicWorldModel
 from simlab.fcl_checker import FCLWorld
 from simlab.planner_world import PlannerWorld
 from simlab.shutdown import install_signal_shutdown_handler, spin_until_shutdown
-from simlab.planners import DEFAULT_PLANNER_CLASSES
+from simlab.motion_planning.planners import DEFAULT_PLANNER_CLASSES
 
 class PlannerActionServer(Node):
 

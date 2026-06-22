@@ -69,3 +69,23 @@ def test_planner_world_collision_checks_static_and_dynamic_worlds():
 
     assert world.in_collision_xyz([0.0, 0.0, -1.0], t_offset=2.0)
     assert dynamic_world.last_t_offset == 2.0
+
+
+def test_planner_world_treats_near_zero_dynamic_clearance_as_tangent_not_collision():
+    world = PlannerWorld(
+        fcl_world=FakeFclWorld(static_distance=1.0, in_collision=False),
+        dynamic_world=FakeDynamicWorld(clearance=-5e-5),
+    )
+
+    assert not world.in_collision_xyz([0.0, 0.0, -1.0])
+    assert world.is_state_valid_xyz([0.0, 0.0, -1.0])
+
+
+def test_planner_world_rejects_real_dynamic_penetration():
+    world = PlannerWorld(
+        fcl_world=FakeFclWorld(static_distance=1.0, in_collision=False),
+        dynamic_world=FakeDynamicWorld(clearance=-5e-3),
+    )
+
+    assert world.in_collision_xyz([0.0, 0.0, -1.0])
+    assert not world.is_state_valid_xyz([0.0, 0.0, -1.0])

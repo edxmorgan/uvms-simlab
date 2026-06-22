@@ -4,7 +4,7 @@ import numpy as np
 from rclpy.node import Node
 from ruckig import InputParameter, OutputParameter, Result, Ruckig, RuckigError
 
-from simlab.trajectory_generators.base import VehicleTrajectoryGeneratorTemplate
+from simlab.motion_planning.trajectory_generators.base import VehicleTrajectoryGeneratorTemplate
 
 
 class RuckigVehicleTrajectoryGenerator(VehicleTrajectoryGeneratorTemplate):

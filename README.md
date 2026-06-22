@@ -175,8 +175,9 @@ simlab/
 ├── simlab/controllers/               # One controller class per file
 ├── simlab/utils/                     # Shared geometry, frame, mesh, marker, and path-obstacle helpers
 ├── simlab/uvms_parameters.py         # Shared manipulator and vehicle controller parameters
-├── simlab/planners/                  # Planner plugins, including OMPL SE(3) planning
-├── simlab/trajectory_generators/     # Vehicle trajectory generator plugins
+├── simlab/motion_planning/planners/  # Planner plugins, including OMPL SE(3) planning
+├── simlab/motion_planning/trajectory_generators/ # Vehicle trajectory generator plugins
+├── simlab/motion_planning/dynamic_replanners/ # Dynamic replanning supervisor plugins
 ├── simlab/dynamic_obstacle_sources/  # Dynamic obstacle creation source plugins
 ├── simlab/joystick_control.py        # PS4 teleop node
 ├── simlab/joint_control.py           # Joint-space torque control

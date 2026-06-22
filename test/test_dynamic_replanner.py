@@ -3,9 +3,9 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from simlab.dynamic_replanners import DEFAULT_DYNAMIC_REPLANNER_CLASSES, visible_dynamic_replanner_names
-from simlab.dynamic_replanners.base import ReplanDecision
-from simlab.dynamic_replanners.clearance_hysteresis import ClearanceHysteresisReplanner
+from simlab.motion_planning.dynamic_replanners import DEFAULT_DYNAMIC_REPLANNER_CLASSES, visible_dynamic_replanner_names
+from simlab.motion_planning.dynamic_replanners.base import ReplanDecision
+from simlab.motion_planning.dynamic_replanners.clearance_hysteresis import ClearanceHysteresisReplanner
 from simlab.dynamic_world import DynamicClearance
 from simlab.robot import ControlMode
 
@@ -75,6 +75,15 @@ class FakeLogger:
         pass
 
 
+class FakeCurrentClearanceWorld:
+    def __init__(self, clearance):
+        self.obstacles = {"moving": object()}
+        self.clearance = float(clearance)
+
+    def min_clearance_xyz(self, xyz, *, t_offset=0.0):
+        np.asarray(xyz, dtype=float).reshape(3)
+        return DynamicClearance("moving", self.clearance)
+
 
 class CountingLogger(FakeLogger):
     def __init__(self):
@@ -123,6 +132,57 @@ def test_reset_selected_simulation_clears_dynamic_obstacles_before_robot_reset()
 
 
 
+
+def test_dynamic_replanner_does_not_emergency_stop_on_tangent_clearance():
+    robot = FakeRobot()
+    robot.abrupt_stops = 0
+    robot.holds = 0
+    robot.abrupt_planner_stop = lambda publish_zero=False: setattr(robot, "abrupt_stops", robot.abrupt_stops + 1)
+    robot.hold_current_state_with_feedback = lambda: setattr(robot, "holds", robot.holds + 1)
+    mission = SimpleNamespace(stop_calls=0)
+    mission.stop = lambda: setattr(mission, "stop_calls", mission.stop_calls + 1)
+    backend = SimpleNamespace(
+        world_frame="world",
+        dynamic_world=FakeCurrentClearanceWorld(-5e-5),
+    )
+    replanner = ClearanceHysteresisReplanner.__new__(ClearanceHysteresisReplanner)
+    replanner.backend = backend
+    replanner.robot = robot
+    replanner.mission = mission
+    replanner.collision_stop_enabled = True
+    replanner.collision_stop_margin_m = 0.0
+
+    assert not replanner._stop_if_current_dynamic_collision()
+    assert mission.stop_calls == 0
+    assert robot.abrupt_stops == 0
+    assert robot.holds == 0
+
+
+def test_dynamic_replanner_emergency_stops_on_real_penetration():
+    robot = FakeRobot()
+    robot.abrupt_stops = 0
+    robot.holds = 0
+    robot.abrupt_planner_stop = lambda publish_zero=False: setattr(robot, "abrupt_stops", robot.abrupt_stops + 1)
+    robot.hold_current_state_with_feedback = lambda: setattr(robot, "holds", robot.holds + 1)
+    mission = SimpleNamespace(stop_calls=0)
+    mission.stop = lambda: setattr(mission, "stop_calls", mission.stop_calls + 1)
+    backend = SimpleNamespace(
+        world_frame="world",
+        dynamic_world=FakeCurrentClearanceWorld(-5e-3),
+    )
+    replanner = ClearanceHysteresisReplanner.__new__(ClearanceHysteresisReplanner)
+    replanner.backend = backend
+    replanner.robot = robot
+    replanner.mission = mission
+    replanner.node = SimpleNamespace(get_logger=lambda: FakeLogger())
+    replanner.collision_stop_enabled = True
+    replanner.collision_stop_margin_m = 0.0
+
+    assert replanner._stop_if_current_dynamic_collision()
+    assert mission.stop_calls == 1
+    assert robot.abrupt_stops == 1
+    assert robot.holds == 1
+
 def test_dynamic_replanner_uses_predicted_obstacle_time_offsets():
     dynamic_world = FakeDynamicWorld()
     replanner = ClearanceHysteresisReplanner.__new__(ClearanceHysteresisReplanner)
@@ -170,7 +230,7 @@ def test_dynamic_replanner_suppresses_repeat_replan_with_hysteresis():
 
     assert robot.plan_calls == 1
     assert robot.last_plan_kwargs is not None
-    assert robot.last_plan_kwargs["robot_collision_radius"] == pytest.approx(0.574)
+    assert robot.last_plan_kwargs["robot_collision_radius"] == pytest.approx(0.574 + 0.25)
     assert robot.last_plan_kwargs["dynamic_obstacle_prediction_speed"] == pytest.approx(0.5)
 
 
@@ -244,7 +304,7 @@ class FakeOmplState:
 
 def test_ompl_validity_checker_time_indexes_dynamic_obstacles():
     try:
-        from simlab.planners.ompl import OmplPlanner
+        from simlab.motion_planning.planners.ompl import OmplPlanner
     except RuntimeError as exc:
         pytest.skip(str(exc))
 
@@ -276,7 +336,7 @@ def test_ompl_validity_checker_time_indexes_dynamic_obstacles():
 
 def test_ompl_validity_checker_keeps_current_snapshot_when_prediction_speed_disabled():
     try:
-        from simlab.planners.ompl import OmplPlanner
+        from simlab.motion_planning.planners.ompl import OmplPlanner
     except RuntimeError as exc:
         pytest.skip(str(exc))
 

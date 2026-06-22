@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from simlab.trajectory_generators.base import VehicleTrajectoryGeneratorTemplate
-from simlab.trajectory_generators.ruckig import RuckigVehicleTrajectoryGenerator
+from simlab.motion_planning.trajectory_generators.base import VehicleTrajectoryGeneratorTemplate
+from simlab.motion_planning.trajectory_generators.ruckig import RuckigVehicleTrajectoryGenerator
 
 DEFAULT_VEHICLE_TRAJECTORY_GENERATOR_CLASSES = [RuckigVehicleTrajectoryGenerator]
 

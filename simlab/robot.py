@@ -50,7 +50,7 @@ from simlab.dynamics_profiles import (
     set_dynamics_request_from_profile,
 )
 from simlab.planner_markers import PathPlanner
-from simlab.trajectory_generators import VehicleTrajectoryGeneratorTemplate
+from simlab.motion_planning.trajectory_generators import VehicleTrajectoryGeneratorTemplate
 from ruckig import Result
 from simlab.uvms_parameters import ReachParams
 from simlab.utils.frames import PoseX
@@ -67,7 +67,7 @@ from dataclasses import dataclass
 from simlab.msg import ControllerPerformance
 from simlab.reference_targets import ReferenceTargetPublisher
 from simlab.planner_action_client import PlannerActionClient
-from simlab.planners import visible_planner_names
+from simlab.motion_planning.planners import visible_planner_names
 from simlab.performance_metrics import ControllerPerformanceMetrics
 
 

@@ -1,11 +1,11 @@
 import pytest
 
-from simlab.trajectory_generators import (
+from simlab.motion_planning.trajectory_generators import (
     RuckigVehicleTrajectoryGenerator,
     vehicle_trajectory_generator_class,
     visible_vehicle_trajectory_generator_names,
 )
-from simlab.trajectory_generators.base import VehicleTrajectoryGeneratorTemplate
+from simlab.motion_planning.trajectory_generators.base import VehicleTrajectoryGeneratorTemplate
 
 
 def test_ruckig_vehicle_trajectory_generator_is_registered():

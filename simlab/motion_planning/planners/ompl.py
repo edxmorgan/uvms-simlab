@@ -14,7 +14,7 @@ from scipy.spatial.transform import Rotation as R
 
 from simlab.fcl_checker import FCLWorld
 from simlab.planner_world import PlannerWorld
-from simlab.planners.base import PlannerTemplate
+from simlab.motion_planning.planners.base import PlannerTemplate
 
 try:
     from ompl import base as ob
@@ -162,6 +162,13 @@ class OmplPlanner:
             prediction_start_xyz,
             dynamic_obstacle_prediction_speed,
         )
+
+        is_start_state = np.linalg.norm(pw - prediction_start_xyz) <= 1e-6
+        if is_start_state:
+            # The robot may be exactly tangent to a dynamic obstacle after an
+            # emergency stop. Accept the current state if it is not truly
+            # penetrating so the planner can generate an escape path.
+            return planner_world.is_state_valid_xyz(pw, safety_margin=0.0, t_offset=0.0)
 
         if safety_margin is not None and safety_margin > 0.0:
             return planner_world.is_state_valid_xyz(pw, safety_margin=safety_margin, t_offset=t_offset)
