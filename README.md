@@ -188,6 +188,66 @@ simlab/
 └── resource/model_functions/         # Generated model functions
 ```
 
+## Motion planning plugins
+
+Motion planning lives under `simlab/motion_planning/`. The framework supports both split pipelines and integrated algorithms:
+
+```text
+OMPL path planner -> Ruckig trajectory generator -> controller
+CHOMP/GPMP optimizer -> path or timed trajectory -> controller
+MPC/integrated planner-controller -> direct references or controls
+```
+
+All new motion-planning algorithms should return `MotionPlanResult` from `simlab.motion_planning.result`. The result declares what the algorithm produced:
+
+| Result kind | Meaning | Current runtime behavior |
+| --- | --- | --- |
+| `MotionPlanKind.PATH` | Geometric waypoints with `xyz` and `quat_wxyz` | Executed through the current `PlanVehicle` action, then time-parameterized by the selected trajectory generator such as Ruckig |
+| `MotionPlanKind.TIMED_TRAJECTORY` | Timed trajectory samples, optionally with velocity/acceleration | Supported by the Python plugin contract; needs a richer execution transport before it can bypass Ruckig at runtime |
+| `MotionPlanKind.CONTROL_SEQUENCE` | Direct controls or short-horizon references | Supported by the Python plugin contract; intended for future MPC/integrated execution paths |
+
+A simple path planner plugin looks like this:
+
+```python
+import numpy as np
+
+from simlab.motion_planning.planners.base import PlannerTemplate
+from simlab.motion_planning.result import MotionPlanKind, MotionPlanResult
+
+
+class MyPlanner(PlannerTemplate):
+    registry_name = "MyPlanner"
+    visible = True
+
+    def plan_vehicle(
+        self,
+        *,
+        start_xyz,
+        start_quat_wxyz,
+        goal_xyz,
+        goal_quat_wxyz,
+        time_limit,
+        robot_collision_radius,
+        dynamic_obstacle_prediction_speed=0.0,
+    ):
+        xyz = np.asarray([start_xyz, goal_xyz], dtype=float)
+        quat = np.asarray([start_quat_wxyz, goal_quat_wxyz], dtype=float)
+        length = float(np.linalg.norm(xyz[-1] - xyz[0]))
+        return MotionPlanResult(
+            is_success=True,
+            kind=MotionPlanKind.PATH,
+            xyz=xyz,
+            quat_wxyz=quat,
+            path_length_cost=length,
+            geom_length=length,
+            message="MyPlanner returned a straight-line path.",
+        )
+```
+
+Register planner classes in `simlab/motion_planning/planners/__init__.py` by adding them to `DEFAULT_PLANNER_CLASSES`. The RViz planner menu and planner action server both read that registry.
+
+Trajectory generators and dynamic replanning supervisors are separate plugin registries under `simlab/motion_planning/trajectory_generators/` and `simlab/motion_planning/dynamic_replanners/`. Use them for split pipelines. For all-in-one algorithms, keep the high-level algorithm in the planner plugin and return the richest `MotionPlanResult` it can produce.
+
 ## Adding a controller
 
 Controllers live in `simlab/controllers/`. Each controller gets its own file and inherits `ControllerTemplate`.

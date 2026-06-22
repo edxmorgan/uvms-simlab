@@ -12,6 +12,7 @@ from simlab.fcl_checker import FCLWorld
 from simlab.planner_world import PlannerWorld
 from simlab.shutdown import install_signal_shutdown_handler, spin_until_shutdown
 from simlab.motion_planning.planners import DEFAULT_PLANNER_CLASSES
+from simlab.motion_planning.result import MotionPlanResult
 
 class PlannerActionServer(Node):
 
@@ -193,10 +194,42 @@ class PlannerActionServer(Node):
             self.get_logger().error(f"{self._tag} {result.message}")
             return result
 
-        success = bool(plan.get("is_success", False))
-        message = str(plan.get("message", "Planner finished."))
-        xyz_flat = np.asarray(plan.get("xyz", []), dtype=float).reshape(-1)
-        quat_flat = np.asarray(plan.get("quat_wxyz", []), dtype=float).reshape(-1)
+        if not isinstance(plan, MotionPlanResult):
+            goal_handle.abort()
+            result.success = False
+            result.is_success = False
+            result.message = (
+                f"Planner returned {type(plan).__name__}; planners must return MotionPlanResult."
+            )
+            self.get_logger().error(f"{self._tag} {result.message}")
+            return result
+
+        motion_plan = plan
+        try:
+            payload = motion_plan.as_action_payload()
+        except Exception as ex:
+            goal_handle.abort()
+            result.success = False
+            result.is_success = False
+            result.message = f"Planner returned invalid MotionPlanResult, {ex}"
+            self.get_logger().error(f"{self._tag} {result.message}")
+            return result
+
+        if not motion_plan.can_transport_over_plan_vehicle_action:
+            goal_handle.abort()
+            result.success = False
+            result.is_success = False
+            result.message = (
+                f"Planner returned kind='{motion_plan.kind}', but PlanVehicle currently transports "
+                "geometric path results only."
+            )
+            self.get_logger().error(f"{self._tag} {result.message}")
+            return result
+
+        success = bool(payload["is_success"])
+        message = str(payload.get("message", "Planner finished."))
+        xyz_flat = np.asarray(payload.get("xyz", []), dtype=float).reshape(-1)
+        quat_flat = np.asarray(payload.get("quat_wxyz", []), dtype=float).reshape(-1)
         if xyz_flat.size % 3 != 0:
             self.get_logger().warn(
                 f"{self._tag} planner returned xyz of invalid size {xyz_flat.size}, expected multiple of 3"
@@ -210,7 +243,7 @@ class PlannerActionServer(Node):
 
         max_xyz_count = int(xyz_flat.size // 3)
         max_quat_count = int(quat_flat.size // 4)
-        count = int(plan.get("count", max_xyz_count))
+        count = int(payload.get("count", max_xyz_count))
         if count < 0:
             count = 0
         count = min(count, max_xyz_count, max_quat_count)
@@ -220,14 +253,8 @@ class PlannerActionServer(Node):
         result.xyz = xyz_flat[: count * 3].tolist()
         result.quat_wxyz = quat_flat[: count * 4].tolist()
         result.count = count
-        try:
-            result.path_length_cost = float(plan.get("path_length_cost", float("nan")))
-        except Exception:
-            result.path_length_cost = float("nan")
-        try:
-            result.geom_length = float(plan.get("geom_length", float("nan")))
-        except Exception:
-            result.geom_length = float("nan")
+        result.path_length_cost = float(payload.get("path_length_cost", float("nan")))
+        result.geom_length = float(payload.get("geom_length", float("nan")))
         result.message = message
 
         if success:

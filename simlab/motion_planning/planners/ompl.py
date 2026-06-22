@@ -6,8 +6,6 @@
 # (at your option) any later version.
 
 from functools import partial
-from typing import Any, Dict
-
 import numpy as np
 from rclpy.node import Node
 from scipy.spatial.transform import Rotation as R
@@ -15,6 +13,7 @@ from scipy.spatial.transform import Rotation as R
 from simlab.fcl_checker import FCLWorld
 from simlab.planner_world import PlannerWorld
 from simlab.motion_planning.planners.base import PlannerTemplate
+from simlab.motion_planning.result import MotionPlanResult, MotionPlanKind
 
 try:
     from ompl import base as ob
@@ -292,10 +291,11 @@ class OmplPlanner:
             planner = og.RRTConnect(si)
 
         if planner is None:
-            return {
-                "is_success":False,
-                "message":"Planner missing. Select planner"
-            }
+            return MotionPlanResult(
+                is_success=False,
+                kind=MotionPlanKind.PATH,
+                message="Planner missing. Select planner",
+            )
         
         # planner and resolution
         self.ss.setPlanner(planner)
@@ -304,10 +304,11 @@ class OmplPlanner:
         si.setStateValidityCheckingResolution(0.01)
 
         if not self.ss.solve(float(time_limit)):
-            return {
-                "is_success":False,
-                "message":"Planner did not find a solution"
-            }
+            return MotionPlanResult(
+                is_success=False,
+                kind=MotionPlanKind.PATH,
+                message="Planner did not find a solution",
+            )
 
         path = self.ss.getSolutionPath()
         # Densify first for a smoother arc length estimate
@@ -344,19 +345,19 @@ class OmplPlanner:
             geom_length = None
 
 
-        return {
-            "xyz": xyz_rs,
-            "quat_wxyz": quat_rs,
-            "count": int(xyz_rs.shape[0]),
-            "is_success": True,
-            "path_length_cost": cost_val,
-            "geom_length": geom_length,
-            "message": (
+        return MotionPlanResult(
+            is_success=True,
+            kind=MotionPlanKind.PATH,
+            xyz=xyz_rs,
+            quat_wxyz=quat_rs,
+            path_length_cost=float(cost_val) if cost_val is not None else float("nan"),
+            geom_length=float(geom_length) if geom_length is not None else float("nan"),
+            message=(
                 f"Planner found solution with {xyz_rs.shape[0]} waypoints at ~{spacing_m} m spacing"
                 + (f", cost {cost_val:.3f}" if cost_val is not None else "")
                 + (f", geom length {geom_length:.3f}" if geom_length is not None else "")
             ),
-        }
+        )
 
 
 class Se3OmplPlannerBase(PlannerTemplate):
@@ -380,7 +381,7 @@ class Se3OmplPlannerBase(PlannerTemplate):
         time_limit: float,
         robot_collision_radius: float,
         dynamic_obstacle_prediction_speed: float = 0.0,
-    ) -> Dict[str, Any]:
+    ) -> MotionPlanResult:
         return self._planner.plan_se3_path(
             start_xyz=start_xyz,
             start_quat_wxyz=start_quat_wxyz,

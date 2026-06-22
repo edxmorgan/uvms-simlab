@@ -139,6 +139,7 @@ class PlannerActionClient:
                 "path_length_cost": float(getattr(result, "path_length_cost", float("nan"))),
                 "geom_length": float(getattr(result, "geom_length", float("nan"))),
                 "message": str(getattr(result, "message", "")),
+                "kind": "path",
             }
             self.last_result = parsed_result
 

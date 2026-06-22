@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Any, Dict
+from simlab.motion_planning.result import MotionPlanResult
 
 from rclpy.node import Node
 
@@ -22,5 +22,5 @@ class PlannerTemplate(ABC):
         time_limit: float,
         robot_collision_radius: float,
         dynamic_obstacle_prediction_speed: float = 0.0,
-    ) -> Dict[str, Any]:
-        """Return the planner result dict consumed by PlannerActionServer."""
+    ) -> MotionPlanResult:
+        """Return a typed motion-planning result."""
