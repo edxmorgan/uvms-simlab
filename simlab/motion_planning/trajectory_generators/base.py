@@ -22,6 +22,7 @@ class VehicleTrajectoryGeneratorTemplate(ABC):
         max_vel: Sequence[float],
         max_acc: Sequence[float],
         max_jerk: Sequence[float],
+        current_velocity: Sequence[float] | None = None,
     ) -> None:
         pass
 

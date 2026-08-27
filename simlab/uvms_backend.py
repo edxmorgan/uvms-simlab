@@ -541,12 +541,17 @@ class UVMSBackendCore:
                     name=name,
                     distance_ahead=distance_ahead,
                     radius=radius,
+                    robot_collision_radius=float(self.fcl_world.vehicle_radius),
+                    robot_clearance_margin=float(self.dynamic_replanning_safety_margin),
                 )
             )
         except ValueError as exc:
             return False, str(exc)
         if result is None:
-            return False, f"no active planned path available for {robot.prefix}"
+            return False, (
+                f"no safe path-obstacle placement available for {robot.prefix}; "
+                "create a longer active path or reduce obstacle radius/distance_ahead"
+            )
 
         obstacle_msg = copy.deepcopy(self.dynamic_obstacle_snapshot)
         obstacle_msg.header.frame_id = obstacle_msg.header.frame_id or self.world_frame
@@ -564,7 +569,10 @@ class UVMSBackendCore:
             f"path_ahead={float(detail.get('path_ahead_m', 0.0)):.3f} m, "
             f"euclidean_from_robot={float(detail.get('euclidean_from_robot_m', 0.0)):.3f} m, "
             f"remaining_path={float(detail.get('remaining_path_m', 0.0)):.3f} m, "
-            f"nearest_path_index={int(detail.get('nearest_path_index', 0))}",
+            f"nearest_path_index={int(detail.get('nearest_path_index', 0))}, "
+            f"goal_clearance={float(detail.get('goal_clearance_m', 0.0)):.3f} m, "
+            f"robot_clearance={float(detail.get('robot_clearance_m', 0.0)):.3f} m, "
+            f"robot_clearance_margin={float(detail.get('robot_clearance_margin_m', 0.0)):.3f} m",
         )
 
 

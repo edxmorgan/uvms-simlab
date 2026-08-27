@@ -17,6 +17,8 @@ class DynamicObstacleSourceRequest:
     name: str = ""
     distance_ahead: float = 4.0
     radius: float = 0.8
+    robot_collision_radius: float = 0.4
+    robot_clearance_margin: float = 0.0
 
 
 @dataclass(frozen=True)

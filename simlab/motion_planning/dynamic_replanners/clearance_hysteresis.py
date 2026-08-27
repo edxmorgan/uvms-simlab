@@ -115,15 +115,17 @@ class ClearanceHysteresisReplanner(DynamicReplannerTemplate):
         self._last_replan_path_signature = decision.path_signature
         self.replan_count += 1
         self.last_replan_reason = decision.reason
+        preempt_current = self._should_preempt_for_near_conflict(decision)
         self.node.get_logger().warn(
             f"[DynamicReplanner] replanning {self.robot.prefix}: {decision.reason}"
+            + ("; stopping active trajectory first" if preempt_current else "")
         )
         planner_radius = float(self.backend.fcl_world.vehicle_radius) + self.safety_margin_m
         self.robot.plan_vehicle_trajectory_action(
             goal_pose=goal_pose,
             time_limit=1.0,
             robot_collision_radius=planner_radius,
-            preempt_current=False,
+            preempt_current=preempt_current,
             dynamic_obstacle_prediction_speed=self._nominal_vehicle_speed(self.robot),
         )
 
@@ -263,11 +265,18 @@ class ClearanceHysteresisReplanner(DynamicReplannerTemplate):
             )
         return True
 
+    def _stop_window_s(self) -> float:
+        return max(2.0, min(4.0, 0.4 * self.lookahead_time_s))
+
+    def _should_preempt_for_near_conflict(self, decision: ReplanDecision) -> bool:
+        if decision.t_offset_s is None:
+            return False
+        return decision.t_offset_s <= self._stop_window_s()
+
     def _should_stop_for_unresolved_blocked_path(self, decision: ReplanDecision) -> bool:
         if decision.t_offset_s is None:
             return False
-        stop_time = max(2.0, min(4.0, 0.4 * self.lookahead_time_s))
-        return decision.t_offset_s <= stop_time
+        return decision.t_offset_s <= self._stop_window_s()
 
     def _remaining_path_decision(self, robot: "Robot") -> ReplanDecision:
         planned = getattr(robot.planner, "planned_result", None)

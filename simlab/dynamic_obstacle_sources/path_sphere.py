@@ -20,6 +20,8 @@ class PathSphereObstacleSource(DynamicObstacleSourceTemplate):
             world_frame=request.world_frame,
             distance_ahead=max(0.5, float(request.distance_ahead or 4.0)),
             radius=max(0.05, float(request.radius or 0.8)),
+            robot_collision_radius=max(0.0, float(request.robot_collision_radius)),
+            robot_clearance_margin=max(0.0, float(request.robot_clearance_margin)),
             name=request.name,
         )
         if placement is None:
@@ -32,5 +34,8 @@ class PathSphereObstacleSource(DynamicObstacleSourceTemplate):
                 "euclidean_from_robot_m": placement.distance_from_robot_m,
                 "remaining_path_m": placement.remaining_path_m,
                 "nearest_path_index": placement.nearest_path_index,
+                "goal_clearance_m": placement.goal_clearance_m,
+                "robot_clearance_m": placement.robot_clearance_m,
+                "robot_clearance_margin_m": placement.robot_clearance_margin_m,
             },
         )

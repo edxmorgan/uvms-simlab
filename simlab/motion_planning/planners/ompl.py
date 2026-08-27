@@ -164,10 +164,13 @@ class OmplPlanner:
 
         is_start_state = np.linalg.norm(pw - prediction_start_xyz) <= 1e-6
         if is_start_state:
-            # The robot may be exactly tangent to a dynamic obstacle after an
-            # emergency stop. Accept the current state if it is not truly
-            # penetrating so the planner can generate an escape path.
-            return planner_world.is_state_valid_xyz(pw, safety_margin=0.0, t_offset=0.0)
+            # Permit escape from an inflated safety shell, but never bypass the
+            # physical collision check for the measured start pose itself.
+            return planner_world.is_state_valid_xyz(
+                pw,
+                safety_margin=0.0,
+                t_offset=0.0,
+            )
 
         if safety_margin is not None and safety_margin > 0.0:
             return planner_world.is_state_valid_xyz(pw, safety_margin=safety_margin, t_offset=t_offset)
@@ -309,6 +312,14 @@ class OmplPlanner:
                 kind=MotionPlanKind.PATH,
                 message="Planner did not find a solution",
             )
+
+        try:
+            simplify_time = max(0.02, min(0.15, 0.15 * float(time_limit)))
+            self.ss.simplifySolution(simplify_time)
+        except TypeError:
+            self.ss.simplifySolution()
+        except Exception as exc:
+            self.rclpy_node.get_logger().warn(f"OMPL path simplification skipped: {exc}")
 
         path = self.ss.getSolutionPath()
         # Densify first for a smoother arc length estimate

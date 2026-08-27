@@ -29,6 +29,7 @@ class RuckigVehicleTrajectoryGenerator(VehicleTrajectoryGeneratorTemplate):
         max_vel,
         max_acc,
         max_jerk,
+        current_velocity=None,
     ):
         path_xyz = np.asarray(path_xyz, dtype=float)
         if path_xyz.ndim != 2 or path_xyz.shape[1] != 3:
@@ -42,8 +43,27 @@ class RuckigVehicleTrajectoryGenerator(VehicleTrajectoryGeneratorTemplate):
         max_acc = np.asarray(max_acc, dtype=float)
         max_jerk = np.asarray(max_jerk, dtype=float)
 
+        if current_velocity is None:
+            current_velocity = np.zeros(3, dtype=float)
+        else:
+            current_velocity = np.asarray(current_velocity, dtype=float)
+            if current_velocity.shape != (3,) or not np.all(np.isfinite(current_velocity)):
+                raise ValueError("current_velocity must be length 3 with finite values")
+            path_aligned_velocity = self._path_aligned_initial_velocity(
+                current_position,
+                path_xyz,
+                current_velocity,
+            )
+            if float(np.linalg.norm(path_aligned_velocity - current_velocity)) > 1e-4:
+                self.rclpy_node.get_logger().info(
+                    "Ruckig projected replan velocity from "
+                    f"{current_velocity.round(3).tolist()} to "
+                    f"{path_aligned_velocity.round(3).tolist()} m/s"
+                )
+            current_velocity = path_aligned_velocity
+
         self.inp.current_position = current_position.tolist()
-        self.inp.current_velocity = [0.0, 0.0, 0.0]
+        self.inp.current_velocity = current_velocity.tolist()
         self.inp.current_acceleration = [0.0, 0.0, 0.0]
 
         if path_xyz.shape[0] > 2:
@@ -62,6 +82,37 @@ class RuckigVehicleTrajectoryGenerator(VehicleTrajectoryGeneratorTemplate):
         self.active = True
         self.last_result = None
         self.last_yaw_blend_factor = 0.0
+        speed = float(np.linalg.norm(current_velocity))
+        if speed > 1e-4:
+            self.rclpy_node.get_logger().info(
+                f"Ruckig trajectory seeded with current velocity {current_velocity.round(3).tolist()} m/s"
+            )
+
+
+    @staticmethod
+    def _path_aligned_initial_velocity(current_position, path_xyz, current_velocity):
+        current_position = np.asarray(current_position, dtype=float).reshape(3)
+        path_xyz = np.asarray(path_xyz, dtype=float).reshape(-1, 3)
+        current_velocity = np.asarray(current_velocity, dtype=float).reshape(3)
+
+        speed = float(np.linalg.norm(current_velocity))
+        if speed <= 1e-6 or path_xyz.shape[0] < 2:
+            return np.zeros(3, dtype=float)
+
+        tangent = None
+        for point in path_xyz:
+            delta = point - current_position
+            distance = float(np.linalg.norm(delta))
+            if distance > 0.10:
+                tangent = delta / distance
+                break
+        if tangent is None:
+            return np.zeros(3, dtype=float)
+
+        forward_speed = float(np.dot(current_velocity, tangent))
+        if forward_speed <= 1e-4:
+            return np.zeros(3, dtype=float)
+        return tangent * forward_speed
 
     def update(self, yaw_blend_factor):
         """Advance one control step along the current trajectory."""

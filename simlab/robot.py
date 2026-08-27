@@ -1839,19 +1839,33 @@ class Robot(Base):
 
         if plan_result.get("is_success", False):
             preserve_yaw_memory = bool(self._preserve_active_plan_on_failure)
+            stored_plan_result = dict(plan_result)
+            trajectory_start_xyz = np.asarray(self.start_xyz, dtype=float).reshape(3)
+            trajectory_start_quat = np.asarray(self.start_quat_wxyz, dtype=float).reshape(4)
+            if preserve_yaw_memory:
+                pose_now = self._pose_from_state_in_frame(self.world_frame)
+                if pose_now is not None:
+                    trajectory_start_xyz, start_quat_wxyz_raw = self._pose_to_xyz_quat_wxyz(pose_now)
+                    trajectory_start_quat = yaw_only_quat_wxyz(start_quat_wxyz_raw)
+                    stored_plan_result = self._trim_plan_result_to_current_pose(
+                        stored_plan_result,
+                        trajectory_start_xyz,
+                        trajectory_start_quat,
+                    )
             if self.planner is not None:
-                self.planner.planned_result = dict(plan_result)
+                self.planner.planned_result = stored_plan_result
             self._preserve_active_plan_on_failure = False
             self.node.get_logger().info(
-                f"Planner action produced {int(plan_result.get('count', 0))} waypoints for {self.prefix}"
+                f"Planner action produced {int(stored_plan_result.get('count', 0))} waypoints for {self.prefix}"
             )
     
             path_xyz = np.asarray(self.planner.planned_result["xyz"], dtype=float)
             self._start_vehicle_trajectory(
-                self.start_xyz,
-                self.start_quat_wxyz,
+                trajectory_start_xyz,
+                trajectory_start_quat,
                 path_xyz,
                 preserve_yaw_memory=preserve_yaw_memory,
+                preserve_current_velocity=preserve_yaw_memory,
             )
             self.enable_planner_output()
         else:
@@ -1867,6 +1881,70 @@ class Robot(Base):
                 )
             self._preserve_active_plan_on_failure = False
 
+    @staticmethod
+    def _trim_plan_result_to_current_pose(
+        plan_result: Dict[str, Any],
+        current_xyz: Sequence[float],
+        current_quat_wxyz: Sequence[float],
+    ) -> Dict[str, Any]:
+        result = dict(plan_result)
+        try:
+            path_xyz = np.asarray(result.get("xyz", []), dtype=float).reshape(-1, 3)
+            path_quat = np.asarray(result.get("quat_wxyz", []), dtype=float).reshape(-1, 4)
+            current_xyz = np.asarray(current_xyz, dtype=float).reshape(3)
+            current_quat = np.asarray(current_quat_wxyz, dtype=float).reshape(4)
+        except Exception:
+            return result
+
+        if path_xyz.shape[0] == 0 or path_quat.shape[0] != path_xyz.shape[0]:
+            return result
+        if path_xyz.shape[0] == 1:
+            trimmed_xyz = np.vstack([current_xyz, path_xyz[-1]])
+            trimmed_quat = np.vstack([current_quat, path_quat[-1]])
+            result["xyz"] = trimmed_xyz
+            result["quat_wxyz"] = trimmed_quat
+            result["count"] = int(trimmed_xyz.shape[0])
+            return result
+
+        best_idx = 0
+        best_alpha = 0.0
+        best_dist = float("inf")
+        for idx in range(path_xyz.shape[0] - 1):
+            start = path_xyz[idx]
+            end = path_xyz[idx + 1]
+            segment = end - start
+            denom = float(np.dot(segment, segment))
+            if denom <= 1e-12:
+                alpha = 0.0
+                closest = start
+            else:
+                alpha = float(np.clip(np.dot(current_xyz - start, segment) / denom, 0.0, 1.0))
+                closest = start + alpha * segment
+            dist = float(np.linalg.norm(current_xyz - closest))
+            if dist < best_dist:
+                best_idx = idx
+                best_alpha = alpha
+                best_dist = dist
+
+        first_keep = best_idx + 1
+        if best_alpha > 0.90 and first_keep + 1 < path_xyz.shape[0]:
+            first_keep += 1
+        while first_keep < path_xyz.shape[0] - 1 and float(np.linalg.norm(path_xyz[first_keep] - current_xyz)) < 0.15:
+            first_keep += 1
+
+        suffix_xyz = path_xyz[first_keep:]
+        suffix_quat = path_quat[first_keep:]
+        if suffix_xyz.shape[0] == 0:
+            suffix_xyz = path_xyz[-1:]
+            suffix_quat = path_quat[-1:]
+
+        trimmed_xyz = np.vstack([current_xyz, suffix_xyz])
+        trimmed_quat = np.vstack([current_quat, suffix_quat])
+        result["xyz"] = trimmed_xyz
+        result["quat_wxyz"] = trimmed_quat
+        result["count"] = int(trimmed_xyz.shape[0])
+        return result
+
     def _start_vehicle_trajectory(
         self,
         start_xyz,
@@ -1874,16 +1952,58 @@ class Robot(Base):
         path_xyz: np.ndarray,
         *,
         preserve_yaw_memory: bool = False,
+        preserve_current_velocity: bool = False,
     ) -> None:
         if not preserve_yaw_memory:
             self.reset_vehicle_command_yaw_memory()
+        current_velocity_world = (
+            self._current_vehicle_velocity_world_nwu()
+            if preserve_current_velocity
+            else np.zeros(3, dtype=float)
+        )
         self.vehicle_cart_traj.start_from_path(
             current_position=list(start_xyz),
             path_xyz=path_xyz,
             max_vel=self.max_traj_vel,
             max_acc=self.max_traj_acc,
             max_jerk=self.max_traj_jerk,
+            current_velocity=current_velocity_world,
         )
+
+    def _current_vehicle_velocity_world_nwu(self) -> np.ndarray:
+        ned_velocity = np.asarray(self.ned_vel[:3], dtype=float)
+        if ned_velocity.shape != (3,) or not np.all(np.isfinite(ned_velocity)):
+            return np.zeros(3, dtype=float)
+
+        map_velocity_nwu = np.array(
+            [ned_velocity[0], -ned_velocity[1], -ned_velocity[2]],
+            dtype=float,
+        )
+        velocity_msg = Vector3Stamped()
+        velocity_msg.header.frame_id = self.map_frame
+        velocity_msg.header.stamp = self.node.get_clock().now().to_msg()
+        velocity_msg.vector.x = float(map_velocity_nwu[0])
+        velocity_msg.vector.y = float(map_velocity_nwu[1])
+        velocity_msg.vector.z = float(map_velocity_nwu[2])
+        try:
+            transform = self.tf_buffer.lookup_transform(
+                self.world_frame,
+                self.map_frame,
+                rclpy.time.Time(),
+            )
+            velocity_world = do_transform_vector3(velocity_msg, transform)
+        except TransformException as exc:
+            self.node.get_logger().warn(
+                f"Cannot preserve replan velocity for {self.prefix}: "
+                f"TF {self.world_frame} <- {self.map_frame} unavailable: {exc}"
+            )
+            return np.zeros(3, dtype=float)
+
+        result = np.array(
+            [velocity_world.vector.x, velocity_world.vector.y, velocity_world.vector.z],
+            dtype=float,
+        )
+        return result if np.all(np.isfinite(result)) else np.zeros(3, dtype=float)
 
     def plan_vehicle_trajectory_action(
         self,

@@ -7,7 +7,7 @@ from simlab.motion_planning.dynamic_replanners import DEFAULT_DYNAMIC_REPLANNER_
 from simlab.motion_planning.dynamic_replanners.base import ReplanDecision
 from simlab.motion_planning.dynamic_replanners.clearance_hysteresis import ClearanceHysteresisReplanner
 from simlab.dynamic_world import DynamicClearance
-from simlab.robot import ControlMode
+from simlab.robot import ControlMode, Robot
 
 
 def test_dynamic_replanner_registry_exposes_default_strategy():
@@ -58,6 +58,9 @@ class FakeRobot:
         return SimpleNamespace(
             position=SimpleNamespace(x=0.0, y=0.0, z=-2.0),
         )
+
+    def _current_vehicle_velocity_world_nwu(self):
+        return np.array([0.4, 0.0, 0.0], dtype=float)
 
     def plan_vehicle_trajectory_action(self, **kwargs):
         self.plan_calls += 1
@@ -234,6 +237,35 @@ def test_dynamic_replanner_suppresses_repeat_replan_with_hysteresis():
     assert robot.last_plan_kwargs["dynamic_obstacle_prediction_speed"] == pytest.approx(0.5)
 
 
+def test_dynamic_replanner_replans_from_current_pose_without_artificial_handoff():
+    robot = FakeRobot()
+    goal_pose = SimpleNamespace(position=SimpleNamespace(x=3.0, y=0.0, z=-2.0))
+    robot.last_vehicle_goal_pose_world = goal_pose
+    backend = SimpleNamespace(
+        node=SimpleNamespace(get_logger=lambda: FakeLogger()),
+        world_frame="world",
+        dynamic_world=FakeDynamicWorld(close_clearance=0.12),
+        fcl_world=SimpleNamespace(vehicle_radius=0.574),
+    )
+    backend.dynamic_world.min_clearance_xyz = lambda xyz, t_offset=0.0: DynamicClearance("moving", 2.0 if t_offset < 3.0 else 0.12)
+    mission = SimpleNamespace(executing=False, active_index=None, active_waypoint=lambda: goal_pose)
+    replanner = ClearanceHysteresisReplanner(
+        backend,
+        robot,
+        mission,
+        cooldown_s=0.0,
+        lookahead_time_s=5.0,
+        safety_margin_m=0.25,
+        replan_hysteresis_m=0.10,
+    )
+
+    replanner.tick()
+
+    assert robot.plan_calls == 1
+    assert robot.last_plan_kwargs["preempt_current"] is False
+    assert "handoff_start_xyz" not in robot.last_plan_kwargs
+
+
 def test_dynamic_replanner_replans_active_plan_execute_trajectory_without_waypoint_mission():
     robot = FakeRobot()
     goal_pose = object()
@@ -265,17 +297,21 @@ def test_dynamic_replanner_replans_active_plan_execute_trajectory_without_waypoi
     assert robot.plan_calls == 1
     assert robot.last_plan_kwargs is not None
     assert robot.last_plan_kwargs["goal_pose"] is not None
-    assert robot.last_plan_kwargs["preempt_current"] is False
+    assert robot.last_plan_kwargs["preempt_current"] is True
 
 
 
 class FakePlannerWorld:
-    def __init__(self):
+    def __init__(self, valid=True, zero_margin_valid=None):
         self.calls = []
+        self.valid = bool(valid)
+        self.zero_margin_valid = zero_margin_valid
 
     def is_state_valid_xyz(self, xyz, *, safety_margin=0.0, t_offset=0.0):
         self.calls.append((np.asarray(xyz, dtype=float), float(safety_margin), float(t_offset)))
-        return True
+        if self.zero_margin_valid is not None and float(safety_margin) == 0.0:
+            return bool(self.zero_margin_valid)
+        return self.valid
 
 
 class FakeOmplRotation:
@@ -360,3 +396,158 @@ def test_ompl_validity_checker_keeps_current_snapshot_when_prediction_speed_disa
     )
 
     assert planner_world.calls[0][2] == pytest.approx(0.0)
+
+
+def test_ompl_validity_checker_accepts_exact_replan_start_inside_inflated_shell():
+    try:
+        from simlab.motion_planning.planners.ompl import OmplPlanner
+    except RuntimeError as exc:
+        pytest.skip(str(exc))
+
+    planner = OmplPlanner.__new__(OmplPlanner)
+    planner_world = FakePlannerWorld(valid=False, zero_margin_valid=True)
+
+    assert planner._valid_with_fcl(
+        planner_world,
+        0.25,
+        -10.0,
+        10.0,
+        -10.0,
+        10.0,
+        -10.0,
+        10.0,
+        np.deg2rad(11.0),
+        np.deg2rad(11.0),
+        np.array([2.75, -5.94, -1.51]),
+        0.235,
+        FakeOmplState([2.75, -5.94, -1.51]),
+    )
+    assert planner_world.calls[-1][1] == pytest.approx(0.0)
+
+    assert not planner._valid_with_fcl(
+        planner_world,
+        0.25,
+        -10.0,
+        10.0,
+        -10.0,
+        10.0,
+        -10.0,
+        10.0,
+        np.deg2rad(11.0),
+        np.deg2rad(11.0),
+        np.array([2.75, -5.94, -1.51]),
+        0.235,
+        FakeOmplState([2.751, -5.94, -1.51]),
+    )
+    assert planner_world.calls[-1][1] == pytest.approx(0.25)
+
+
+def test_ompl_validity_checker_rejects_physically_colliding_start():
+    try:
+        from simlab.motion_planning.planners.ompl import OmplPlanner
+    except RuntimeError as exc:
+        pytest.skip(str(exc))
+
+    planner = OmplPlanner.__new__(OmplPlanner)
+    planner_world = FakePlannerWorld(valid=False, zero_margin_valid=False)
+
+    assert not planner._valid_with_fcl(
+        planner_world,
+        0.25,
+        -10.0,
+        10.0,
+        -10.0,
+        10.0,
+        -10.0,
+        10.0,
+        np.deg2rad(11.0),
+        np.deg2rad(11.0),
+        np.array([2.75, -5.94, -1.51]),
+        0.235,
+        FakeOmplState([2.75, -5.94, -1.51]),
+    )
+    assert planner_world.calls[-1][1] == pytest.approx(0.0)
+
+
+def test_replan_result_trim_starts_at_current_pose_and_drops_passed_waypoints():
+    plan_result = {
+        "is_success": True,
+        "xyz": np.array([
+            [0.0, 0.0, -2.0],
+            [1.0, 0.0, -2.0],
+            [2.0, 0.0, -2.0],
+            [3.0, 0.0, -2.0],
+        ]),
+        "quat_wxyz": np.array([[1.0, 0.0, 0.0, 0.0]] * 4),
+        "count": 4,
+    }
+
+    trimmed = Robot._trim_plan_result_to_current_pose(
+        plan_result,
+        current_xyz=[1.65, 0.2, -2.0],
+        current_quat_wxyz=[1.0, 0.0, 0.0, 0.0],
+    )
+
+    np.testing.assert_allclose(trimmed["xyz"][0], [1.65, 0.2, -2.0])
+    np.testing.assert_allclose(trimmed["xyz"][1:], [[2.0, 0.0, -2.0], [3.0, 0.0, -2.0]])
+    assert trimmed["count"] == 3
+
+
+def test_replan_result_trim_skips_nearly_duplicate_next_waypoint():
+    plan_result = {
+        "is_success": True,
+        "xyz": np.array([
+            [0.0, 0.0, -2.0],
+            [1.0, 0.0, -2.0],
+            [1.08, 0.0, -2.0],
+            [2.0, 0.0, -2.0],
+        ]),
+        "quat_wxyz": np.array([[1.0, 0.0, 0.0, 0.0]] * 4),
+        "count": 4,
+    }
+
+    trimmed = Robot._trim_plan_result_to_current_pose(
+        plan_result,
+        current_xyz=[1.02, 0.0, -2.0],
+        current_quat_wxyz=[1.0, 0.0, 0.0, 0.0],
+    )
+
+    np.testing.assert_allclose(trimmed["xyz"][0], [1.02, 0.0, -2.0])
+    np.testing.assert_allclose(trimmed["xyz"][1], [2.0, 0.0, -2.0])
+    assert trimmed["count"] == 2
+
+
+
+def test_current_vehicle_velocity_rotates_from_map_ned_to_world_nwu(monkeypatch):
+    import simlab.robot as robot_module
+
+    class FakeBuffer:
+        def lookup_transform(self, target_frame, source_frame, _time):
+            assert target_frame == "world"
+            assert source_frame == "robot_1_map"
+            return object()
+
+    def rotate_map_to_world(vector_msg, _transform):
+        return SimpleNamespace(
+            vector=SimpleNamespace(
+                x=-vector_msg.vector.y,
+                y=vector_msg.vector.x,
+                z=vector_msg.vector.z,
+            )
+        )
+
+    robot = Robot.__new__(Robot)
+    robot.ned_vel = [1.0, -2.0, -3.0, 0.0, 0.0, 0.0]
+    robot.map_frame = "robot_1_map"
+    robot.world_frame = "world"
+    robot.prefix = "robot_1_"
+    robot.tf_buffer = FakeBuffer()
+    robot.node = SimpleNamespace(
+        get_clock=lambda: SimpleNamespace(now=lambda: robot_module.rclpy.time.Time()),
+        get_logger=lambda: FakeLogger(),
+    )
+    monkeypatch.setattr(robot_module, "do_transform_vector3", rotate_map_to_world)
+
+    velocity_world = robot._current_vehicle_velocity_world_nwu()
+
+    np.testing.assert_allclose(velocity_world, [-2.0, 1.0, 3.0])

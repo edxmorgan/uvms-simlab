@@ -1,3 +1,4 @@
+import numpy as np
 import pytest
 
 from simlab.motion_planning.trajectory_generators import (
@@ -17,3 +18,30 @@ def test_ruckig_vehicle_trajectory_generator_is_registered():
 def test_unknown_vehicle_trajectory_generator_reports_known_names():
     with pytest.raises(KeyError, match="Known vehicle trajectory generators: ruckig"):
         vehicle_trajectory_generator_class("does_not_exist")
+
+
+def test_ruckig_replan_velocity_projection_removes_sideways_notch_component():
+    current = np.array([0.0, 0.0, -1.0])
+    path = np.array([
+        [0.0, 0.0, -1.0],
+        [1.0, 0.0, -1.0],
+        [2.0, 0.0, -1.0],
+    ])
+    velocity = np.array([0.3, 0.4, 0.0])
+
+    projected = RuckigVehicleTrajectoryGenerator._path_aligned_initial_velocity(current, path, velocity)
+
+    np.testing.assert_allclose(projected, [0.3, 0.0, 0.0])
+
+
+def test_ruckig_replan_velocity_projection_drops_backward_velocity():
+    current = np.array([0.0, 0.0, -1.0])
+    path = np.array([
+        [0.0, 0.0, -1.0],
+        [1.0, 0.0, -1.0],
+    ])
+    velocity = np.array([-0.2, 0.0, 0.0])
+
+    projected = RuckigVehicleTrajectoryGenerator._path_aligned_initial_velocity(current, path, velocity)
+
+    np.testing.assert_allclose(projected, [0.0, 0.0, 0.0])
