@@ -1,6 +1,8 @@
 from types import SimpleNamespace
 import io
 import json
+import csv
+import pytest
 
 from simlab.robot import Robot
 
@@ -112,3 +114,44 @@ def test_stop_replay_recording_clears_obstacle_sidecar_state(tmp_path):
     assert robot._replay_obstacle_record_path is None
     assert robot._replay_obstacle_record is None
     assert robot._replay_last_recorded_sim_time is None
+
+
+def _recording_fixture(tmp_path):
+    from test_cmd_replay_columns import _controller
+    robot = _robot(tmp_path)
+    robot._replay_record_handle = None
+    robot.cmd_replay_record_dir = tmp_path
+    controller = _controller(vehicle_mode="hold_initial", manipulator_mode="hold_initial")
+    controller.reset_config = controller._default_reset_config()
+    controller.reset_config["vehicle"]["pose"] = [0, 0, 2, 0, 0, 0]
+    controller.reset_config["manipulator"]["position"] = [3.1, 0.7, 0.4, 2.1, 0]
+    controller.current_sample_index = lambda: None
+    return robot, controller, {"sim_time": 1.0, "q": [1, 2, 3, 4], "grasper_q": [0]}
+
+
+def test_recording_uses_actual_hold_targets(tmp_path):
+    robot, controller, state = _recording_fixture(tmp_path)
+    robot._start_replay_session_recording(controller, state)
+    path = robot._replay_record_path
+    robot._record_replay_sample(controller, state, [0] * 6, [0] * 5)
+    robot._stop_replay_session_recording("done")
+    with path.open() as handle:
+        row = next(csv.DictReader(handle))
+    assert float(row["target_vehicle_z"]) == 2.0
+    assert [float(row[f"ref_alpha_axis_{j}"]) for j in "edcb"] == [3.1, 0.7, 0.4, 2.1]
+
+
+def test_recording_collision_does_not_overwrite_existing_csv(tmp_path, monkeypatch):
+    from datetime import datetime
+    instant = datetime(2026, 10, 7, 12, 0, 0, 123456)
+    monkeypatch.setattr("simlab.robot.datetime", SimpleNamespace(now=lambda: instant))
+    robot, controller, state = _recording_fixture(tmp_path)
+    robot._start_replay_session_recording(controller, state)
+    path = robot._replay_record_path
+    assert "20261007_120000_123456" in path.name
+    robot._record_replay_sample(controller, state, [0] * 6, [0] * 5)
+    robot._stop_replay_session_recording("done")
+    original = path.read_bytes()
+    with pytest.raises(FileExistsError):
+        robot._start_replay_session_recording(controller, state)
+    assert path.read_bytes() == original

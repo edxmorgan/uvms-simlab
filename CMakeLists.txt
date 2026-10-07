@@ -95,6 +95,7 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_dynamic_obstacle_sources test/test_dynamic_obstacle_sources.py)
   ament_add_pytest_test(test_trajectory_generators test/test_trajectory_generators.py)
   ament_add_pytest_test(test_cmd_replay_columns test/test_cmd_replay_columns.py)
+  ament_add_pytest_test(test_replay_obstacle_recording test/test_replay_obstacle_recording.py)
   ament_add_pytest_test(test_uvms_rl_env test/test_uvms_rl_env.py)
 endif()
 

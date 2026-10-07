@@ -2572,7 +2572,7 @@ class Robot(Base):
         profile_name = self._safe_filename_token(getattr(replay_controller, "profile_name", "profile"))
         robot_name = self._safe_filename_token(self.prefix)
         pass_index = int(getattr(replay_controller, "_current_pass", 0)) + 1
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         self.cmd_replay_record_dir.mkdir(parents=True, exist_ok=True)
         path = self.cmd_replay_record_dir / f"{timestamp}_{robot_name}_{profile_name}_pass{pass_index}.csv"
 
@@ -2676,7 +2676,7 @@ class Robot(Base):
             "gravity",
         ]
 
-        self._replay_record_handle = path.open("w", encoding="utf-8", newline="")
+        self._replay_record_handle = path.open("x", encoding="utf-8", newline="")
         self._replay_record_writer = csv.DictWriter(self._replay_record_handle, fieldnames=fieldnames)
         self._replay_record_writer.writeheader()
         self._replay_record_path = path
@@ -2742,6 +2742,11 @@ class Robot(Base):
                 q_ref, dq_ref, ddq_ref = replay_controller.arm_reference_at(sample_index)
             if hasattr(replay_controller, "vehicle_reference_at"):
                 target_pose, target_vel, target_acc = replay_controller.vehicle_reference_at(sample_index)
+
+        if replay_controller.manipulator_subsystem_mode() == "hold_initial":
+            q_ref = replay_controller.initial_manipulator_position()
+        if replay_controller.vehicle_subsystem_mode() == "hold_initial":
+            target_pose = replay_controller.initial_vehicle_pose()
 
         def at(values, index, default=0.0):
             return float(values[index]) if index < len(values) else float(default)
