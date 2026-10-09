@@ -52,7 +52,7 @@ class FakeClient:
         self.message = message
         self.requests = []
 
-    def wait_for_service(self, timeout_sec=0.0):
+    def service_is_ready(self):
         return True
 
     def call_async(self, request):
@@ -60,19 +60,13 @@ class FakeClient:
         return FakeFuture(SimpleNamespace(success=self.success, message=self.message))
 
 
-class FakeSetDynamicObstacles:
-    class Request:
-        def __init__(self):
-            self.obstacles = None
-
-
 def _backend(monkeypatch, *, success):
     import simlab.uvms_backend as uvms_backend
 
-    monkeypatch.setattr(uvms_backend, "SetDynamicObstacles", FakeSetDynamicObstacles)
     backend = uvms_backend.UVMSBackendCore.__new__(uvms_backend.UVMSBackendCore)
     backend.node = FakeNode()
-    backend.dynamic_obstacles_client = FakeClient(success=success, message="service response")
+    backend.world_frame = 'world'
+    backend.obstacle_edit_client = FakeClient(success=success, message="service response")
     backend.dynamic_world = FakeDynamicWorld()
     backend.dynamic_obstacle_snapshot = FakeObstacleArray("old")
     return backend
@@ -80,21 +74,37 @@ def _backend(monkeypatch, *, success):
 
 def test_apply_dynamic_obstacles_rejection_does_not_update_local_snapshot(monkeypatch):
     backend = _backend(monkeypatch, success=False)
-    requested = FakeObstacleArray("rejected")
+    from ros2_control_blue_reach_5.msg import DynamicObstacleArray
+    requested = DynamicObstacleArray()
+    requested.header.frame_id = 'world'
 
     assert backend._apply_dynamic_obstacles(requested, "test obstacle")
 
     assert [obstacle.id for obstacle in backend.dynamic_obstacle_snapshot.obstacles] == ["old"]
     assert backend.dynamic_world.updated == []
-    assert "rejected" in backend.node.logger.warns[-1]
+    assert "service response" in backend.node.logger.warns[-1]
+    assert backend.obstacle_edit_client.requests[-1].operation == "replace"
 
 
-def test_apply_dynamic_obstacles_acceptance_updates_local_snapshot(monkeypatch):
+def test_acknowledgement_does_not_overwrite_authoritative_snapshot(monkeypatch):
     backend = _backend(monkeypatch, success=True)
-    requested = FakeObstacleArray("accepted")
+    from ros2_control_blue_reach_5.msg import DynamicObstacleArray
+    requested = DynamicObstacleArray()
+    requested.header.frame_id = 'world'
 
+    backend._on_dynamic_obstacle_snapshot(FakeObstacleArray("live"))
     assert backend._apply_dynamic_obstacles(requested, "test obstacle")
+    assert [obstacle.id for obstacle in backend.dynamic_obstacle_snapshot.obstacles] == ["live"]
+    assert backend.dynamic_world.updated == []
 
-    assert [obstacle.id for obstacle in backend.dynamic_obstacle_snapshot.obstacles] == ["accepted"]
-    assert len(backend.dynamic_world.updated) == 1
-    assert [obstacle.id for obstacle in backend.dynamic_world.updated[0].obstacles] == ["accepted"]
+
+def test_live_snapshot_updates_recording_without_aliasing(monkeypatch):
+    backend = _backend(monkeypatch, success=True)
+    message = FakeObstacleArray("moving")
+    message.obstacles[0].position = 3.0
+    backend._on_dynamic_obstacle_snapshot(message)
+    message.obstacles[0].position = 8.0
+    recorded = backend.dynamic_obstacle_snapshot_for_recording()
+    assert recorded.obstacles[0].position == 3.0
+    recorded.obstacles[0].position = 9.0
+    assert backend.dynamic_obstacle_snapshot.obstacles[0].position == 3.0

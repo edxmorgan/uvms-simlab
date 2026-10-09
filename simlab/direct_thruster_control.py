@@ -31,7 +31,6 @@ Mapping:
 Neutral value: 1500.0
 Active value:  1600.0
 """
-import numpy as np
 import rclpy
 from rclpy.node import Node
 from pynput import keyboard  # pip install pynput

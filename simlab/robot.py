@@ -19,7 +19,6 @@ from datetime import datetime
 from pathlib import Path as FilePath
 
 import numpy as np
-from typing import Dict
 from control_msgs.msg import DynamicJointState
 from scipy.spatial.transform import Rotation as R
 import ament_index_python
@@ -28,7 +27,7 @@ import rclpy
 import casadi as ca
 from nav_msgs.msg import Path
 from rclpy.node import Node
-from geometry_msgs.msg import PoseStamped, Pose, TwistStamped, AccelStamped
+from geometry_msgs.msg import PoseStamped, Pose
 from rclpy.qos import QoSProfile, QoSHistoryPolicy
 import copy
 from std_msgs.msg import Float32
@@ -51,16 +50,11 @@ from simlab.dynamics_profiles import (
 )
 from simlab.planner_markers import PathPlanner
 from simlab.motion_planning.trajectory_generators import VehicleTrajectoryGeneratorTemplate
-from ruckig import Result
 from simlab.uvms_parameters import ReachParams
 from simlab.utils.frames import PoseX
 from tf2_ros import TransformException, Buffer
 from tf2_geometry_msgs import do_transform_pose, do_transform_vector3
-from typing import Optional
-from geometry_msgs.msg import Pose
-from typing import Optional, Tuple, Sequence
-import numpy as np
-from geometry_msgs.msg import Pose
+from typing import Tuple
 from geometry_msgs.msg import Vector3Stamped
 from enum import Enum
 from dataclasses import dataclass
@@ -1036,25 +1030,6 @@ class Robot(Base):
                             float(q.w), float(q.x), float(q.y), float(q.z)]
 
 
-    def set_final_goal_in_world(self, goal_xyz_world_nwu, goal_quat_world_wxyz) -> None:
-        self.final_goal_in_world = (goal_xyz_world_nwu, goal_quat_world_wxyz)
-
-        res_map_ned = self.world_nwu_to_map_ned(
-            xyz_world_nwu=goal_xyz_world_nwu,
-            quat_world_wxyz=goal_quat_world_wxyz,
-            warn_context=f"final_goal world->map ({self.prefix})",
-        )
-        if res_map_ned is None:
-            self.final_goal_in_map_ned = None
-            return
-
-        p_goal_ned, rpy_goal_ned = res_map_ned
-        # store goal in the same 6D format as your state['pose'] (NED euler_xyz)
-        self.final_goal_in_map_ned = (
-            np.asarray([p_goal_ned[0], p_goal_ned[1], p_goal_ned[2]], dtype=float),
-            np.asarray([rpy_goal_ned[0], rpy_goal_ned[1], rpy_goal_ned[2]], dtype=float),
-        )
-
     def compute_errors(self):
         st = self.get_state()
 
@@ -2025,6 +2000,8 @@ class Robot(Base):
                 f"Planner request ignored for {self.prefix}; simulation is held after reset."
             )
             return False
+        self.navigation_blocked_goal = None
+        self._navigation_epoch = getattr(self, "_navigation_epoch", 0) + 1
         self.node.get_logger().info(
             f"Planning motion with {self.planner_name} for {self.prefix} to target pose..."
         )
@@ -2106,8 +2083,11 @@ class Robot(Base):
             k_planner.clear_target(stamp_now, self.world_frame)
             return
         if self.control_mode == ControlMode.PLANNER and k_trajectory.active:
-            target_pose_nwu = np.asarray(list(k_trajectory.out.new_position), dtype=float)
-            target_vel_nwu = np.asarray(list(k_trajectory.out.new_velocity), dtype=float)
+            reference = k_trajectory.current_reference()
+            if reference is None:
+                k_planner.clear_target(stamp_now, self.world_frame)
+                return
+            target_pose_nwu, target_vel_nwu, _ = reference
             q_arrow = self.planner.quat_wxyz_from_x_to_vec_scipy(target_vel_nwu)
             self.planner.update_target_viz(
                 stamp=stamp_now,
@@ -2518,6 +2498,8 @@ class Robot(Base):
                     "visual_type": int(getattr(obstacle, "visual_type", 0)),
                     "visual_dimensions": [float(v) for v in list(getattr(obstacle, "visual_dimensions", []) or [])],
                     "visual_mesh_resource": str(getattr(obstacle, "visual_mesh_resource", "")),
+                    "collision_mesh_resource": str(getattr(obstacle, "collision_mesh_resource", "")),
+                    "collision_mesh_scale": list(getattr(obstacle, "collision_mesh_scale", [])),
                     "pose": {
                         "position": self._vector3_to_recording_dict(getattr(pose, "position", None)),
                         "orientation": self._quat_to_recording_dict(getattr(pose, "orientation", None)),
@@ -2876,6 +2858,8 @@ class Robot(Base):
         self.node.get_logger().info(message)
     
     def abrupt_planner_stop(self, *, publish_zero: bool = True):
+        self._navigation_epoch = getattr(self, '_navigation_epoch', 0) + 1
+        self.navigation_blocked_goal = None
         self.disable_planner_output()
         self._accept_planner_results = False
         self.planner_action_client.cancel_active_goal()

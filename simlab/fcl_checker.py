@@ -1,13 +1,14 @@
 # fcl_world.py
 import numpy as np
 import fcl
+from bringup.collision_geometry import distance_with_nearest
 from typing import Dict, Tuple
 from simlab.utils.meshes import fcl_bvh_from_mesh, collect_env_meshes, conc_env_trimesh, getAABB_OBB
 
 class FCLWorld:
     """
     Mirror of your original structure, but owned inside one class.
-    Exposes bodies_robot, bodies_env, manager_robot, manager_env
+    Exposes bodies_robot, bodies_env, and the environment query manager
     Provides TF updates, collision contacts, and global clearance
     """
 
@@ -31,15 +32,15 @@ class FCLWorld:
         # build FCL bodies identical to your original structure
         self.bodies_robot = self._build_fcl_bodies(robot_mesh_infos, "robot")
         self.bodies_env   = self._build_fcl_bodies(env_mesh_infos,   "env")
+        self.bodies_dynamic = []
+        self.missing_frames = []
+        self.last_clearance_pair = None
 
         # managers
-        self.manager_robot = fcl.DynamicAABBTreeCollisionManager()
         self.manager_env   = fcl.DynamicAABBTreeCollisionManager()
 
-        self.manager_robot.registerObjects([b["fcl_obj"] for b in self.bodies_robot])
         self.manager_env.registerObjects([b["fcl_obj"] for b in self.bodies_env])
 
-        self.manager_robot.setup()
         self.manager_env.setup()
 
         # planner sphere helper, optional
@@ -88,12 +89,28 @@ class FCLWorld:
 
     # --------------- TF update ---------------
 
+    def set_dynamic_bodies(self, bodies):
+        """Synchronize current dynamic objects into the environment broad phase.
+
+        Static objects remain TF-driven. Dynamic poses come from obstacle messages.
+        Keep geometry/object ownership alive while registered with FCL.
+        """
+        old = {id(b['fcl_obj']): b for b in self.bodies_dynamic}
+        new = {id(b['fcl_obj']): b for b in bodies}
+        for key in old.keys() - new.keys():
+            self.manager_env.unregisterObject(old[key]['fcl_obj'])
+        for key in new.keys() - old.keys():
+            self.manager_env.registerObjects([new[key]['fcl_obj']])
+        self.bodies_dynamic = list(bodies)
+        self.manager_env.update()
+
     def update_from_tf(self, tf_buffer, time_obj) -> bool:
         """
         Update transforms for robot and env bodies from TF
         Returns True only if all lookups succeed
         """
         ok_all = True
+        self.missing_frames = []
         for body in self.bodies_robot + self.bodies_env:
             try:
                 t = tf_buffer.lookup_transform(self.world_frame, body["frame"], time_obj)
@@ -104,8 +121,8 @@ class FCLWorld:
                 )
             except Exception:
                 ok_all = False
+                self.missing_frames.append(body['frame'])
 
-        self.manager_robot.update()
         self.manager_env.update()
         return ok_all
 
@@ -116,31 +133,18 @@ class FCLWorld:
         Many to many collision, identical pattern to your original code
         Returns map (name_robot, name_env) -> one representative world point
         """
-        req = fcl.CollisionRequest(num_max_contacts=100, enable_contact=True)
-        cdata = fcl.CollisionData(request=req)
-        self.manager_robot.collide(self.manager_env, cdata, fcl.defaultCollisionCallback)
-
-        # map id(geom) to name like your original
-        geom_id_to_name = {}
-        for b in self.bodies_robot + self.bodies_env:
-            geom_id_to_name[id(b["geom"])] = b["name"]
-
         pair_to_point: Dict[Tuple[str, str], np.ndarray] = {}
-        for contact in cdata.result.contacts:
-            n0 = geom_id_to_name.get(id(contact.o1), "unknown")
-            n1 = geom_id_to_name.get(id(contact.o2), "unknown")
-
-            # keep robot vs env pairing order for readability
-            if n0 in [b["name"] for b in self.bodies_robot] and n1 in [e["name"] for e in self.bodies_env]:
-                key = (n0, n1)
-            elif n1 in [b["name"] for b in self.bodies_robot] and n0 in [e["name"] for e in self.bodies_env]:
-                key = (n1, n0)
-            else:
-                # unknown pairing, still sort to avoid duplication
-                key = tuple(sorted([n0, n1]))
-
-            if key not in pair_to_point:
-                pair_to_point[key] = np.array(contact.pos, dtype=float)
+        # Per-pair requests avoid a global contact cap hiding other obstacles.
+        # Direct object ownership also disambiguates obstacles sharing cached geometry.
+        for robot in self.bodies_robot:
+            for env in self.bodies_env + self.bodies_dynamic:
+                result = fcl.CollisionResult()
+                fcl.collide(robot['fcl_obj'], env['fcl_obj'],
+                            fcl.CollisionRequest(num_max_contacts=1, enable_contact=True), result)
+                if result.contacts:
+                    point = np.asarray(result.contacts[0].pos, dtype=float)
+                    if np.all(np.isfinite(point)):
+                        pair_to_point[(robot['name'], env['name'])] = point
 
         return pair_to_point
 
@@ -151,19 +155,15 @@ class FCLWorld:
         Manager to manager distance with nearest points enabled
         Returns (min_dist, nearest_point_on_robot, nearest_point_on_env)
         """
-        req = fcl.DistanceRequest(enable_nearest_points=True)
-        ddata = fcl.DistanceData(request=req)
-        self.manager_robot.distance(self.manager_env, ddata, fcl.defaultDistanceCallback)
-
-        # nearest_points is two 3D tuples
-        if ddata.result is not None and ddata.result.nearest_points is not None and len(ddata.result.nearest_points) == 2:
-            md = float(ddata.result.min_distance)
-            pr = np.array(ddata.result.nearest_points[0], dtype=float)
-            pe = np.array(ddata.result.nearest_points[1], dtype=float)
-            resp = md, pr, pe
-        else:
-            resp = None
-        return resp
+        best = None
+        self.last_clearance_pair = None
+        for robot in self.bodies_robot:
+            for env in self.bodies_env + self.bodies_dynamic:
+                distance, robot_point, env_point = distance_with_nearest(robot, env)
+                if best is None or distance < best[0]:
+                    best = (distance, robot_point, env_point)
+                    self.last_clearance_pair = (robot['name'], env['name'])
+        return best
 
     # --------------- optional planner sphere helpers ---------------
     def set_robot_collision_radius(self, r: float):

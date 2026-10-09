@@ -3,7 +3,6 @@ from __future__ import annotations
 from simlab.motion_planning.dynamic_replanners.base import (
     DynamicReplannerTemplate,
     ReplanDecision,
-    TimedPathSample,
 )
 from simlab.motion_planning.dynamic_replanners.clearance_hysteresis import ClearanceHysteresisReplanner
 
@@ -31,7 +30,6 @@ __all__ = [
     "ClearanceHysteresisReplanner",
     "DynamicReplannerTemplate",
     "ReplanDecision",
-    "TimedPathSample",
     "dynamic_replanner_class",
     "visible_dynamic_replanner_names",
 ]

@@ -1,0 +1,534 @@
+{
+  "Fish / Anglerfish (1 m)": {
+    "collision_mesh_resource": "package://simlab/obstacle_meshes/marine/anglerfish.stl",
+    "collision_mesh_scale": [
+      2.85716327571653,
+      2.85716327571653,
+      2.85716327571653
+    ],
+    "visual_mesh_resource": "package://simlab/obstacle_meshes/marine/anglerfish.dae",
+    "visual_dimensions": [
+      2.85716327571653,
+      2.85716327571653,
+      2.85716327571653
+    ]
+  },
+  "Fish / Barracuda (1 m)": {
+    "collision_mesh_resource": "package://simlab/obstacle_meshes/marine/barracuda.stl",
+    "collision_mesh_scale": [
+      0.6666666666666666,
+      0.6666666666666666,
+      0.6666666666666666
+    ],
+    "visual_mesh_resource": "package://simlab/obstacle_meshes/marine/barracuda.dae",
+    "visual_dimensions": [
+      0.6666666666666666,
+      0.6666666666666666,
+      0.6666666666666666
+    ]
+  },
+  "Sharks / Basking Shark (2 m)": {
+    "collision_mesh_resource": "package://simlab/obstacle_meshes/marine/basking-shark.stl",
+    "collision_mesh_scale": [
+      0.25,
+      0.25,
+      0.25
+    ],
+    "visual_mesh_resource": "package://simlab/obstacle_meshes/marine/basking-shark.dae",
+    "visual_dimensions": [
+      0.25,
+      0.25,
+      0.25
+    ]
+  },
+  "Fish / Blue Marlin (1 m)": {
+    "collision_mesh_resource": "package://simlab/obstacle_meshes/marine/blue-marlin.stl",
+    "collision_mesh_scale": [
+      0.29411763880904596,
+      0.29411763880904596,
+      0.29411763880904596
+    ],
+    "visual_mesh_resource": "package://simlab/obstacle_meshes/marine/blue-marlin.dae",
+    "visual_dimensions": [
+      0.29411763880904596,
+      0.29411763880904596,
+      0.29411763880904596
+    ]
+  },
+  "Marine mammals / Blue Whale (2 m)": {
+    "collision_mesh_resource": "package://simlab/obstacle_meshes/marine/blue-whale.stl",
+    "collision_mesh_scale": [
+      0.08,
+      0.08,
+      0.08
+    ],
+    "visual_mesh_resource": "package://simlab/obstacle_meshes/marine/blue-whale.dae",
+    "visual_dimensions": [
+      0.08,
+      0.08,
+      0.08
+    ]
+  },
+  "Fish / Bluefin Tuna (1 m)": {
+    "collision_mesh_resource": "package://simlab/obstacle_meshes/marine/bluefin-tuna.stl",
+    "collision_mesh_scale": [
+      0.47619049781574513,
+      0.47619049781574513,
+      0.47619049781574513
+    ],
+    "visual_mesh_resource": "package://simlab/obstacle_meshes/marine/bluefin-tuna.dae",
+    "visual_dimensions": [
+      0.47619049781574513,
+      0.47619049781574513,
+      0.47619049781574513
+    ]
+  },
+  "Marine mammals / California Sea Lion (2 m)": {
+    "collision_mesh_resource": "package://simlab/obstacle_meshes/marine/california-sea-lion.stl",
+    "collision_mesh_scale": [
+      0.9999968843035798,
+      0.9999968843035798,
+      0.9999968843035798
+    ],
+    "visual_mesh_resource": "package://simlab/obstacle_meshes/marine/california-sea-lion.dae",
+    "visual_dimensions": [
+      0.9999968843035798,
+      0.9999968843035798,
+      0.9999968843035798
+    ]
+  },
+  "Other marine animals / Common Octopus (2 m)": {
+    "collision_mesh_resource": "package://simlab/obstacle_meshes/marine/common-octopus.stl",
+    "collision_mesh_scale": [
+      1.8181817787737895,
+      1.8181817787737895,
+      1.8181817787737895
+    ],
+    "visual_mesh_resource": "package://simlab/obstacle_meshes/marine/common-octopus.dae",
+    "visual_dimensions": [
+      1.8181817787737895,
+      1.8181817787737895,
+      1.8181817787737895
+    ]
+  },
+  "Marine mammals / Dugong (2 m)": {
+    "collision_mesh_resource": "package://simlab/obstacle_meshes/marine/dugong.stl",
+    "collision_mesh_scale": [
+      0.7142834999387617,
+      0.7142834999387617,
+      0.7142834999387617
+    ],
+    "visual_mesh_resource": "package://simlab/obstacle_meshes/marine/dugong.dae",
+    "visual_dimensions": [
+      0.7142834999387617,
+      0.7142834999387617,
+      0.7142834999387617
+    ]
+  },
+  "Rays / Eagle Ray (2 m)": {
+    "collision_mesh_resource": "package://simlab/obstacle_meshes/marine/eagle-ray.stl",
+    "collision_mesh_scale": [
+      0.8700014581943157,
+      0.8700014581943157,
+      0.8700014581943157
+    ],
+    "visual_mesh_resource": "package://simlab/obstacle_meshes/marine/eagle-ray.dae",
+    "visual_dimensions": [
+      0.8700014581943157,
+      0.8700014581943157,
+      0.8700014581943157
+    ]
+  },
+  "Fish / Flying Fish (1 m)": {
+    "collision_mesh_resource": "package://simlab/obstacle_meshes/marine/flying-fish.stl",
+    "collision_mesh_scale": [
+      3.125000069849195,
+      3.125000069849195,
+      3.125000069849195
+    ],
+    "visual_mesh_resource": "package://simlab/obstacle_meshes/marine/flying-fish.dae",
+    "visual_dimensions": [
+      3.125000069849195,
+      3.125000069849195,
+      3.125000069849195
+    ]
+  },
+  "Other marine animals / Giant Isopod (2 m)": {
+    "collision_mesh_resource": "package://simlab/obstacle_meshes/marine/giant-isopod.stl",
+    "collision_mesh_scale": [
+      4.999999925494195,
+      4.999999925494195,
+      4.999999925494195
+    ],
+    "visual_mesh_resource": "package://simlab/obstacle_meshes/marine/giant-isopod.dae",
+    "visual_dimensions": [
+      4.999999925494195,
+      4.999999925494195,
+      4.999999925494195
+    ]
+  },
+  "Other marine animals / Giant Squid (2 m)": {
+    "collision_mesh_resource": "package://simlab/obstacle_meshes/marine/giant-squid.stl",
+    "collision_mesh_scale": [
+      0.25,
+      0.25,
+      0.25
+    ],
+    "visual_mesh_resource": "package://simlab/obstacle_meshes/marine/giant-squid.dae",
+    "visual_dimensions": [
+      0.25,
+      0.25,
+      0.25
+    ]
+  },
+  "Sharks / Great White Shark (2 m)": {
+    "collision_mesh_resource": "package://simlab/obstacle_meshes/marine/great-white-shark.stl",
+    "collision_mesh_scale": [
+      0.4444444444444444,
+      0.4444444444444444,
+      0.4444444444444444
+    ],
+    "visual_mesh_resource": "package://simlab/obstacle_meshes/marine/great-white-shark.dae",
+    "visual_dimensions": [
+      0.4444444444444444,
+      0.4444444444444444,
+      0.4444444444444444
+    ]
+  },
+  "Turtles / Green Sea Turtle (2 m)": {
+    "collision_mesh_resource": "package://simlab/obstacle_meshes/marine/green-sea-turtle.stl",
+    "collision_mesh_scale": [
+      1.2753469568767697,
+      1.2753469568767697,
+      1.2753469568767697
+    ],
+    "visual_mesh_resource": "package://simlab/obstacle_meshes/marine/green-sea-turtle.dae",
+    "visual_dimensions": [
+      1.2753469568767697,
+      1.2753469568767697,
+      1.2753469568767697
+    ]
+  },
+  "Fish / Gulper Eel (1 m)": {
+    "collision_mesh_resource": "package://simlab/obstacle_meshes/marine/gulper-eel.stl",
+    "collision_mesh_scale": [
+      1.1111111405455043,
+      1.1111111405455043,
+      1.1111111405455043
+    ],
+    "visual_mesh_resource": "package://simlab/obstacle_meshes/marine/gulper-eel.dae",
+    "visual_dimensions": [
+      1.1111111405455043,
+      1.1111111405455043,
+      1.1111111405455043
+    ]
+  },
+  "Marine mammals / Harbour Porpoise (2 m)": {
+    "collision_mesh_resource": "package://simlab/obstacle_meshes/marine/harbour-porpoise.stl",
+    "collision_mesh_scale": [
+      1.2499999813735487,
+      1.2499999813735487,
+      1.2499999813735487
+    ],
+    "visual_mesh_resource": "package://simlab/obstacle_meshes/marine/harbour-porpoise.dae",
+    "visual_dimensions": [
+      1.2499999813735487,
+      1.2499999813735487,
+      1.2499999813735487
+    ]
+  },
+  "Marine mammals / Humpback Breaching (2 m)": {
+    "collision_mesh_resource": "package://simlab/obstacle_meshes/marine/humpback-breaching.stl",
+    "collision_mesh_scale": [
+      0.1266135874002711,
+      0.1266135874002711,
+      0.1266135874002711
+    ],
+    "visual_mesh_resource": "package://simlab/obstacle_meshes/marine/humpback-breaching.dae",
+    "visual_dimensions": [
+      0.1266135874002711,
+      0.1266135874002711,
+      0.1266135874002711
+    ]
+  },
+  "Marine mammals / Humpback Whale (2 m)": {
+    "collision_mesh_resource": "package://simlab/obstacle_meshes/marine/humpback-whale.stl",
+    "collision_mesh_scale": [
+      0.14285714285714285,
+      0.14285714285714285,
+      0.14285714285714285
+    ],
+    "visual_mesh_resource": "package://simlab/obstacle_meshes/marine/humpback-whale.dae",
+    "visual_dimensions": [
+      0.14285714285714285,
+      0.14285714285714285,
+      0.14285714285714285
+    ]
+  },
+  "Turtles / Leatherback Turtle (2 m)": {
+    "collision_mesh_resource": "package://simlab/obstacle_meshes/marine/leatherback-turtle.stl",
+    "collision_mesh_scale": [
+      0.7439524103623605,
+      0.7439524103623605,
+      0.7439524103623605
+    ],
+    "visual_mesh_resource": "package://simlab/obstacle_meshes/marine/leatherback-turtle.dae",
+    "visual_dimensions": [
+      0.7439524103623605,
+      0.7439524103623605,
+      0.7439524103623605
+    ]
+  },
+  "Fish / Mahi Mahi (1 m)": {
+    "collision_mesh_resource": "package://simlab/obstacle_meshes/marine/mahi-mahi.stl",
+    "collision_mesh_scale": [
+      0.7692307974459868,
+      0.7692307974459868,
+      0.7692307974459868
+    ],
+    "visual_mesh_resource": "package://simlab/obstacle_meshes/marine/mahi-mahi.dae",
+    "visual_dimensions": [
+      0.7692307974459868,
+      0.7692307974459868,
+      0.7692307974459868
+    ]
+  },
+  "Sharks / Mako Shark (2 m)": {
+    "collision_mesh_resource": "package://simlab/obstacle_meshes/marine/mako-shark.stl",
+    "collision_mesh_scale": [
+      0.6666666666666666,
+      0.6666666666666666,
+      0.6666666666666666
+    ],
+    "visual_mesh_resource": "package://simlab/obstacle_meshes/marine/mako-shark.dae",
+    "visual_dimensions": [
+      0.6666666666666666,
+      0.6666666666666666,
+      0.6666666666666666
+    ]
+  },
+  "Rays / Manta Ray (2 m)": {
+    "collision_mesh_resource": "package://simlab/obstacle_meshes/marine/manta-ray.stl",
+    "collision_mesh_scale": [
+      0.29719614976778364,
+      0.29719614976778364,
+      0.29719614976778364
+    ],
+    "visual_mesh_resource": "package://simlab/obstacle_meshes/marine/manta-ray.dae",
+    "visual_dimensions": [
+      0.29719614976778364,
+      0.29719614976778364,
+      0.29719614976778364
+    ]
+  },
+  "Other marine animals / Moon Jellyfish (2 m)": {
+    "collision_mesh_resource": "package://simlab/obstacle_meshes/marine/moon-jellyfish.stl",
+    "collision_mesh_scale": [
+      4.965558228167675,
+      4.965558228167675,
+      4.965558228167675
+    ],
+    "visual_mesh_resource": "package://simlab/obstacle_meshes/marine/moon-jellyfish.dae",
+    "visual_dimensions": [
+      4.965558228167675,
+      4.965558228167675,
+      4.965558228167675
+    ]
+  },
+  "Fish / Ocean Sunfish (1 m)": {
+    "collision_mesh_resource": "package://simlab/obstacle_meshes/marine/ocean-sunfish.stl",
+    "collision_mesh_scale": [
+      0.21860426135877978,
+      0.21860426135877978,
+      0.21860426135877978
+    ],
+    "visual_mesh_resource": "package://simlab/obstacle_meshes/marine/ocean-sunfish.dae",
+    "visual_dimensions": [
+      0.21860426135877978,
+      0.21860426135877978,
+      0.21860426135877978
+    ]
+  },
+  "Marine mammals / Orca (2 m)": {
+    "collision_mesh_resource": "package://simlab/obstacle_meshes/marine/orca.stl",
+    "collision_mesh_scale": [
+      0.2857142857142857,
+      0.2857142857142857,
+      0.2857142857142857
+    ],
+    "visual_mesh_resource": "package://simlab/obstacle_meshes/marine/orca.dae",
+    "visual_dimensions": [
+      0.2857142857142857,
+      0.2857142857142857,
+      0.2857142857142857
+    ]
+  },
+  "Marine mammals / Pilot Whale (2 m)": {
+    "collision_mesh_resource": "package://simlab/obstacle_meshes/marine/pilot-whale.stl",
+    "collision_mesh_scale": [
+      0.4,
+      0.4,
+      0.4
+    ],
+    "visual_mesh_resource": "package://simlab/obstacle_meshes/marine/pilot-whale.dae",
+    "visual_dimensions": [
+      0.4,
+      0.4,
+      0.4
+    ]
+  },
+  "Other marine animals / Portuguese Man O War (2 m)": {
+    "collision_mesh_resource": "package://simlab/obstacle_meshes/marine/portuguese-man-o-war.stl",
+    "collision_mesh_scale": [
+      2.4949124635608726,
+      2.4949124635608726,
+      2.4949124635608726
+    ],
+    "visual_mesh_resource": "package://simlab/obstacle_meshes/marine/portuguese-man-o-war.dae",
+    "visual_dimensions": [
+      2.4949124635608726,
+      2.4949124635608726,
+      2.4949124635608726
+    ]
+  },
+  "Sharks / Scalloped Hammerhead (2 m)": {
+    "collision_mesh_resource": "package://simlab/obstacle_meshes/marine/scalloped-hammerhead.stl",
+    "collision_mesh_scale": [
+      0.6249999906867744,
+      0.6249999906867744,
+      0.6249999906867744
+    ],
+    "visual_mesh_resource": "package://simlab/obstacle_meshes/marine/scalloped-hammerhead.dae",
+    "visual_dimensions": [
+      0.6249999906867744,
+      0.6249999906867744,
+      0.6249999906867744
+    ]
+  },
+  "Marine mammals / Sea Otter Floating (2 m)": {
+    "collision_mesh_resource": "package://simlab/obstacle_meshes/marine/sea-otter-floating.stl",
+    "collision_mesh_scale": [
+      1.6666666004392863,
+      1.6666666004392863,
+      1.6666666004392863
+    ],
+    "visual_mesh_resource": "package://simlab/obstacle_meshes/marine/sea-otter-floating.dae",
+    "visual_dimensions": [
+      1.6666666004392863,
+      1.6666666004392863,
+      1.6666666004392863
+    ]
+  },
+  "Turtles / Sea Turtle Resting (2 m)": {
+    "collision_mesh_resource": "package://simlab/obstacle_meshes/marine/sea-turtle-resting.stl",
+    "collision_mesh_scale": [
+      1.9047619912629805,
+      1.9047619912629805,
+      1.9047619912629805
+    ],
+    "visual_mesh_resource": "package://simlab/obstacle_meshes/marine/sea-turtle-resting.dae",
+    "visual_dimensions": [
+      1.9047619912629805,
+      1.9047619912629805,
+      1.9047619912629805
+    ]
+  },
+  "Rays / Southern Stingray (2 m)": {
+    "collision_mesh_resource": "package://simlab/obstacle_meshes/marine/southern-stingray.stl",
+    "collision_mesh_scale": [
+      0.9621083188008696,
+      0.9621083188008696,
+      0.9621083188008696
+    ],
+    "visual_mesh_resource": "package://simlab/obstacle_meshes/marine/southern-stingray.dae",
+    "visual_dimensions": [
+      0.9621083188008696,
+      0.9621083188008696,
+      0.9621083188008696
+    ]
+  },
+  "Marine mammals / Sperm Whale (2 m)": {
+    "collision_mesh_resource": "package://simlab/obstacle_meshes/marine/sperm-whale.stl",
+    "collision_mesh_scale": [
+      0.125,
+      0.125,
+      0.125
+    ],
+    "visual_mesh_resource": "package://simlab/obstacle_meshes/marine/sperm-whale.dae",
+    "visual_dimensions": [
+      0.125,
+      0.125,
+      0.125
+    ]
+  },
+  "Fish / Swordfish (1 m)": {
+    "collision_mesh_resource": "package://simlab/obstacle_meshes/marine/swordfish.stl",
+    "collision_mesh_scale": [
+      0.32258065508506084,
+      0.32258065508506084,
+      0.32258065508506084
+    ],
+    "visual_mesh_resource": "package://simlab/obstacle_meshes/marine/swordfish.dae",
+    "visual_dimensions": [
+      0.32258065508506084,
+      0.32258065508506084,
+      0.32258065508506084
+    ]
+  },
+  "Sharks / Tiger Shark (2 m)": {
+    "collision_mesh_resource": "package://simlab/obstacle_meshes/marine/tiger-shark.stl",
+    "collision_mesh_scale": [
+      0.5263157960780771,
+      0.5263157960780771,
+      0.5263157960780771
+    ],
+    "visual_mesh_resource": "package://simlab/obstacle_meshes/marine/tiger-shark.dae",
+    "visual_dimensions": [
+      0.5263157960780771,
+      0.5263157960780771,
+      0.5263157960780771
+    ]
+  },
+  "Other marine animals / Vampire Squid (2 m)": {
+    "collision_mesh_resource": "package://simlab/obstacle_meshes/marine/vampire-squid.stl",
+    "collision_mesh_scale": [
+      6.666666401757145,
+      6.666666401757145,
+      6.666666401757145
+    ],
+    "visual_mesh_resource": "package://simlab/obstacle_meshes/marine/vampire-squid.dae",
+    "visual_dimensions": [
+      6.666666401757145,
+      6.666666401757145,
+      6.666666401757145
+    ]
+  },
+  "Fish / Viperfish (1 m)": {
+    "collision_mesh_resource": "package://simlab/obstacle_meshes/marine/viperfish.stl",
+    "collision_mesh_scale": [
+      3.3333332008785725,
+      3.3333332008785725,
+      3.3333332008785725
+    ],
+    "visual_mesh_resource": "package://simlab/obstacle_meshes/marine/viperfish.dae",
+    "visual_dimensions": [
+      3.3333332008785725,
+      3.3333332008785725,
+      3.3333332008785725
+    ]
+  },
+  "Sharks / Whale Shark (2 m)": {
+    "collision_mesh_resource": "package://simlab/obstacle_meshes/marine/whale-shark.stl",
+    "collision_mesh_scale": [
+      0.2,
+      0.2,
+      0.2
+    ],
+    "visual_mesh_resource": "package://simlab/obstacle_meshes/marine/whale-shark.dae",
+    "visual_dimensions": [
+      0.2,
+      0.2,
+      0.2
+    ]
+  }
+}

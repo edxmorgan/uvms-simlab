@@ -10,7 +10,7 @@ import tf2_ros
 from simlab.dynamic_world import DynamicWorldModel
 from simlab.fcl_checker import FCLWorld
 from simlab.planner_world import PlannerWorld
-from simlab.shutdown import install_signal_shutdown_handler, spin_until_shutdown
+from simlab.shutdown import shutdown_node, spin_until_shutdown
 from simlab.motion_planning.planners import DEFAULT_PLANNER_CLASSES
 from simlab.motion_planning.result import MotionPlanResult
 
@@ -270,32 +270,23 @@ class PlannerActionServer(Node):
 
         return result
 
-    def destroy(self):
+    def destroy_node(self):
         self._action_server.destroy()
-        super().destroy_node()
+        self.dynamic_world.close()
+        self.tf_listener.unregister()
+        return super().destroy_node()
 
 def main(args=None):
     rclpy.init(args=args)
-    install_signal_shutdown_handler()
-    planner_action_server = PlannerActionServer()
-
     # A single-thread executor avoids idle busy-spin seen with the action server
     # under rclpy while still matching the server's one-goal-at-a-time policy.
     executor = SingleThreadedExecutor()
-
+    planner_action_server = None
     try:
+        planner_action_server = PlannerActionServer()
         spin_until_shutdown(planner_action_server, executor=executor)
     finally:
-        executor.shutdown()
-        try:
-            planner_action_server.destroy_node()
-        except (KeyboardInterrupt, Exception):
-            pass
-        if rclpy.ok():
-            try:
-                rclpy.shutdown()
-            except Exception:
-                pass
+        shutdown_node(planner_action_server, executor)
 
 if __name__ == '__main__':
     main()

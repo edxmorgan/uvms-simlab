@@ -1,0 +1,11 @@
+# get, add, update, remove, clear, replace, reset.
+# add rejects existing IDs; update requires existing IDs. Geometry is explicit.
+string operation
+bool check_revision
+uint64 expected_revision
+ros2_control_blue_reach_5/DynamicObstacleArray obstacles
+string[] ids
+---
+bool success
+string message
+simlab/ObstacleScene scene

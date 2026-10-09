@@ -9,17 +9,20 @@ find_package(ament_cmake_python REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(ros2_control_blue_reach_5 REQUIRED)
 
 set(action_files
   "action/PlanVehicle.action"
 )
 
 set(msg_files
+  "msg/ObstacleScene.msg"
   "msg/ControllerPerformance.msg"
   "msg/ReferenceTargets.msg"
 )
 
 set(srv_files
+  "srv/EditDynamicObstacles.srv"
   "srv/BackendRobotCommand.srv"
   "srv/BackendWorldCommand.srv"
   "srv/BackendPoseCommand.srv"
@@ -30,7 +33,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   ${action_files}
   ${msg_files}
   ${srv_files}
-  DEPENDENCIES geometry_msgs std_msgs
+  DEPENDENCIES geometry_msgs std_msgs ros2_control_blue_reach_5
 )
 
 ament_get_python_install_dir(PYTHON_INSTALL_DIR)
@@ -59,6 +62,7 @@ function(simlab_python_entrypoint script_name module_name)
 endfunction()
 
 simlab_python_entrypoint(interactive_controller simlab.interactive_control)
+simlab_python_entrypoint(dynamic_obstacle_sim_node simlab.obstacle_node)
 simlab_python_entrypoint(joystick_controller simlab.joystick_control)
 simlab_python_entrypoint(direct_thruster_controller simlab.direct_thruster_control)
 simlab_python_entrypoint(mocap_publisher simlab.use_mocap)
@@ -81,6 +85,7 @@ install(
     resource/playback_profile
     resource/dynamics_profiles
     resource/world_profiles
+    resource/obstacle_meshes
   DESTINATION share/${PROJECT_NAME}
 )
 
@@ -88,11 +93,25 @@ install(FILES package.xml DESTINATION share/${PROJECT_NAME})
 
 if(BUILD_TESTING)
   find_package(ament_cmake_pytest REQUIRED)
+  ament_add_pytest_test(test_flake8 test/test_flake8.py)
+  ament_add_pytest_test(test_vehicle_yaw_continuity test/test_vehicle_yaw_continuity.py)
+  ament_add_pytest_test(test_bag_recorder_topics test/test_bag_recorder_topics.py)
+  ament_add_pytest_test(test_uvms_dynamics_contract test/test_uvms_dynamics_contract.py)
   ament_add_pytest_test(test_world_profiles test/test_world_profiles.py)
+  ament_add_pytest_test(test_uvms_backend_dynamic_obstacles test/test_uvms_backend_dynamic_obstacles.py)
+  ament_add_pytest_test(test_dynamic_collision_geometry test/test_dynamic_collision_geometry.py)
+  ament_add_pytest_test(test_voxel_geometry test/test_voxel_geometry.py)
   ament_add_pytest_test(test_planner_world test/test_planner_world.py)
   ament_add_pytest_test(test_motion_plan_result test/test_motion_plan_result.py)
   ament_add_pytest_test(test_dynamic_replanner test/test_dynamic_replanner.py)
+  ament_add_pytest_test(test_navigation_safety test/test_navigation_safety.py)
   ament_add_pytest_test(test_dynamic_obstacle_sources test/test_dynamic_obstacle_sources.py)
+  ament_add_pytest_test(test_obstacle_runtime test/test_obstacle_runtime.py)
+  ament_add_pytest_test(test_obstacle_node test/test_obstacle_node.py)
+  ament_add_pytest_test(test_obstacle_editor test/test_obstacle_editor.py)
+  ament_add_pytest_test(test_marine_assets test/test_marine_assets.py)
+  ament_add_pytest_test(test_shutdown test/test_shutdown.py)
+  ament_add_pytest_test(test_collision_visualization test/test_collision_visualization.py)
   ament_add_pytest_test(test_trajectory_generators test/test_trajectory_generators.py)
   ament_add_pytest_test(test_cmd_replay_columns test/test_cmd_replay_columns.py)
   ament_add_pytest_test(test_replay_obstacle_recording test/test_replay_obstacle_recording.py)

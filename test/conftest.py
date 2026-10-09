@@ -43,9 +43,6 @@ for _name in (
     "BackendRobotCommand",
     "BackendWaypointCommand",
     "BackendWorldCommand",
-    "ResetSimVehicle",
-    "ResetSimManipulator",
-    "ResetSimRobotState",
 ):
     _ensure_srv_attr(simlab_srv, _name)
 
@@ -63,5 +60,5 @@ for _name in (
     _ensure_attr(ros2_control_msg, _name)
 
 ros2_control_srv = _module("ros2_control_blue_reach_5.srv")
-for _name in ("ResetSimUvms", "SetDynamicObstacles", "SetSimCameraDynamics", "SetSimDynamics"):
+for _name in ("ResetSimUvms", "SetSimCameraDynamics", "SetSimDynamics"):
     _ensure_srv_attr(ros2_control_srv, _name)

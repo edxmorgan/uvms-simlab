@@ -1,177 +1,132 @@
-# Copyright (C) 2025 Edward Morgan
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or (at your
-# option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program. If not, see <https://www.gnu.org/licenses/>.
-
 #!/usr/bin/env python3
+# Copyright (C) 2025 Edward Morgan
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""Visualize shared static and dynamic collision surfaces in their current poses."""
 import os
+from pathlib import Path
+
 import numpy as np
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
-from simlab.shutdown import install_signal_shutdown_handler, shutdown_node, spin_until_shutdown
+from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
+from scipy.spatial.transform import Rotation
 from sensor_msgs.msg import PointCloud2
-import trimesh
-from ament_index_python.packages import get_package_share_directory
-from simlab.utils.meshes import collect_env_meshes, conc_env_trimesh, points_to_cloud2
+from tf2_ros import Buffer, TransformListener
+
+from simlab.dynamic_world import DynamicWorldModel
+from simlab.shutdown import shutdown_node, spin_until_shutdown
+from simlab.utils.meshes import collect_env_meshes, points_to_cloud2, se3_from_rpy_xyz
+from simlab.voxel_geometry import LocalVoxelCache, transform_centers
+
 
 class VoxelVizNode(Node):
     def __init__(self):
-        super().__init__("voxel_viz_node")
+        super().__init__('voxel_viz_node')
         self.declare_parameter('robot_description', '')
+        self.declare_parameter('world_frame', 'world')
+        self.world_frame = str(self.get_parameter('world_frame').value)
+        urdf = self.get_parameter('robot_description').value
+        if not urdf:
+            raise RuntimeError('robot_description is empty')
+        # Same environment selection and local mesh origins as FCLWorld.
+        _, self.static_meshes, _ = collect_env_meshes(urdf)
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
+        self.dynamic_world = DynamicWorldModel(
+            self, world_frame=self.world_frame, robot_radius_provider=lambda: 0.0)
+        self.voxel_size = 0.1
+        cache_dir = Path(os.environ.get('ROS_HOME', str(Path.home() / '.ros'))) / 'collision_voxels'
+        # A large bathymetry build must not starve dynamic obstacle voxelization.
+        self.caches = {name: LocalVoxelCache(cache_dir, self.voxel_size) for name in ('static', 'dynamic')}
+        qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                         durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self.cloud_pub = self.create_publisher(PointCloud2, '/env_voxels_cloud', qos)
+        self.dynamic_pub = self.create_publisher(PointCloud2, '/dynamic_voxels_cloud', qos)
+        self._signatures = {}
+        self._errors = {}
+        self.timer = self.create_timer(0.1, self.tick)
+        self.get_logger().info('Shared collision voxels build in background at 0.1 m')
 
-        urdf_string = self.get_parameter(
-            'robot_description'
-        ).get_parameter_value().string_value
+    @staticmethod
+    def _static_spec(info):
+        return (4, (), info['uri'], tuple(info['scale']))
 
-        if not urdf_string:
-            self.get_logger().error(
-                'robot_description param is empty. Did you load it into the param server in launch'
-            )
-            raise RuntimeError('no robot_description')
+    @staticmethod
+    def _dynamic_spec(state):
+        return (state.collision_type, state.collision_dimensions,
+                state.collision_mesh_resource, state.collision_mesh_scale)
 
-        # collect meshes
-        robot_mesh_infos, env_mesh_infos, floor_depth = collect_env_meshes(urdf_string)
-        if len(env_mesh_infos) == 0:
-            self.get_logger().warn(
-                "No env meshes with prefix bathymetry_ found"
-            )
-        else:
-            self.get_logger().info(
-                f"env links {[x['link'] for x in env_mesh_infos]}"
-            )
+    def _static_sources(self):
+        sources = []
+        for info in self.static_meshes:
+            tf = self.tf_buffer.lookup_transform(self.world_frame, info['link'], rclpy.time.Time())
+            q, p = tf.transform.rotation, tf.transform.translation
+            link = np.eye(4)
+            link[:3, :3] = Rotation.from_quat([q.x, q.y, q.z, q.w]).as_matrix()
+            link[:3, 3] = [p.x, p.y, p.z]
+            transform = link @ se3_from_rpy_xyz(info['rpy'], info['xyz'])
+            sources.append((self._static_spec(info), transform[:3, :3], transform[:3, 3]))
+        return sources
 
-        # merge meshes into one Trimesh in world frame
-        env_mesh = conc_env_trimesh(env_mesh_infos)
-        if env_mesh is None:
-            self.get_logger().error("No environment mesh could be built")
-            raise RuntimeError("empty env mesh")
+    def _dynamic_sources(self):
+        if self.dynamic_world.error:
+            raise RuntimeError(self.dynamic_world.error)
+        return [(self._dynamic_spec(state), state.obstacle_to_world_rotation, state.center_world)
+                for state in self.dynamic_world.obstacles.values()]
 
-        self.get_logger().info(
-            f"concatenated env meshes, {len(env_mesh.faces)} faces total"
-        )
-
-        # choose voxel resolution
-        self.voxel_size = 0.10  # meters per cell
-
-        # load cached voxel centers from ros2_control_blue_reach_5 share
-        # or build them and save there
-        self.centers = self.load_or_build_voxels(env_mesh, self.voxel_size)
-
-        self.get_logger().info(
-            f"env voxel grid ready, {self.centers.shape[0]} occupied voxels at "
-            f"{self.voxel_size} m"
-        )
-
-        self.cloud_pub = self.create_publisher(
-            PointCloud2,
-            '/env_voxels_cloud',
-            qos_profile_sensor_data
-        )
-
-        self.timer = self.create_timer(2.0, self.tick)
+    def _publish_sources(self, name, publisher, sources):
+        ready = []
+        pending = False
+        for spec, rotation, translation in sources:
+            points = self.caches[name].request(spec)
+            if points is None:
+                pending = True
+            else:
+                ready.append((points, rotation, translation))
+        if pending:
+            raise RuntimeError('building local collision voxels')
+        signature = tuple((spec, np.asarray(rotation).tobytes(), np.asarray(translation).tobytes())
+                          for spec, rotation, translation in sources)
+        if self._signatures.get(name) == signature:
+            return
+        points = np.concatenate([transform_centers(*item) for item in ready]) if ready else np.empty((0, 3))
+        # Zero stamp: retained world-frame data remains valid for late subscribers.
+        publisher.publish(points_to_cloud2(points, frame_id=self.world_frame))
+        self._signatures[name] = signature
 
     def tick(self):
-        """
-        Periodic publish.
-        1. Publish point cloud of voxel centers to RViz for geometric sanity check.
-        2. Placeholder for OccupancyGrid projection from octree later.
-        """
         if not rclpy.ok():
             return
-        if self.cloud_pub.get_subscription_count() == 0:
-            return
-        # Publish voxel centers as PointCloud2
-        if self.centers is not None and self.centers.shape[0] > 0:
-            cloud_msg = points_to_cloud2(
-                self.centers,
-                frame_id="world_bottom",
-                stamp=self.get_clock().now().to_msg()
-            )
+        active_specs = {
+            'static': {self._static_spec(info) for info in self.static_meshes},
+            'dynamic': {self._dynamic_spec(s) for s in self.dynamic_world.obstacles.values()},
+        }
+        for name, publisher, get_sources in (
+                ('static', self.cloud_pub, self._static_sources),
+                ('dynamic', self.dynamic_pub, self._dynamic_sources)):
             try:
-                self.cloud_pub.publish(cloud_msg)
-            except Exception:
-                if rclpy.ok():
-                    raise
+                self._publish_sources(name, publisher, get_sources())
+                self._errors.pop(name, None)
+            except Exception as exc:
+                error = str(exc)
+                if self._errors.get(name) != error:
+                    self.get_logger().warn(f'{name} voxel visualization unavailable: {error}')
+                    publisher.publish(points_to_cloud2(np.empty((0, 3)), frame_id=self.world_frame))
+                    self._errors[name] = error
+                self._signatures.pop(name, None)
+        for name, cache in self.caches.items():
+            cache.retain(active_specs[name])
 
-
-    def get_cache_path(self, voxel_size: float):
-        pkg_share = get_package_share_directory('ros2_control_blue_reach_5')
-
-        # Put voxel cache in Bathymetry/voxels under that share directory
-        voxels_dir = os.path.join(pkg_share, 'Bathymetry', 'voxels')
-        os.makedirs(voxels_dir, exist_ok=True)
-
-        fname = f"env_voxels_{voxel_size:.3f}m.npy"
-        cache_path = os.path.join(voxels_dir, fname)
-
-        return cache_path
-
-    def load_or_build_voxels(self,
-                             mesh: trimesh.Trimesh,
-                             voxel_size: float):
-        """
-        Try to load cached centers from ros2_control_blue_reach_5 share.
-        If not present, voxelize, save there, then return.
-        """
-        cache_path = self.get_cache_path(voxel_size)
-
-        if os.path.exists(cache_path):
-            self.get_logger().info(
-                f"loading cached voxel centers from {cache_path}"
-            )
-            centers = np.load(cache_path)
-            return centers
-
-        # cache miss case
-        self.get_logger().info(
-            f"no cache found, voxelizing at {voxel_size} m and saving to {cache_path}"
-        )
-
-        centers, _ = self.voxelize_mesh(
-            mesh,
-            voxel_size,
-            solid=False
-        )
-
-        # write cache file
-        np.save(cache_path, centers)
-        self.get_logger().info(
-            f"saved {centers.shape[0]} voxel centers to {cache_path}"
-        )
-
-        return centers
-
-    def voxelize_mesh(self,
-                      mesh: trimesh.Trimesh,
-                      voxel_size: float,
-                      solid: bool = False):
-        """
-        Voxelize with trimesh.
-        solid False gives surface shell voxels.
-        solid True fills interior.
-        """
-        v = mesh.voxelized(pitch=voxel_size, method="subdivide")
-        if solid:
-            v = v.fill()
-
-        centers = v.points.copy()
-        return centers, voxel_size
+    def destroy_node(self):
+        for cache in self.caches.values():
+            cache.close()
+        self.dynamic_world.close()
+        self.tf_listener.unregister()
+        return super().destroy_node()
 
 
 def main():
     rclpy.init()
-    install_signal_shutdown_handler()
     node = VoxelVizNode()
     try:
         spin_until_shutdown(node)
@@ -179,5 +134,5 @@ def main():
         shutdown_node(node)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

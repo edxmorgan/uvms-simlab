@@ -1,0 +1,27 @@
+Marine animal meshes: CC0 1.0 Universal (CC0-1.0).
+Creator/publisher: 3DAssets.dev
+Source pack: https://3dassets.dev/packs/open-ocean-and-deep-sea-life
+Publisher license statement: https://3dassets.dev/license
+CC0 legal code: https://creativecommons.org/publicdomain/zero/1.0/legalcode
+
+The publisher dedicates these assets to the public domain under CC0, permitting
+copying, modification, redistribution and commercial use without attribution.
+No endorsement by the publisher is implied. Assets are provided without warranty.
+
+Per-model source pages and versioned download URLs are recorded in sources.json.
+Downloaded GLB hashes and converted STL/COLLADA hashes are recorded in imported.json.
+
+Modifications for UVMS-SimLab:
+- Decode glTF normalized integer attributes before geometry import.
+- Bake scene-node transforms and concatenate all triangle parts.
+- Convert right-handed Y-up/Z-longitudinal coordinates to Z-up/X-longitudinal.
+- Center the local bounding box on the obstacle origin.
+- Export binary STL for collision and material-bearing Z-up COLLADA for display;
+  retain the source's metre units and separate solid colour materials.
+- Approximate PBR roughness with COLLADA shininess for the RViz renderer.
+
+These are stylized rigid surface meshes, not scientifically validated animal
+anatomy. No animation or rig is bundled; sources use colours, not image textures.
+FCL uses the same
+triangle surface as the displayed obstacle. Catalog scales are experiment-sized
+presets (1 m fish; 2 m other animals), not claims of biological size.

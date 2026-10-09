@@ -339,43 +339,6 @@ class CmdReplayController(ControllerTemplate):
             return self.DEFAULT_ARM_REFERENCE_POSITION_COLUMNS
         return self.DEFAULT_ARM_COLUMNS
 
-    def _load_reset_config(self, config_path: str) -> None:
-        path = Path(os.path.expanduser(config_path))
-        if not path.exists():
-            self.node.get_logger().warn(
-                f"CmdReplay reset config not found: {path}. Using zero-state reset defaults."
-            )
-            return
-
-        try:
-            if path.suffix.lower() in (".yaml", ".yml"):
-                import yaml
-
-                loaded = yaml.safe_load(path.read_text()) or {}
-            else:
-                loaded = json.loads(path.read_text())
-        except Exception as exc:
-            self.node.get_logger().error(
-                f"CmdReplay failed to load reset config {path}: {exc}. Using zero-state reset defaults."
-            )
-            return
-
-        if not isinstance(loaded, dict):
-            self.node.get_logger().error(
-                f"CmdReplay reset config must be a JSON/YAML object: {path}. Using zero-state reset defaults."
-            )
-            return
-
-        reset_section = loaded.get("reset", loaded)
-        if not isinstance(reset_section, dict):
-            self.node.get_logger().error(
-                f"CmdReplay reset config 'reset' section must be an object: {path}. Using zero-state reset defaults."
-            )
-            return
-
-        self.reset_config = self._merge_reset_config(self._default_reset_config(), reset_section)
-        self.node.get_logger().info(f"CmdReplay loaded reset config from {path}.")
-
     def _merge_reset_config(self, base: dict, override: dict) -> dict:
         merged = dict(base)
         for key, value in override.items():

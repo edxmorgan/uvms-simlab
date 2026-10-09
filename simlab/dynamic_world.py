@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from typing import Callable
 
 import numpy as np
+import fcl
+from bringup.collision_geometry import collision_geometry, geometry_from_obstacle
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
 from scipy.spatial.transform import Rotation
@@ -21,6 +23,8 @@ class DynamicObstacleState:
     angular_velocity_world: np.ndarray
     collision_type: int
     collision_dimensions: tuple[float, ...]
+    collision_mesh_resource: str = ""
+    collision_mesh_scale: tuple[float, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -45,6 +49,8 @@ class DynamicWorldModel:
         self.robot_radius_provider = robot_radius_provider
         self.obstacles: dict[str, DynamicObstacleState] = {}
         self._warned_frame_mismatch = False
+        self.error: str | None = "waiting for initial dynamic obstacle snapshot"
+        self.bodies: list[dict] = []
 
         qos = QoSProfile(
             history=QoSHistoryPolicy.KEEP_LAST,
@@ -61,6 +67,7 @@ class DynamicWorldModel:
 
     def close(self) -> None:
         self.obstacles.clear()
+        self.bodies.clear()
         if self.subscription is not None:
             self.node.destroy_subscription(self.subscription)
             self.subscription = None
@@ -69,18 +76,29 @@ class DynamicWorldModel:
         self._obstacles_callback(msg)
 
     def _obstacles_callback(self, msg: DynamicObstacleArray) -> None:
+        try:
+            self._accept_snapshot(msg)
+            self.error = None
+        except Exception as exc:
+            error = str(exc)
+            if error != self.error:
+                self.node.get_logger().error(f"Dynamic collision geometry unavailable: {error}")
+            self.error = error
+
+    def _accept_snapshot(self, msg: DynamicObstacleArray) -> None:
         frame_id = msg.header.frame_id or self.world_frame
         if frame_id != self.world_frame:
-            if not self._warned_frame_mismatch:
-                self.node.get_logger().warn(
-                    f"Ignoring dynamic obstacles in frame '{frame_id}'; expected '{self.world_frame}'."
-                )
-                self._warned_frame_mismatch = True
-            return
+            raise ValueError(f"obstacle frame '{frame_id}' does not match '{self.world_frame}'")
 
         next_obstacles: dict[str, DynamicObstacleState] = {}
+        next_bodies = []
+        old_bodies = {body['name']: body for body in self.bodies}
+        seen = set()
         for index, obstacle in enumerate(msg.obstacles):
             obstacle_id = obstacle.id.strip() or f"obstacle_{index}"
+            if obstacle_id in seen:
+                raise ValueError(f"duplicate obstacle id: {obstacle_id}")
+            seen.add(obstacle_id)
             if obstacle.collision_type == DynamicObstacle.GEOMETRY_NONE:
                 continue
             center_world = np.array(
@@ -115,6 +133,15 @@ class DynamicWorldModel:
                 ],
                 dtype=float,
             )
+            if not all(np.all(np.isfinite(v)) for v in (center_world, quat_xyzw, linear_velocity_world, angular_velocity_world)):
+                raise ValueError(f"non-finite obstacle state: {obstacle_id}")
+            geometry, _ = geometry_from_obstacle(obstacle)
+            name = f"dynamic/{obstacle_id}"
+            body = old_bodies.get(name)
+            if body is None or body['geom'] is not geometry:
+                body = {'name': name, 'geom': geometry, 'fcl_obj': fcl.CollisionObject(geometry)}
+            body['fcl_obj'].setTransform(fcl.Transform(obstacle_to_world_rotation, center_world))
+            next_bodies.append(body)
             next_obstacles[obstacle_id] = DynamicObstacleState(
                 obstacle_id=obstacle_id,
                 center_world=center_world,
@@ -124,14 +151,20 @@ class DynamicWorldModel:
                 angular_velocity_world=angular_velocity_world,
                 collision_type=int(obstacle.collision_type),
                 collision_dimensions=tuple(float(v) for v in obstacle.collision_dimensions),
+                collision_mesh_resource=obstacle.collision_mesh_resource,
+                collision_mesh_scale=tuple(obstacle.collision_mesh_scale),
             )
         self.obstacles = next_obstacles
+        self.bodies = next_bodies
 
     def in_collision_at_xyz(self, xyz: np.ndarray, *, t_offset: float = 0.0) -> bool:
         clearance = self.min_clearance_xyz(xyz, t_offset=t_offset)
         return clearance is not None and clearance.distance_m <= 0.0
 
     def min_clearance_xyz(self, xyz: np.ndarray, *, t_offset: float = 0.0) -> DynamicClearance | None:
+        if self.error:
+            # Unknown geometry must not be interpreted as free space by planners.
+            return DynamicClearance("unavailable", float("-inf"))
         if not self.obstacles:
             return None
 
@@ -159,8 +192,8 @@ class DynamicWorldModel:
         if obstacle.collision_type == DynamicObstacle.GEOMETRY_CYLINDER:
             return self._distance_to_cylinder(point_world, obstacle, robot_radius, center_world, world_to_obstacle_rotation)
         if obstacle.collision_type == DynamicObstacle.GEOMETRY_MESH:
-            return self._distance_to_mesh_proxy(point_world, obstacle, robot_radius, center_world, world_to_obstacle_rotation)
-        return float("inf")
+            return self._distance_to_mesh(point_world, obstacle, robot_radius, center_world, world_to_obstacle_rotation)
+        raise ValueError(f"unsupported collision type: {obstacle.collision_type}")
 
     def _distance_to_sphere(
         self,
@@ -206,7 +239,7 @@ class DynamicWorldModel:
         inside = float(min(max(q[0], q[1]), 0.0))
         return outside + inside - robot_radius
 
-    def _distance_to_mesh_proxy(
+    def _distance_to_mesh(
         self,
         point_world: np.ndarray,
         obstacle: DynamicObstacleState,
@@ -214,18 +247,19 @@ class DynamicWorldModel:
         center_world: np.ndarray,
         world_to_obstacle_rotation: np.ndarray,
     ) -> float:
-        dimensions = obstacle.collision_dimensions
-        if len(dimensions) == 1:
-            return self._distance_to_sphere(point_world, obstacle, robot_radius, center_world)
-        if len(dimensions) >= 3:
-            return self._distance_to_box(
-                point_world,
-                obstacle,
-                robot_radius,
-                center_world,
-                world_to_obstacle_rotation,
-            )
-        return float("inf")
+        geometry, _ = collision_geometry(
+            obstacle.collision_type, obstacle.collision_dimensions,
+            obstacle.collision_mesh_resource, obstacle.collision_mesh_scale,
+        )
+        # Prediction uses separate objects; never mutate the live visualization pose.
+        mesh = fcl.CollisionObject(geometry, fcl.Transform(world_to_obstacle_rotation.T, center_world))
+        sphere = fcl.CollisionObject(fcl.Sphere(max(robot_radius, 1e-9)), fcl.Transform(point_world))
+        result = fcl.CollisionResult()
+        if fcl.collide(sphere, mesh, fcl.CollisionRequest(), result):
+            # BVH contact does not provide a trustworthy signed penetration depth.
+            return -1e-3
+        distance = float(fcl.distance(sphere, mesh, fcl.DistanceRequest(), fcl.DistanceResult()))
+        return distance
 
     @staticmethod
     def _point_in_obstacle_frame(

@@ -106,6 +106,16 @@ class VehicleWaypointMission:
         self.active_index = None
         self.state = "idle"
 
+    def pause(self) -> None:
+        """Pause for navigation safety without discarding waypoint progress."""
+        self.executing = False
+        self.state = 'blocked'
+
+    def resume(self) -> None:
+        if self.state == 'blocked' and self.active_index is not None:
+            self.executing = True
+            self.state = 'planning'
+
     def current_waypoint(self) -> Optional[Pose]:
         if self.current_index >= len(self.waypoints):
             return None

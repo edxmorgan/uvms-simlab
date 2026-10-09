@@ -7,13 +7,167 @@ A field-ready ROS 2 lab for **Underwater Vehicle–Manipulator Systems**. `uvms_
 
 - **Direct RViz manipulation** – interactive markers drive the vehicle and arm-base targets without custom plugins.
 - **Vehicle waypoint missions** – save multiple vehicle waypoints from RViz and execute them sequentially.
-- **Dynamic obstacle source plugins** – RViz/manual obstacle insertion is routed through a pluggable source registry.
+- **Dynamic obstacle source plugins** – A selected whole-scene behavior source drives obstacles; RViz authoring supplies geometry, size, pose, and velocity independently of vehicle motion.
 - **Collision + clearance monitoring** – FCL-backed checks visualize contacts, environment bounds, and clearance markers.
 - **SE(3) planning with live visualization** – OMPL planners + Ruckig execution stream candidate paths and waypoints to RViz.
 - **Control modes** – PS4 teleop, joint-space torque control, or direct thruster PWM via launch args.
 - **Visualization tooling** – workspace clouds, vehicle-base clouds, backend-published overlays, and opt-in voxel/collision debug markers.
 - **Data logging** – rosbag2 MCAP recorder for repeatable datasets.
 - **Perception extras** – optional RGB-to-pointcloud (MiDaS) for quick depth-based clouds.
+
+### Obstacle behavior runtime and authoring
+
+`simlab/dynamic_obstacle_sources/behavior.py` defines a whole-scene source lifecycle:
+`initialize`, `step`, `on_edit`, `reset`, and `close`. A selected script can drive
+independent obstacles or a coupled multi-agent/neural policy; it receives detached
+scene and observation snapshots, elapsed experiment time, timestep, and seed.
+Controllers and planners are not dependencies of this interface.
+
+`ScriptedMotionSource` keeps obstacles stationary unless the caller specifies a
+twist. Linear and angular velocities are world-frame values. The source preserves
+caller-supplied IDs, geometry, dimensions, mesh scale, and initial placement.
+Sphere, box, cylinder, and rigid mesh geometry use the same contract.
+
+`simlab.obstacle_runtime.ObstacleRuntime` hosts exactly one source and offers
+revision-checked atomic `edit(upsert=..., remove=...)`, detached snapshots, stepping,
+reset, and shutdown. Revisions advance on both edits and motion; callers must
+refresh and retry stale edits. A source step may update poses/twists, not silently
+resize geometry or add/remove IDs. A failed source holds the last valid scene and
+requires reset because its internal policy state may already have advanced.
+Reset restores the scene supplied at construction and calls the source reset hook
+with the original seed. Stateful sources must implement deterministic reset.
+
+The launch starts `simlab/dynamic_obstacle_sim_node` with
+`dynamic_obstacle_source:=scripted_motion`, `obstacle_source_config:='{}'`, and
+`obstacle_seed:=0`. The old simulator motion integrator is removed. Existing
+`/dynamic_obstacles` and `/dynamic_obstacle_markers` topics remain the inputs for
+collision checking, visualization, cameras, and recording. `/obstacle_scene` adds
+revision, selected source, and source-fault information.
+
+In RViz, use the independent cyan **New obstacle preview** marker, initially at
+`[2, 0, -1]` in the world frame. Drag the preview surface to move it in the
+camera plane, or use its axes/rings for constrained translation/rotation.
+Handles grow with the displayed geometry so large obstacles do not bury them. Right-click
+to open **Obstacle settings (preview)** for shape, size, and initial velocity,
+then choose **Add obstacle**.
+No vehicle path or automatic replanning toggle is required. Preview geometry is
+not an obstacle until the service accepts it. Use **Select obstacle** to load an
+existing obstacle, edit its preview, then **Update selected obstacle**. Add is
+shown only in new-preview mode; Update, Discard edits, and Delete appear only
+with an existing selection. **New obstacle (preview)** clears the selection but
+keeps the current preview geometry and placement for creating another object.
+Checkmarks show the selected obstacle and matching shape/size/velocity presets;
+custom values do not falsely select a preset. Delete, Clear, and Reset require
+their confirmation submenu. Size presets mean sphere radius,
+box side length, cylinder radius (height twice radius), or maximum mesh scale
+component. Mesh resizing preserves nonuniform proportions and the authored
+visual-to-collision scale ratio.
+The typed service supports arbitrary dimensions and all linear/angular velocities.
+For a mesh, set the interactive controller's `obstacle_mesh_resource` parameter
+to a `package://`, `file://`, or absolute path before selecting Mesh. Meshes are
+rigid; articulated/skinned animation is not supported.
+
+The default **Obstacle settings (preview) → Shape → Mesh catalog** includes
+38 bundled marine animals, grouped into Marine mammals, Sharks, Fish, Rays,
+Turtles, and Other marine animals. Whales include blue, humpback, sperm, pilot,
+and orca; fish include tuna, marlin, swordfish, barracuda, mahi-mahi, and more.
+Select an animal, position the preview, then Add or Update. No downloads or
+extra launch arguments are needed. The labels show the preset maximum dimension:
+1 m for fish and 2 m for the other groups. These are experiment-sized defaults,
+not biological scale. The Size control changes the mesh scale multiplier.
+
+The CC0 assets are from [3DAssets.dev](https://3dassets.dev/packs/open-ocean-and-deep-sea-life).
+They are stylized rigid models, not animated or scientifically validated anatomy.
+Visual COLLADA files retain the original separate colour materials; collision STL
+files have identical transformed triangles. The source pack has no image textures.
+RViz uses embedded materials without the orange obstacle tint; the camera also
+retains the material colours (its lighting is not an exact glTF PBR reproduction).
+Assets use ROS Z-up and +X heading. The breaching whale, floating otter and resting
+turtle retain their deliberately authored poses. Selecting another mesh preserves
+the preview pose; **Orientation → Reset to asset axes (+X forward, Z up)** clears
+previous marker rotations without changing position or velocity. Then Update.
+Provenance, hashes,
+licensing and coordinate conversions are in `resource/obstacle_meshes/`.
+`tools/import_marine_assets.py` reproduces the asset conversion; ROS never runs it.
+
+For a replacement custom catalog, set the interactive controller's
+`obstacle_mesh_catalog` parameter to a local JSON file, then choose
+**Mesh catalog → Reload catalog**. An empty parameter disables the catalog.
+The file maps display names to mesh configurations; `Group / Name` creates
+a submenu, for example:
+
+```json
+{
+  "Whale": {
+    "collision_mesh_resource": "file:///absolute/path/whale.stl",
+    "collision_mesh_scale": [1.0, 1.0, 1.0]
+  }
+}
+```
+
+Custom meshes must exist locally. Catalog entries use the
+same geometry validation as scene edits and may specify a separate
+`visual_mesh_resource` and `visual_dimensions` (mesh scale). Selection changes
+only the draft, retaining its placement and velocity; Add/Update commits it to the
+selected behavior source. Invalid catalogs are reported, not silently substituted.
+
+The obstacle marker is the single obstacle/source menu. It also owns
+**Scene / source** (status, clear, reset, world profiles) and **Replanning**
+(enable, disable, status). Robot target menus contain no obstacle controls.
+These menu actions call the existing services; behavior sources remain separate
+from planners and controllers. Source selection remains a launch setting.
+
+`/dynamic_obstacle_sim_node/edit_dynamic_obstacles` (`simlab/srv/EditDynamicObstacles`)
+supports `get`, `add`, `update`, `remove`, `clear`, `replace`, and `reset`.
+`add` rejects duplicate IDs; `update` replaces only named existing obstacles;
+other obstacles retain their current state. Set `check_revision=true` and
+`expected_revision` for conditional edits. Without it, an explicit edit applies
+to the current scene (the RViz draft intentionally uses this mode).
+Responses report actual completion and include the authoritative scene.
+
+All obstacle edits, including full-scene world-profile replacement, use the typed
+edit service. There is no path-based creation source or compatibility service.
+Position and size come from the frontend; the selected source controls behavior.
+Replanning policy is independent of the obstacle behavior source.
+
+### Dynamic navigation safety and recovery
+
+The OMPL search, simplification, dense interpolation and resampling use the
+remote baseline behavior. The isolated approximate-solution check rejects paths
+that do not reach the requested goal.
+
+Ruckig uses the original incremental update loop, including the original moving
+handoff velocity projection. Requests are sent immediately using the original
+preemption behavior; there is no added measured-stop queue or upfront trajectory
+validation gate. Planner success is followed by Ruckig calculation on the next
+control update, as in the baseline.
+
+The obstacle editor, behavior sources, mesh collision geometry and marker
+transport fixes remain independent of this restored execution pipeline.
+When dynamic replanning is enabled, its supervisor reads timed samples from
+Ruckig's active output without advancing it. Before the first control update,
+no calculated preview exists; current-clearance/braking monitoring still runs.
+Automatic replans include the configured clearance margin. This monitoring is
+not a guarantee that every smoothed trajectory is collision-free.
+
+Urgent clearance/braking checks precede planner-busy, cooldown, and hysteresis
+suppression. Stop decisions use measured speed, tracking error, the replan period,
+a latency allowance (`dynamic_replanning_latency_budget`, default 1.5 s), and an
+estimated deceleration (`dynamic_braking_deceleration`, default 0.1 m/s², limited
+by the trajectory acceleration setting). These estimates require experimental
+calibration; they are not a certified physical stopping guarantee.
+
+Safety holds preserve the active goal and waypoint index. In simulation only,
+the supervisor retries after the vehicle settles below 0.02 m/s and the current
+position meets the clearance margin. Failed attempts back off for at least two
+seconds. Explicit stop/new goals invalidate pending recovery. Hardware never
+auto-resumes. A vehicle inside the margin remains blocked until clearance is
+restored; automatic retreat from overlap or an inflated shell is not implemented.
+
+Validation samples at 50 ms and uses the existing obstacle prediction model;
+it is not continuous collision detection or a guarantee for arbitrary nonlinear
+source behavior. The live monitor rechecks timed lookahead. End-to-end testing
+under representative dynamics and planner/trajectory latency remains necessary.
 
 ## Requirements
 
@@ -178,7 +332,7 @@ simlab/
 ├── simlab/motion_planning/planners/  # Planner plugins, including OMPL SE(3) planning
 ├── simlab/motion_planning/trajectory_generators/ # Vehicle trajectory generator plugins
 ├── simlab/motion_planning/dynamic_replanners/ # Dynamic replanning supervisor plugins
-├── simlab/dynamic_obstacle_sources/  # Dynamic obstacle creation source plugins
+├── simlab/dynamic_obstacle_sources/  # Whole-scene behavior lifecycle plugins
 ├── simlab/joystick_control.py        # PS4 teleop node
 ├── simlab/joint_control.py           # Joint-space torque control
 ├── simlab/direct_thruster_control.py # Thruster PWM keyboard control
@@ -193,7 +347,7 @@ simlab/
 Motion planning lives under `simlab/motion_planning/`. The framework supports both split pipelines and integrated algorithms:
 
 ```text
-OMPL path planner -> Ruckig trajectory generator -> controller
+OMPL path planner -> incremental multi-waypoint Ruckig trajectory -> controller
 CHOMP/GPMP optimizer -> path or timed trajectory -> controller
 MPC/integrated planner-controller -> direct references or controls
 ```
@@ -246,7 +400,7 @@ class MyPlanner(PlannerTemplate):
 
 Register planner classes in `simlab/motion_planning/planners/__init__.py` by adding them to `DEFAULT_PLANNER_CLASSES`. The RViz planner menu and planner action server both read that registry.
 
-Trajectory generators and dynamic replanning supervisors are separate plugin registries under `simlab/motion_planning/trajectory_generators/` and `simlab/motion_planning/dynamic_replanners/`. Use them for split pipelines. For all-in-one algorithms, keep the high-level algorithm in the planner plugin and return the richest `MotionPlanResult` it can produce.
+Trajectory generators and dynamic replanning supervisors are separate plugin registries under `simlab/motion_planning/trajectory_generators/` and `simlab/motion_planning/dynamic_replanners/`. Use them for split pipelines. `MotionPlanResult` can represent paths, timed trajectories, and control sequences in Python, but the current `PlanVehicle` ROS action transports geometric paths only. The action server explicitly rejects other result kinds; integrated planners require richer transport and execution support before they can be used through this action.
 
 ## Adding a controller
 

@@ -45,3 +45,20 @@ def test_ruckig_replan_velocity_projection_drops_backward_velocity():
     projected = RuckigVehicleTrajectoryGenerator._path_aligned_initial_velocity(current, path, velocity)
 
     np.testing.assert_allclose(projected, [0.0, 0.0, 0.0])
+
+
+def test_approximate_solution_is_not_returned_as_success():
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from simlab.motion_planning.planners.ompl import OmplPlanner
+    node = SimpleNamespace(planner_world=Mock(), get_logger=lambda: Mock())
+    planner = OmplPlanner(node, env_bounds=(-2., 2., -2., 2., -2., 2.))
+    planner.ss = Mock(wraps=planner.ss)
+    planner.ss.solve.return_value = True  # OMPL approximate status is truthy too.
+    planner.ss.haveExactSolutionPath.return_value = False
+    result = planner.plan_se3_path([0., 0., 0.], [1., 0., 0., 0.],
+                                  [1., 0., 0.], [1., 0., 0., 0.])
+    assert not result.is_success
+    assert 'approximate' in result.message
+    planner.ss.getSolutionPath.assert_not_called()
+    planner.ss.simplifySolution.assert_not_called()

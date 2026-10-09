@@ -313,6 +313,12 @@ class OmplPlanner:
                 message="Planner did not find a solution",
             )
 
+        if not self.ss.haveExactSolutionPath():
+            return MotionPlanResult(
+                is_success=False, kind=MotionPlanKind.PATH,
+                message='Planner found only an approximate path; requested goal was not reached',
+            )
+
         try:
             simplify_time = max(0.02, min(0.15, 0.15 * float(time_limit)))
             self.ss.simplifySolution(simplify_time)

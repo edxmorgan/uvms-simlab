@@ -26,10 +26,9 @@ def se3_from_rpy_xyz(rpy, xyz):
     return T
 
 def fcl_bvh_from_mesh(path, scale=[1.0, 1.0, 1.0], rpy=(0.0, 0.0, 0.0), xyz=(0.0, 0.0, 0.0)):
-    scene_or_mesh = trimesh.load(path, force='scene')
-    mesh = scene_or_mesh.dump(concatenate=True) if isinstance(scene_or_mesh, trimesh.Scene) else scene_or_mesh
-    if scale != 1.0:
-        mesh.apply_scale(np.array(scale))
+    from bringup.collision_geometry import collision_surface_mesh
+    scale = (float(scale),) * 3 if np.isscalar(scale) else tuple(scale)
+    mesh = collision_surface_mesh(4, (), path, scale).copy()
     if any(abs(v) > 1e-12 for v in rpy) or any(abs(v) > 1e-12 for v in xyz):
         T = se3_from_rpy_xyz(rpy, xyz)  # 4x4
         mesh.apply_transform(T)
@@ -74,7 +73,7 @@ def collect_env_meshes(urdf_string: str):
     """
     Parse the URDF and return 2 lists:
       robot_out: meshes from links whose name starts with 'robot_'
-      env_out:   meshes from links whose name starts with 'bathymetry_shipwreck'
+      env_out:   meshes from links whose name starts with 'bathymetry_'
 
     Each mesh dict now also carries info about the joint that attaches
     that link to its parent, so you can climb the tree later.
@@ -123,7 +122,7 @@ def collect_env_meshes(urdf_string: str):
     for link in model.links or []:
         link_name = link.name
 
-        # only care about robot_* and bathymetry_shipwreck*
+        # Select robot meshes, bathymetry meshes, and the floor reference frame.
         is_robot_link = link_name.startswith("robot_")
         is_env_link   = link_name.startswith("bathymetry_")
         is_floor_link = link_name.startswith("world_bottom")
@@ -228,7 +227,7 @@ def conc_env_trimesh(env_mesh_infos):
 
         scene_or_mesh = trimesh.load(path_abs, force='scene')
         mesh = (
-            scene_or_mesh.dump(concatenate=True)
+            scene_or_mesh.to_geometry()
             if isinstance(scene_or_mesh, trimesh.Scene)
             else scene_or_mesh
         )

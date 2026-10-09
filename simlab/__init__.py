@@ -12,3 +12,7 @@
 #
 # You should have received a copy of the GNU Affero General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+# Keep generated ROS interfaces visible when Python source overlays the install.
+from pkgutil import extend_path
+__path__ = extend_path(__path__, __name__)

@@ -19,6 +19,7 @@ class PlannerActionClient:
         self._action_client = ActionClient(self._node, PlanVehicle, action_name)
         self._goal_handle = None
         self._busy = False
+        self._generation = 0
         self._on_result = on_result
         self.last_result: Optional[Dict[str, Any]] = None
 
@@ -63,6 +64,8 @@ class PlannerActionClient:
         goal_msg.robot_collision_radius = float(robot_collision_radius)
         goal_msg.dynamic_obstacle_prediction_speed = max(0.0, float(dynamic_obstacle_prediction_speed))
         self._busy = True
+        self._generation += 1
+        generation = self._generation
         self._node.get_logger().info(
             f"{self._tag} sending planner request "
             f"planner={goal_msg.planner_name} "
@@ -74,11 +77,14 @@ class PlannerActionClient:
             goal_msg,
             feedback_callback=self._feedback_callback,
         )
-        send_future.add_done_callback(self._goal_response_callback)
+        send_future.add_done_callback(lambda future: self._goal_response_callback(future, generation))
         return True
 
     def cancel_active_goal(self) -> bool:
         goal_handle = self._goal_handle
+        self._generation += 1
+        self._goal_handle = None
+        self._busy = False
         if goal_handle is None:
             return False
         if not getattr(goal_handle, "accepted", True):
@@ -97,7 +103,15 @@ class PlannerActionClient:
         cancel_future.add_done_callback(self._cancel_done_callback)
         return True
 
-    def _goal_response_callback(self, future) -> None:
+    def _goal_response_callback(self, future, generation=None) -> None:
+        if generation is not None and generation != self._generation:
+            try:
+                handle = future.result()
+                if handle.accepted:
+                    handle.cancel_goal_async()
+            except Exception:
+                pass
+            return
         try:
             goal_handle = future.result()
         except Exception as exc:
@@ -113,9 +127,11 @@ class PlannerActionClient:
         self._goal_handle = goal_handle
         self._node.get_logger().info(f"{self._tag} goal accepted by action server.")
         result_future = goal_handle.get_result_async()
-        result_future.add_done_callback(self._result_callback)
+        result_future.add_done_callback(lambda future: self._result_callback(future, generation))
 
-    def _result_callback(self, future) -> None:
+    def _result_callback(self, future, generation=None) -> None:
+        if generation is not None and generation != self._generation:
+            return
         try:
             wrapped_result = future.result()
             status = int(wrapped_result.status)

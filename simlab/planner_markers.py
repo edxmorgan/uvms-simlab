@@ -1,10 +1,8 @@
 # path_markers.py
 from dataclasses import dataclass
-import numpy as np
 from geometry_msgs.msg import Point
 from visualization_msgs.msg import Marker
 from builtin_interfaces.msg import Duration
-from geometry_msgs.msg import Pose
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 
@@ -77,9 +75,16 @@ class PathPlanner:
             self._last_arr = arr.copy()
         self._last_path_t_ns = t_ns
 
-        # subsample for waypoints, but keep the true last point for the goal
+        # Display density must not depend on the planner's waypoint count.
+        # Sample each original edge independently so corners are never cut.
+        # These points are visualization only, not inputs to the generator.
         step = max(1, int(step))
-        pts_vis = arr[::step]
+        lengths = np.linalg.norm(np.diff(arr, axis=0), axis=1)
+        spacing = max(0.2 * step, float(lengths.sum()) / 10000.)
+        pts_vis = []
+        for start, end, length in zip(arr[:-1], arr[1:], lengths):
+            count = max(1, int(np.ceil(length / spacing)))
+            pts_vis.extend(start + (end-start) * t for t in np.arange(count) / count)
 
         # waypoint list
         wp = Marker()
@@ -96,8 +101,8 @@ class PathPlanner:
         wp.color.r, wp.color.g, wp.color.b, wp.color.a = self.colors.wp
         wp.frame_locked = True
         wp.points = []
-        if len(pts_vis) > 1:
-            for p in pts_vis[:-1]:
+        if len(pts_vis) > 0:
+            for p in pts_vis:
                 pt = Point()
                 pt.x, pt.y, pt.z = float(p[0]), float(p[1]), float(p[2])
                 wp.points.append(pt)

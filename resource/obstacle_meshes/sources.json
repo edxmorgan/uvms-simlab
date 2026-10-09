@@ -1,0 +1,236 @@
+{
+  "creator": "3DAssets.dev",
+  "license": "CC0-1.0",
+  "license_url": "https://3dassets.dev/license",
+  "pack_url": "https://3dassets.dev/packs/open-ocean-and-deep-sea-life",
+  "assets": [
+    {
+      "name": "anglerfish",
+      "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-anglerfish-b6ecb869",
+      "url": "https://cdn.3dassets.dev/assets/5890/v1/model.glb",
+      "sha256": "dad5b498c710af541f4dc63dd148cfeb7ed3760a4b36ce42f1975331b9934390"
+    },
+    {
+      "name": "barracuda",
+      "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-barracuda-6583ed54",
+      "url": "https://cdn.3dassets.dev/assets/5875/v1/model.glb",
+      "sha256": "5077fd9bb3d44d4393f2368ae23dcf35ceb5e3dd5e6587385e50df2f063bdc09"
+    },
+    {
+      "name": "basking-shark",
+      "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-basking-shark-89a00fe1",
+      "url": "https://cdn.3dassets.dev/assets/5865/v1/model.glb",
+      "sha256": "1705532aad0bb498257a05a73446078e19b7acb5166f43db7aa51709deae5345"
+    },
+    {
+      "name": "blue-marlin",
+      "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-blue-marlin-89ff265c",
+      "url": "https://cdn.3dassets.dev/assets/5873/v1/model.glb",
+      "sha256": "7b34930f367ba736c35498e27f62409db21622983df8c1c512781b64b8d016fd"
+    },
+    {
+      "name": "blue-whale",
+      "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-blue-whale-fe73dc4a",
+      "url": "https://cdn.3dassets.dev/assets/5862/v1/model.glb",
+      "sha256": "a6f85bcdeda8124c3f996ebc54fb9a3264a408dddbd87b16bbc769819db48cb4"
+    },
+    {
+      "name": "bluefin-tuna",
+      "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-bluefin-tuna-bccc7e93",
+      "url": "https://cdn.3dassets.dev/assets/5870/v1/model.glb",
+      "sha256": "a202f68b73284d9475e25420534aafa1d55380274af6348b7d68a7bffa555c73"
+    },
+    {
+      "name": "california-sea-lion",
+      "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-california-sea-lion-58ed43ba",
+      "url": "https://cdn.3dassets.dev/assets/5894/v1/model.glb",
+      "sha256": "08e00506c629dcce3f577e741a147953b0fc0d8dcea514a245404d019fd19fe3"
+    },
+    {
+      "name": "common-octopus",
+      "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-common-octopus-eb5e58ed",
+      "url": "https://cdn.3dassets.dev/assets/5884/v1/model.glb",
+      "sha256": "70a516121bb27c6a1e193ab6f2fc4de9ab20d460b0810f9ab75a032a83b994e4"
+    },
+    {
+      "name": "dugong",
+      "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-dugong-1866fb5e",
+      "url": "https://cdn.3dassets.dev/assets/5899/v1/model.glb",
+      "sha256": "3415ed73a32d7146a28dc08cd236467c28750cc12f3ee3b60f1f2615b608f268"
+    },
+    {
+      "name": "eagle-ray",
+      "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-eagle-ray-c5cabcdb",
+      "url": "https://cdn.3dassets.dev/assets/5880/v1/model.glb",
+      "sha256": "37b777fec27f5d92de8a0ddfdb17d5aa842b13cc1cd28f6fb03699cb8ec96cc8"
+    },
+    {
+      "name": "flying-fish",
+      "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-flying-fish-ddebc6f7",
+      "url": "https://cdn.3dassets.dev/assets/5876/v1/model.glb",
+      "sha256": "66ce9fcbd5b80633dc96b96315c6e7d5f3f52ff5e2283dbb6ea42cf06c599203"
+    },
+    {
+      "name": "giant-isopod",
+      "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-giant-isopod-024a92ce",
+      "url": "https://cdn.3dassets.dev/assets/5893/v1/model.glb",
+      "sha256": "cd0d383c240aaa89b941128b99e8efd0336672b94912244082740688e3578167"
+    },
+    {
+      "name": "giant-squid",
+      "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-giant-squid-54115d2b",
+      "url": "https://cdn.3dassets.dev/assets/5887/v1/model.glb",
+      "sha256": "9329dca1c028af0bd76abdf3cb46186b18a976a4e95a09e5eb9b998f8cee169b"
+    },
+    {
+      "name": "great-white-shark",
+      "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-great-white-shark-3cb0a8f2",
+      "url": "https://cdn.3dassets.dev/assets/5867/v1/model.glb",
+      "sha256": "f39158716dfb8df03f6af0b5e7d772e19401dad1985948d9160fc1cffff1515a"
+    },
+    {
+      "name": "green-sea-turtle",
+      "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-green-sea-turtle-6b07ba8e",
+      "url": "https://cdn.3dassets.dev/assets/5881/v1/model.glb",
+      "sha256": "320673589f2a269b66cf6143fa7902f3b4c5a6709e8bd4bd628af9c25d38d4d0"
+    },
+    {
+      "name": "gulper-eel",
+      "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-gulper-eel-6f1ab7d8",
+      "url": "https://cdn.3dassets.dev/assets/5892/v1/model.glb",
+      "sha256": "129c05f1c7d0c3e25fe24c899b2d4e5754ddf729f76beea9a0d9459f8350278f"
+    },
+    {
+      "name": "harbour-porpoise",
+      "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-harbour-porpoise-52f8c317",
+      "url": "https://cdn.3dassets.dev/assets/5896/v1/model.glb",
+      "sha256": "ac1aca06cc9dbe17cb704679678aaf60836c21802087c1bb5e42a68483d3c1d6"
+    },
+    {
+      "name": "humpback-breaching",
+      "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-humpback-breaching-2785f756",
+      "url": "https://cdn.3dassets.dev/assets/5879/v1/model.glb",
+      "sha256": "4c14398287ec14aace208f67bd6b0b179932ae7306e424af150f8b9ffbf36283"
+    },
+    {
+      "name": "humpback-whale",
+      "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-humpback-whale-16525751",
+      "url": "https://cdn.3dassets.dev/assets/5859/v1/model.glb",
+      "sha256": "a420630909a68a52a06118bc00a2f050dcaafe646c895474a1341c3a25dc938e"
+    },
+    {
+      "name": "leatherback-turtle",
+      "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-leatherback-turtle-5a06e8a2",
+      "url": "https://cdn.3dassets.dev/assets/5883/v1/model.glb",
+      "sha256": "0604e36bbf14dedfcaca1f4aa650046211b01e148ee60972a6c7717d016717ff"
+    },
+    {
+      "name": "mahi-mahi",
+      "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-mahi-mahi-65ecf8f3",
+      "url": "https://cdn.3dassets.dev/assets/5874/v1/model.glb",
+      "sha256": "56b243303f0732db8aff716c040ba0cafa35ce7e301822cc9db326ac1737d60a"
+    },
+    {
+      "name": "mako-shark",
+      "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-mako-shark-225df98d",
+      "url": "https://cdn.3dassets.dev/assets/5869/v1/model.glb",
+      "sha256": "937ba814b6b19e3353e531761daefec5abbac7f9150d660ce628669e7bb4d9bd"
+    },
+    {
+      "name": "manta-ray",
+      "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-manta-ray-fab4463c",
+      "url": "https://cdn.3dassets.dev/assets/5878/v1/model.glb",
+      "sha256": "d7037b105bebf0b3f3da19538e95de2858246c416b98923c7f1fe630e3ff8aba"
+    },
+    {
+      "name": "moon-jellyfish",
+      "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-moon-jellyfish-cdc08d19",
+      "url": "https://cdn.3dassets.dev/assets/5889/v1/model.glb",
+      "sha256": "adac90b2cd5f4d2d9e23a376d8d9b18a4f44a75031e50552f67c2088999eab4e"
+    },
+    {
+      "name": "ocean-sunfish",
+      "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-ocean-sunfish-ad65cc8b",
+      "url": "https://cdn.3dassets.dev/assets/5866/v1/model.glb",
+      "sha256": "d53996957c796628a37cb5da935cedcfe987192f667e5b8c996cecd7224f67e7"
+    },
+    {
+      "name": "orca",
+      "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-orca-983c3514",
+      "url": "https://cdn.3dassets.dev/assets/5861/v1/model.glb",
+      "sha256": "0d316a36f4d2ff959e21b5de014a1ec8f1c0f4cf9e7cd501ba64eab183ffda71"
+    },
+    {
+      "name": "pilot-whale",
+      "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-pilot-whale-d80d7425",
+      "url": "https://cdn.3dassets.dev/assets/5863/v1/model.glb",
+      "sha256": "3b2e8dbef2129af98b8713deae2fdc904adda8a7c75206d368b2660269a4c6d9"
+    },
+    {
+      "name": "portuguese-man-o-war",
+      "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-portuguese-man-o-war-6b94147a",
+      "url": "https://cdn.3dassets.dev/assets/5888/v1/model.glb",
+      "sha256": "4fa6894dc7ad6fd6224497aadfc2fe0cd249fd39c3f41eb1c48eeca8346be77f"
+    },
+    {
+      "name": "scalloped-hammerhead",
+      "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-scalloped-hammerhead-5ec42bda",
+      "url": "https://cdn.3dassets.dev/assets/5868/v1/model.glb",
+      "sha256": "0fe8645b24cbc627f5e2b07a210ad01d5556e5c18f59a13d48424c924d691cd2"
+    },
+    {
+      "name": "sea-otter-floating",
+      "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-sea-otter-floating-27352205",
+      "url": "https://cdn.3dassets.dev/assets/5895/v1/model.glb",
+      "sha256": "57ea1f96d043b8cb8a51d595846c54f0c9fd20e49b843f14edd0cb991e8ed52f"
+    },
+    {
+      "name": "sea-turtle-resting",
+      "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-sea-turtle-resting-da191949",
+      "url": "https://cdn.3dassets.dev/assets/5882/v1/model.glb",
+      "sha256": "f85faff89ba9323d8e934d38a224b0bf7978231145301276cfe87ee2b79d5b5c"
+    },
+    {
+      "name": "southern-stingray",
+      "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-southern-stingray-a3bd4c7a",
+      "url": "https://cdn.3dassets.dev/assets/5877/v1/model.glb",
+      "sha256": "e9ba725cedd6c41b8f71ed07376b387e0bb63fefcc4d8afa6ce878cc054fde93"
+    },
+    {
+      "name": "sperm-whale",
+      "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-sperm-whale-ba965812",
+      "url": "https://cdn.3dassets.dev/assets/5860/v1/model.glb",
+      "sha256": "a7f27673afc8def79858b7a798479246c47d0337354ae360bd8f49c0402b99d4"
+    },
+    {
+      "name": "swordfish",
+      "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-swordfish-99498cb7",
+      "url": "https://cdn.3dassets.dev/assets/5872/v1/model.glb",
+      "sha256": "f5568d0c38806aa46ad9d1d5e6b9214cc0cb9a3e87713fa99fcc65a2a30f8d2f"
+    },
+    {
+      "name": "tiger-shark",
+      "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-tiger-shark-0de97360",
+      "url": "https://cdn.3dassets.dev/assets/5871/v1/model.glb",
+      "sha256": "21a07eedbb651d2eb8eccccb57629adf45266ed6999a3059213badd94dabce6e"
+    },
+    {
+      "name": "vampire-squid",
+      "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-vampire-squid-b6524bb7",
+      "url": "https://cdn.3dassets.dev/assets/5885/v1/model.glb",
+      "sha256": "f1538a3343d75bf86285296f767b5e45e98cccbb2ee5eb12004ac963dc84e933"
+    },
+    {
+      "name": "viperfish",
+      "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-viperfish-5d0b8a68",
+      "url": "https://cdn.3dassets.dev/assets/5891/v1/model.glb",
+      "sha256": "b4fc8988a068c2841ddab9b62ff7ce53cb19edcb569879d3606ab08f8b9cfb79"
+    },
+    {
+      "name": "whale-shark",
+      "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-whale-shark-4fb7587f",
+      "url": "https://cdn.3dassets.dev/assets/5864/v1/model.glb",
+      "sha256": "bda20b979c980410e0618ea15a44f8abc3245e590daa298583ba3e255a7c0e3f"
+    }
+  ]
+}

@@ -1,0 +1,4 @@
+uint64 revision
+string source
+string fault
+ros2_control_blue_reach_5/DynamicObstacleArray obstacles

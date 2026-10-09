@@ -12,12 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import pytest
+"""Check unused names and undefined references without imposing formatting."""
+from pathlib import Path
+import subprocess
+import sys
 
 
-@pytest.mark.flake8
-@pytest.mark.linter
 def test_flake8():
-    pytest.skip(
-        'uvms-simlab is not flake8-clean yet; keep this disabled until a dedicated lint cleanup.'
+    root = Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        [sys.executable, "-m", "flake8", "--isolated",
+         "--select=F401,F811,F821,F841",
+         str(root / "simlab"), str(root / "uvms_rl")],
+        capture_output=True, text=True, check=False,
     )
+    assert result.returncode == 0, result.stdout + result.stderr

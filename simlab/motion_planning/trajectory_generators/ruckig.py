@@ -147,6 +147,31 @@ class RuckigVehicleTrajectoryGenerator(VehicleTrajectoryGeneratorTemplate):
 
         return pos, vel, acc, res
 
+    def current_reference(self):
+        if not self.active:
+            return None
+        source = self.inp if self.last_result is None else self.out
+        prefix = 'current_' if self.last_result is None else 'new_'
+        return tuple(np.array(getattr(source, prefix + field), dtype=float)
+                     for field in ('position', 'velocity', 'acceleration'))
+
+    def preview_samples(self, *, horizon=None, sample_dt=0.05):
+        """Read the active Ruckig output; never calculate or advance execution."""
+        if not self.active:
+            return []
+        if not np.isfinite(sample_dt) or sample_dt <= 0:
+            raise ValueError('sample period must be positive and finite')
+        if self.last_result is None:
+            return []  # The original update loop has not calculated a trajectory yet.
+        elapsed = float(self.out.time)
+        remaining = max(0.0, float(self.out.trajectory.duration) - elapsed)
+        duration = remaining if horizon is None else min(remaining, max(0.0, float(horizon)))
+        count = max(2, int(np.ceil(duration / sample_dt)) + 1)
+        if count > 20000:
+            raise ValueError('trajectory exceeds preview sample budget')
+        return [(float(t), np.array(self.out.trajectory.at_time(elapsed + t)[0], dtype=float))
+                for t in np.linspace(0., duration, count)]
+
     def close(self):
         self.active = False
         self.out = None

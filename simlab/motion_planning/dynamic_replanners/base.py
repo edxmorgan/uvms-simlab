@@ -2,16 +2,6 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
-
-import numpy as np
-
-if TYPE_CHECKING:
-    from simlab.robot import Robot
-    from simlab.uvms_backend import UVMSBackendCore
-    from simlab.vehicle_waypoint_mission import VehicleWaypointMission
-
-
 @dataclass(frozen=True)
 class ReplanDecision:
     action: str
@@ -24,12 +14,6 @@ class ReplanDecision:
     @property
     def should_replan(self) -> bool:
         return self.action == "replan"
-
-
-@dataclass(frozen=True)
-class TimedPathSample:
-    xyz: np.ndarray
-    t_offset: float
 
 
 class DynamicReplannerTemplate(ABC):
@@ -47,7 +31,6 @@ class DynamicReplannerTemplate(ABC):
         safety_margin_m: float | None = None,
         collision_stop_enabled: bool | None = None,
         collision_stop_margin_m: float | None = None,
-        max_samples: int | None = None,
         replan_hysteresis_m: float | None = None,
     ) -> None:
         pass

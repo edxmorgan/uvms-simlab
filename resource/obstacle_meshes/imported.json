@@ -1,0 +1,572 @@
+[
+  {
+    "name": "anglerfish",
+    "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-anglerfish-b6ecb869",
+    "url": "https://cdn.3dassets.dev/assets/5890/v1/model.glb",
+    "sha256": "dad5b498c710af541f4dc63dd148cfeb7ed3760a4b36ce42f1975331b9934390",
+    "source_sha256": "dad5b498c710af541f4dc63dd148cfeb7ed3760a4b36ce42f1975331b9934390",
+    "stl_sha256": "d455c2f614efdabf4f2ee40dfa71d318d7fcd90a4dfde40ed7230b8036ce730d",
+    "visual_sha256": "39f6ac52d562811cc949a418fbaa9b2295c53798386c36e232ca4fa50300745f",
+    "extents_m": [
+      0.34999749874260033,
+      0.30683460937057205,
+      0.27074246837424987
+    ],
+    "triangles": 2226
+  },
+  {
+    "name": "barracuda",
+    "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-barracuda-6583ed54",
+    "url": "https://cdn.3dassets.dev/assets/5875/v1/model.glb",
+    "sha256": "5077fd9bb3d44d4393f2368ae23dcf35ceb5e3dd5e6587385e50df2f063bdc09",
+    "source_sha256": "5077fd9bb3d44d4393f2368ae23dcf35ceb5e3dd5e6587385e50df2f063bdc09",
+    "stl_sha256": "b0a171ca7e70c8cfd039d16d143752e3c473b4b0e3ace1a4685c993399e05f6d",
+    "visual_sha256": "a248253728d95b8e23af1ec83221fe47e8e254304c2fd8296813ae28f2049367",
+    "extents_m": [
+      1.5,
+      0.7383495569229126,
+      0.5383923053741455
+    ],
+    "triangles": 1640
+  },
+  {
+    "name": "basking-shark",
+    "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-basking-shark-89a00fe1",
+    "url": "https://cdn.3dassets.dev/assets/5865/v1/model.glb",
+    "sha256": "1705532aad0bb498257a05a73446078e19b7acb5166f43db7aa51709deae5345",
+    "source_sha256": "1705532aad0bb498257a05a73446078e19b7acb5166f43db7aa51709deae5345",
+    "stl_sha256": "09e9d450aa197f46412075f4e8af14f8858fe2ec774d094b0c28c8839584b134",
+    "visual_sha256": "8b4cdfa5e25e762e9428784097ab9fbf94c4de35bd81412cc380af5f482b1531",
+    "extents_m": [
+      8.0,
+      4.368785858154297,
+      2.8157596588134766
+    ],
+    "triangles": 2696
+  },
+  {
+    "name": "blue-marlin",
+    "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-blue-marlin-89ff265c",
+    "url": "https://cdn.3dassets.dev/assets/5873/v1/model.glb",
+    "sha256": "7b34930f367ba736c35498e27f62409db21622983df8c1c512781b64b8d016fd",
+    "source_sha256": "7b34930f367ba736c35498e27f62409db21622983df8c1c512781b64b8d016fd",
+    "stl_sha256": "5ea0669791c71ef2194d36cb7063e2018377dd1c7633b4a2b1cd18d85f36f5d3",
+    "visual_sha256": "1399f7b59f7d890cf3f79d6c2498fee43becf5ee59d0a582fc862cfa6d642fed",
+    "extents_m": [
+      3.4000000953674316,
+      1.4213741260537205,
+      1.1029883346339489
+    ],
+    "triangles": 1832
+  },
+  {
+    "name": "blue-whale",
+    "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-blue-whale-fe73dc4a",
+    "url": "https://cdn.3dassets.dev/assets/5862/v1/model.glb",
+    "sha256": "a6f85bcdeda8124c3f996ebc54fb9a3264a408dddbd87b16bbc769819db48cb4",
+    "source_sha256": "a6f85bcdeda8124c3f996ebc54fb9a3264a408dddbd87b16bbc769819db48cb4",
+    "stl_sha256": "3b548f7ec53d56e7b1b3354196affeededcf68736f03bd528f020fc45287f5c9",
+    "visual_sha256": "153ef670ba78e7d483bbdb85b1749305f467c50afcb416e624fed7f4b0b56636",
+    "extents_m": [
+      25.0,
+      10.76769307255745,
+      6.4745808430260965
+    ],
+    "triangles": 1624
+  },
+  {
+    "name": "bluefin-tuna",
+    "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-bluefin-tuna-bccc7e93",
+    "url": "https://cdn.3dassets.dev/assets/5870/v1/model.glb",
+    "sha256": "a202f68b73284d9475e25420534aafa1d55380274af6348b7d68a7bffa555c73",
+    "source_sha256": "a202f68b73284d9475e25420534aafa1d55380274af6348b7d68a7bffa555c73",
+    "stl_sha256": "f058d33d9afd15bda31456ce306583f76b832a2d3c50e46e9acee3d8706eabd6",
+    "visual_sha256": "511bdd5f4d569e7062344a54b2f63a6a73c69f46f8897a1b5dcb9c3b89d176c4",
+    "extents_m": [
+      2.0999999046325684,
+      1.1386028607185494,
+      0.7950224157731896
+    ],
+    "triangles": 1640
+  },
+  {
+    "name": "california-sea-lion",
+    "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-california-sea-lion-58ed43ba",
+    "url": "https://cdn.3dassets.dev/assets/5894/v1/model.glb",
+    "sha256": "08e00506c629dcce3f577e741a147953b0fc0d8dcea514a245404d019fd19fe3",
+    "source_sha256": "08e00506c629dcce3f577e741a147953b0fc0d8dcea514a245404d019fd19fe3",
+    "stl_sha256": "60f10ec8ce55f9a0ec5fc72d6d8ca6294710c537aa723196e4dd378e5aa3d8c7",
+    "visual_sha256": "79b495a076034095850bfec1eb734b78bb73b25bd1e9fa4511e17bdaed5c04f7",
+    "extents_m": [
+      2.0000062314122555,
+      1.4971658708875353,
+      1.0598276691609279
+    ],
+    "triangles": 2424
+  },
+  {
+    "name": "common-octopus",
+    "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-common-octopus-eb5e58ed",
+    "url": "https://cdn.3dassets.dev/assets/5884/v1/model.glb",
+    "sha256": "70a516121bb27c6a1e193ab6f2fc4de9ab20d460b0810f9ab75a032a83b994e4",
+    "source_sha256": "70a516121bb27c6a1e193ab6f2fc4de9ab20d460b0810f9ab75a032a83b994e4",
+    "stl_sha256": "44a48b7e40fd9968363d648de3038e724b341b6fe755bc9e3f796d15481800db",
+    "visual_sha256": "90962b96016f0187ff5a283b1484050dfbadd9f8e2e45c2d2d99dac8836d5733",
+    "extents_m": [
+      1.100000023841858,
+      1.0559556772699281,
+      0.3846156263268128
+    ],
+    "triangles": 4352
+  },
+  {
+    "name": "dugong",
+    "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-dugong-1866fb5e",
+    "url": "https://cdn.3dassets.dev/assets/5899/v1/model.glb",
+    "sha256": "3415ed73a32d7146a28dc08cd236467c28750cc12f3ee3b60f1f2615b608f268",
+    "source_sha256": "3415ed73a32d7146a28dc08cd236467c28750cc12f3ee3b60f1f2615b608f268",
+    "stl_sha256": "1151b9d418fac7f35f840bec720cc85fe89eccb002d25d1decbed801bf44e6ca",
+    "visual_sha256": "2270d6cb036437f3bd79776ee20e4d8f8d962a774c752d2c6a173262d3900457",
+    "extents_m": [
+      2.8000086802669637,
+      1.6420716181319506,
+      0.7488438163773878
+    ],
+    "triangles": 2412
+  },
+  {
+    "name": "eagle-ray",
+    "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-eagle-ray-c5cabcdb",
+    "url": "https://cdn.3dassets.dev/assets/5880/v1/model.glb",
+    "sha256": "37b777fec27f5d92de8a0ddfdb17d5aa842b13cc1cd28f6fb03699cb8ec96cc8",
+    "source_sha256": "37b777fec27f5d92de8a0ddfdb17d5aa842b13cc1cd28f6fb03699cb8ec96cc8",
+    "stl_sha256": "18eeb948728217b918ad486f209f843daa210261f572035642c8472ca6f47814",
+    "visual_sha256": "1ced8f3a2bf64c01281f8af1d0d876c045d5e2a4a4d71252f36348f2af64a274",
+    "extents_m": [
+      2.200065137095578,
+      2.29884672164917,
+      0.26290264437570965
+    ],
+    "triangles": 3384
+  },
+  {
+    "name": "flying-fish",
+    "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-flying-fish-ddebc6f7",
+    "url": "https://cdn.3dassets.dev/assets/5876/v1/model.glb",
+    "sha256": "66ce9fcbd5b80633dc96b96315c6e7d5f3f52ff5e2283dbb6ea42cf06c599203",
+    "source_sha256": "66ce9fcbd5b80633dc96b96315c6e7d5f3f52ff5e2283dbb6ea42cf06c599203",
+    "stl_sha256": "6fec6d10036b87b1465060201a1dc9928003b26a14bbdc3f315ced815f23bfac",
+    "visual_sha256": "3401f0e681e3d0378137264d2aad134843970cebb225c5c788388e3003f85880",
+    "extents_m": [
+      0.3199999928474426,
+      0.249841608185136,
+      0.11263038383505375
+    ],
+    "triangles": 1640
+  },
+  {
+    "name": "giant-isopod",
+    "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-giant-isopod-024a92ce",
+    "url": "https://cdn.3dassets.dev/assets/5893/v1/model.glb",
+    "sha256": "cd0d383c240aaa89b941128b99e8efd0336672b94912244082740688e3578167",
+    "source_sha256": "cd0d383c240aaa89b941128b99e8efd0336672b94912244082740688e3578167",
+    "stl_sha256": "32d02255d2636610c6629e8eb973aefceafd38806e8a9e4b1bca20c61c2d613c",
+    "visual_sha256": "850ae6e9ccda01a09360483bcefe02b384c3474b270a247ff5b89d82a1d01d2d",
+    "extents_m": [
+      0.4000000059604645,
+      0.23679921979903007,
+      0.11681491636679442
+    ],
+    "triangles": 6336
+  },
+  {
+    "name": "giant-squid",
+    "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-giant-squid-54115d2b",
+    "url": "https://cdn.3dassets.dev/assets/5887/v1/model.glb",
+    "sha256": "9329dca1c028af0bd76abdf3cb46186b18a976a4e95a09e5eb9b998f8cee169b",
+    "source_sha256": "9329dca1c028af0bd76abdf3cb46186b18a976a4e95a09e5eb9b998f8cee169b",
+    "stl_sha256": "d19aa5d55748f5465464edec009f8fddb545f5f43e48401e76306e36604eb382",
+    "visual_sha256": "713482670cf126fdb994ba092fada22d0ae82c25ad39c94ec5dda3cf50c07890",
+    "extents_m": [
+      8.0,
+      7.487288951873779,
+      1.7422406673431396
+    ],
+    "triangles": 5176
+  },
+  {
+    "name": "great-white-shark",
+    "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-great-white-shark-3cb0a8f2",
+    "url": "https://cdn.3dassets.dev/assets/5867/v1/model.glb",
+    "sha256": "f39158716dfb8df03f6af0b5e7d772e19401dad1985948d9160fc1cffff1515a",
+    "source_sha256": "f39158716dfb8df03f6af0b5e7d772e19401dad1985948d9160fc1cffff1515a",
+    "stl_sha256": "6462c32b5b1b75b2d6955e510e0f2bafe4f67291efafc107234e2c752faa3791",
+    "visual_sha256": "61e8972a9fe7003286be7448c802fee20503050c38e46847a60a0d8e7796d970",
+    "extents_m": [
+      4.5,
+      2.599169969558716,
+      1.6574754863977432
+    ],
+    "triangles": 1616
+  },
+  {
+    "name": "green-sea-turtle",
+    "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-green-sea-turtle-6b07ba8e",
+    "url": "https://cdn.3dassets.dev/assets/5881/v1/model.glb",
+    "sha256": "320673589f2a269b66cf6143fa7902f3b4c5a6709e8bd4bd628af9c25d38d4d0",
+    "source_sha256": "320673589f2a269b66cf6143fa7902f3b4c5a6709e8bd4bd628af9c25d38d4d0",
+    "stl_sha256": "ebd98166564bb73efbe4137eff383ee907ce9c9ddc9bd7ed9b158c645392cb7b",
+    "visual_sha256": "eff9947dd426f135827b3d02e3fe8de789bf09da65ea070b425f03fcbd31dbfc",
+    "extents_m": [
+      1.0499340115869344,
+      1.568200707435608,
+      0.3336739864340146
+    ],
+    "triangles": 1508
+  },
+  {
+    "name": "gulper-eel",
+    "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-gulper-eel-6f1ab7d8",
+    "url": "https://cdn.3dassets.dev/assets/5892/v1/model.glb",
+    "sha256": "129c05f1c7d0c3e25fe24c899b2d4e5754ddf729f76beea9a0d9459f8350278f",
+    "source_sha256": "129c05f1c7d0c3e25fe24c899b2d4e5754ddf729f76beea9a0d9459f8350278f",
+    "stl_sha256": "f389c0572df9599f6a4caaae883a6f4a3455a01adf51ec3b002a805c007f8a35",
+    "visual_sha256": "eefd132de23ec6a76abe87bd6928948c151edf495d126e903bdd24c30aa3f78c",
+    "extents_m": [
+      0.8999999761581421,
+      0.2829340442568977,
+      0.14678181915066446
+    ],
+    "triangles": 1704
+  },
+  {
+    "name": "harbour-porpoise",
+    "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-harbour-porpoise-52f8c317",
+    "url": "https://cdn.3dassets.dev/assets/5896/v1/model.glb",
+    "sha256": "ac1aca06cc9dbe17cb704679678aaf60836c21802087c1bb5e42a68483d3c1d6",
+    "source_sha256": "ac1aca06cc9dbe17cb704679678aaf60836c21802087c1bb5e42a68483d3c1d6",
+    "stl_sha256": "248bd4452746db57da92d11d983535dae8d49a9fb983a137c65372a53f0495e5",
+    "visual_sha256": "435b9f186e339dc28b9fa5a109bf015ea54ab8b0c33a3b8f591c15c639654f12",
+    "extents_m": [
+      1.600000023841858,
+      0.6871791941997287,
+      0.45835343028335895
+    ],
+    "triangles": 1624
+  },
+  {
+    "name": "humpback-breaching",
+    "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-humpback-breaching-2785f756",
+    "url": "https://cdn.3dassets.dev/assets/5879/v1/model.glb",
+    "sha256": "4c14398287ec14aace208f67bd6b0b179932ae7306e424af150f8b9ffbf36283",
+    "source_sha256": "4c14398287ec14aace208f67bd6b0b179932ae7306e424af150f8b9ffbf36283",
+    "stl_sha256": "910f7c27c4eddb0c469da1b2e58b614003dcfde14c222339b660730da18146bc",
+    "visual_sha256": "40985df0593442511556016c21a1bd2781dcffbb47fa8d847b12df865183e22d",
+    "extents_m": [
+      14.00018645248738,
+      15.568554783566242,
+      15.796092987060547
+    ],
+    "triangles": 3136
+  },
+  {
+    "name": "humpback-whale",
+    "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-humpback-whale-16525751",
+    "url": "https://cdn.3dassets.dev/assets/5859/v1/model.glb",
+    "sha256": "a420630909a68a52a06118bc00a2f050dcaafe646c895474a1341c3a25dc938e",
+    "source_sha256": "a420630909a68a52a06118bc00a2f050dcaafe646c895474a1341c3a25dc938e",
+    "stl_sha256": "9baaae0b04a30a97968e2baff2b60e9eebd6cb290e793256dfa0b602b3ade4e5",
+    "visual_sha256": "2fca06ebff2c57b2246976318164316f5c9debf146a8c8d7d7e7da9bb0e02e03",
+    "extents_m": [
+      14.0,
+      10.573382019996643,
+      4.010592482228908
+    ],
+    "triangles": 3136
+  },
+  {
+    "name": "leatherback-turtle",
+    "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-leatherback-turtle-5a06e8a2",
+    "url": "https://cdn.3dassets.dev/assets/5883/v1/model.glb",
+    "sha256": "0604e36bbf14dedfcaca1f4aa650046211b01e148ee60972a6c7717d016717ff",
+    "source_sha256": "0604e36bbf14dedfcaca1f4aa650046211b01e148ee60972a6c7717d016717ff",
+    "stl_sha256": "4978c5a291fded66f976e7c04a9f82ac526b9c18c803b892bf4925908c39d26f",
+    "visual_sha256": "9706a6e648f795ae6d6abb92f5c18386883e40502017916b0cdca04459aaf044",
+    "extents_m": [
+      1.7998868313990783,
+      2.6883440017700195,
+      0.5808046361310513
+    ],
+    "triangles": 2516
+  },
+  {
+    "name": "mahi-mahi",
+    "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-mahi-mahi-65ecf8f3",
+    "url": "https://cdn.3dassets.dev/assets/5874/v1/model.glb",
+    "sha256": "56b243303f0732db8aff716c040ba0cafa35ce7e301822cc9db326ac1737d60a",
+    "source_sha256": "56b243303f0732db8aff716c040ba0cafa35ce7e301822cc9db326ac1737d60a",
+    "stl_sha256": "e41970452cae527b036426ed972db9f6fd552debd90c3c5154ff32bd917bd312",
+    "visual_sha256": "7e8ab12c283a38b7d9b1e2b76e88fc85c684c7113204f427422a75ca76a240a9",
+    "extents_m": [
+      1.2999999523162842,
+      0.7062776187281372,
+      0.4813653739556756
+    ],
+    "triangles": 1640
+  },
+  {
+    "name": "mako-shark",
+    "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-mako-shark-225df98d",
+    "url": "https://cdn.3dassets.dev/assets/5869/v1/model.glb",
+    "sha256": "937ba814b6b19e3353e531761daefec5abbac7f9150d660ce628669e7bb4d9bd",
+    "source_sha256": "937ba814b6b19e3353e531761daefec5abbac7f9150d660ce628669e7bb4d9bd",
+    "stl_sha256": "e2e4662c50ac394b7653ca46f2eeb02fe54929ac1a21cbdbe02dbf0133060b61",
+    "visual_sha256": "c600212436f1f1abb0cc83e2034ce7d6c20924ff2b139b745a0d22385ee68e0f",
+    "extents_m": [
+      3.0,
+      1.5613878965377808,
+      1.0646992027759552
+    ],
+    "triangles": 1616
+  },
+  {
+    "name": "manta-ray",
+    "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-manta-ray-fab4463c",
+    "url": "https://cdn.3dassets.dev/assets/5878/v1/model.glb",
+    "sha256": "d7037b105bebf0b3f3da19538e95de2858246c416b98923c7f1fe630e3ff8aba",
+    "source_sha256": "d7037b105bebf0b3f3da19538e95de2858246c416b98923c7f1fe630e3ff8aba",
+    "stl_sha256": "fccc7dfbd688ebbeef2fba33068b7a28eb12205ccbc7c6bea5800e2c323072c4",
+    "visual_sha256": "2df5013f2f43d04921f495e8570cbe1abe0e46f7cface14f8eb07caf458cf8b7",
+    "extents_m": [
+      4.499792625373686,
+      6.729562282562256,
+      0.5402244782487071
+    ],
+    "triangles": 1516
+  },
+  {
+    "name": "moon-jellyfish",
+    "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-moon-jellyfish-cdc08d19",
+    "url": "https://cdn.3dassets.dev/assets/5889/v1/model.glb",
+    "sha256": "adac90b2cd5f4d2d9e23a376d8d9b18a4f44a75031e50552f67c2088999eab4e",
+    "source_sha256": "adac90b2cd5f4d2d9e23a376d8d9b18a4f44a75031e50552f67c2088999eab4e",
+    "stl_sha256": "d8d9c1d2b2596e006f7be2675dba82f37f71e11bef9545a9b0a87a348ed78560",
+    "visual_sha256": "7a87545db80351d84e13d14c2edf6927977dbbd3ba0b4c71d3a0161d75b50327",
+    "extents_m": [
+      0.320024202341493,
+      0.32823529857567024,
+      0.402774453163147
+    ],
+    "triangles": 2460
+  },
+  {
+    "name": "ocean-sunfish",
+    "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-ocean-sunfish-ad65cc8b",
+    "url": "https://cdn.3dassets.dev/assets/5866/v1/model.glb",
+    "sha256": "d53996957c796628a37cb5da935cedcfe987192f667e5b8c996cecd7224f67e7",
+    "source_sha256": "d53996957c796628a37cb5da935cedcfe987192f667e5b8c996cecd7224f67e7",
+    "stl_sha256": "09b625f94adf15ebdd9bd08f90b350654bf8d2f82cb38a4e9a6d2531d7ffeace",
+    "visual_sha256": "5e2817efeda9190e17ca388e9504f77f295c1f8112d0c65c9efec050e59f9837",
+    "extents_m": [
+      2.200056161699484,
+      1.569871623259644,
+      4.57447624206543
+    ],
+    "triangles": 1092
+  },
+  {
+    "name": "orca",
+    "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-orca-983c3514",
+    "url": "https://cdn.3dassets.dev/assets/5861/v1/model.glb",
+    "sha256": "0d316a36f4d2ff959e21b5de014a1ec8f1c0f4cf9e7cd501ba64eab183ffda71",
+    "source_sha256": "0d316a36f4d2ff959e21b5de014a1ec8f1c0f4cf9e7cd501ba64eab183ffda71",
+    "stl_sha256": "154ff41e1ddfc497dff7af3f109d13217cef76d4754803a645bf6c0f974ac167",
+    "visual_sha256": "f4f9b523b0c172af6916b05a08de522dbb05ae16030fae1f6336b356cc226ab8",
+    "extents_m": [
+      7.0,
+      3.006408929824829,
+      2.895560707197127
+    ],
+    "triangles": 1984
+  },
+  {
+    "name": "pilot-whale",
+    "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-pilot-whale-d80d7425",
+    "url": "https://cdn.3dassets.dev/assets/5863/v1/model.glb",
+    "sha256": "3b2e8dbef2129af98b8713deae2fdc904adda8a7c75206d368b2660269a4c6d9",
+    "source_sha256": "3b2e8dbef2129af98b8713deae2fdc904adda8a7c75206d368b2660269a4c6d9",
+    "stl_sha256": "83a6e3980902523261dff46072bb74794ed61b454f10746565e60c3401ec9e87",
+    "visual_sha256": "0a2de0f84f9dea166803364058cdce8a7203a7ab7d456d7af037c131f5d5cab0",
+    "extents_m": [
+      5.0,
+      2.147434949874878,
+      1.4323544193910602
+    ],
+    "triangles": 1876
+  },
+  {
+    "name": "portuguese-man-o-war",
+    "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-portuguese-man-o-war-6b94147a",
+    "url": "https://cdn.3dassets.dev/assets/5888/v1/model.glb",
+    "sha256": "4fa6894dc7ad6fd6224497aadfc2fe0cd249fd39c3f41eb1c48eeca8346be77f",
+    "source_sha256": "4fa6894dc7ad6fd6224497aadfc2fe0cd249fd39c3f41eb1c48eeca8346be77f",
+    "stl_sha256": "8b523220e10db129ef244936de7a12f38d08faaa710cf22747c83a372b1dc2ff",
+    "visual_sha256": "b441742b5b21411adcd40e7c6d22cbfa35013a7990799b380729dfec0ebb5089",
+    "extents_m": [
+      0.6500256410217844,
+      0.4040662291512831,
+      0.8016313314437866
+    ],
+    "triangles": 2472
+  },
+  {
+    "name": "scalloped-hammerhead",
+    "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-scalloped-hammerhead-5ec42bda",
+    "url": "https://cdn.3dassets.dev/assets/5868/v1/model.glb",
+    "sha256": "0fe8645b24cbc627f5e2b07a210ad01d5556e5c18f59a13d48424c924d691cd2",
+    "source_sha256": "0fe8645b24cbc627f5e2b07a210ad01d5556e5c18f59a13d48424c924d691cd2",
+    "stl_sha256": "780f8eface09ba997e827c8f258bee15537cba58ecd34dc28c62aba0c92b2c04",
+    "visual_sha256": "965a8cb5386e72df6361aaa4d042a4e707acb86da1f258f0bd4dfacdf5c66f02",
+    "extents_m": [
+      3.200000047683716,
+      1.739701487715564,
+      1.121225659865523
+    ],
+    "triangles": 1868
+  },
+  {
+    "name": "sea-otter-floating",
+    "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-sea-otter-floating-27352205",
+    "url": "https://cdn.3dassets.dev/assets/5895/v1/model.glb",
+    "sha256": "57ea1f96d043b8cb8a51d595846c54f0c9fd20e49b843f14edd0cb991e8ed52f",
+    "source_sha256": "57ea1f96d043b8cb8a51d595846c54f0c9fd20e49b843f14edd0cb991e8ed52f",
+    "stl_sha256": "7064407e810a649c3b75a494e296fb9587a4de6b8f902316acf17fb4c6353296",
+    "visual_sha256": "8676212bf54e7d1f812f8cd67b1618c4bf4e8bcb79ea8cb51cbc3c05421193da",
+    "extents_m": [
+      1.2000000476837158,
+      0.36135999255863105,
+      0.30986052790723306
+    ],
+    "triangles": 4572
+  },
+  {
+    "name": "sea-turtle-resting",
+    "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-sea-turtle-resting-da191949",
+    "url": "https://cdn.3dassets.dev/assets/5882/v1/model.glb",
+    "sha256": "f85faff89ba9323d8e934d38a224b0bf7978231145301276cfe87ee2b79d5b5c",
+    "source_sha256": "f85faff89ba9323d8e934d38a224b0bf7978231145301276cfe87ee2b79d5b5c",
+    "stl_sha256": "0db17345abd9d0cab165d478b808ce5924bfa669a2afbf4758182f8c2246b984",
+    "visual_sha256": "69ba1b505021c779a86cdf377375acbc43796ab4935486660580b0e51178dcea",
+    "extents_m": [
+      1.0499999523162842,
+      1.0455137433658876,
+      0.33367867295554987
+    ],
+    "triangles": 1508
+  },
+  {
+    "name": "southern-stingray",
+    "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-southern-stingray-a3bd4c7a",
+    "url": "https://cdn.3dassets.dev/assets/5877/v1/model.glb",
+    "sha256": "e9ba725cedd6c41b8f71ed07376b387e0bb63fefcc4d8afa6ce878cc054fde93",
+    "source_sha256": "e9ba725cedd6c41b8f71ed07376b387e0bb63fefcc4d8afa6ce878cc054fde93",
+    "stl_sha256": "24dfc349c96b17110100797449b70f5cd4f0cacf19d561d6be6b42171065b497",
+    "visual_sha256": "0049923c43759404ec0126d42bc938f6b48f94de78bcfb8674e25db85426cecf",
+    "extents_m": [
+      1.800135529924134,
+      2.078768014907837,
+      0.23774561054544396
+    ],
+    "triangles": 972
+  },
+  {
+    "name": "sperm-whale",
+    "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-sperm-whale-ba965812",
+    "url": "https://cdn.3dassets.dev/assets/5860/v1/model.glb",
+    "sha256": "a7f27673afc8def79858b7a798479246c47d0337354ae360bd8f49c0402b99d4",
+    "source_sha256": "a7f27673afc8def79858b7a798479246c47d0337354ae360bd8f49c0402b99d4",
+    "stl_sha256": "ac8ff2a53a6066d0194b246efd120e6293c6cb5548e9c456fefa9e7d492fe57e",
+    "visual_sha256": "a9b4d62b990bdbb376f99dffc710cebbe9bb4a3fdb7c6b166bb81d63cff519f1",
+    "extents_m": [
+      16.0,
+      7.22336483001709,
+      3.5408911242593604
+    ],
+    "triangles": 1612
+  },
+  {
+    "name": "swordfish",
+    "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-swordfish-99498cb7",
+    "url": "https://cdn.3dassets.dev/assets/5872/v1/model.glb",
+    "sha256": "f5568d0c38806aa46ad9d1d5e6b9214cc0cb9a3e87713fa99fcc65a2a30f8d2f",
+    "source_sha256": "f5568d0c38806aa46ad9d1d5e6b9214cc0cb9a3e87713fa99fcc65a2a30f8d2f",
+    "stl_sha256": "18126ec2ca89729544f4133aa56ca5a95e2a6c6aedca41d48d2a6afa0e71bf2e",
+    "visual_sha256": "ef5a8b79e2209a2393855715b4327154966e04105b06a7b7ddc4ee27a165056d",
+    "extents_m": [
+      3.0999999046325684,
+      1.236532318913099,
+      0.8310353731153199
+    ],
+    "triangles": 1832
+  },
+  {
+    "name": "tiger-shark",
+    "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-tiger-shark-0de97360",
+    "url": "https://cdn.3dassets.dev/assets/5871/v1/model.glb",
+    "sha256": "21a07eedbb651d2eb8eccccb57629adf45266ed6999a3059213badd94dabce6e",
+    "source_sha256": "21a07eedbb651d2eb8eccccb57629adf45266ed6999a3059213badd94dabce6e",
+    "stl_sha256": "62c03074367f0ee848f9b183917c0008d0198215f1c72436c475a1cf296b683b",
+    "visual_sha256": "78c6244d549d35d84933233867442707cb1f2829609870fa562602c536de0bbc",
+    "extents_m": [
+      3.799999952316284,
+      2.075173256583298,
+      1.337485821153166
+    ],
+    "triangles": 1616
+  },
+  {
+    "name": "vampire-squid",
+    "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-vampire-squid-b6524bb7",
+    "url": "https://cdn.3dassets.dev/assets/5885/v1/model.glb",
+    "sha256": "f1538a3343d75bf86285296f767b5e45e98cccbb2ee5eb12004ac963dc84e933",
+    "source_sha256": "f1538a3343d75bf86285296f767b5e45e98cccbb2ee5eb12004ac963dc84e933",
+    "stl_sha256": "abf5b0d1f766404c77da5b1404c1d3229a6a448be39f394cca4e462e5f675000",
+    "visual_sha256": "862f847cf1bcb9290ccf64289dccbe8f131e1098abf276afccfd985eb72fe111",
+    "extents_m": [
+      0.30000001192092896,
+      0.1812250149736805,
+      0.07955260592908076
+    ],
+    "triangles": 4472
+  },
+  {
+    "name": "viperfish",
+    "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-viperfish-5d0b8a68",
+    "url": "https://cdn.3dassets.dev/assets/5891/v1/model.glb",
+    "sha256": "b4fc8988a068c2841ddab9b62ff7ce53cb19edcb569879d3606ab08f8b9cfb79",
+    "source_sha256": "b4fc8988a068c2841ddab9b62ff7ce53cb19edcb569879d3606ab08f8b9cfb79",
+    "stl_sha256": "76584b1bc9e8347e5e379ccca4a5a2d4ee990719e7382b1445bb361060ba87d1",
+    "visual_sha256": "e7511a2110d94bf818a2b7c2ef12591457e8fdd80e2a605ab27050a9bf153c1d",
+    "extents_m": [
+      0.30000001192092896,
+      0.16018688678741455,
+      0.18404492871145095
+    ],
+    "triangles": 1752
+  },
+  {
+    "name": "whale-shark",
+    "page": "https://3dassets.dev/assets/open-ocean-and-deep-sea-life-whale-shark-4fb7587f",
+    "url": "https://cdn.3dassets.dev/assets/5864/v1/model.glb",
+    "sha256": "bda20b979c980410e0618ea15a44f8abc3245e590daa298583ba3e255a7c0e3f",
+    "source_sha256": "bda20b979c980410e0618ea15a44f8abc3245e590daa298583ba3e255a7c0e3f",
+    "stl_sha256": "3857fa24836a58193d3d0146358f843514c0e461b75fc6b698b913e8403dbf93",
+    "visual_sha256": "9c0072826b6e27f8fb812491125ed95076bfe6028fcfc3dbe06d364fd85a56f8",
+    "extents_m": [
+      10.0,
+      5.941953659057617,
+      3.495284914970398
+    ],
+    "triangles": 1616
+  }
+]

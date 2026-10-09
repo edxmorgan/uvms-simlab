@@ -1,5 +1,4 @@
 # path_builder.py
-import math
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
@@ -11,9 +10,8 @@ from mocap4r2_msgs.msg import RigidBodies
 from rclpy.duration import Duration
 import numpy as np
 import tf2_ros
-from tf2_ros import TransformException
 from geometry_msgs.msg import TransformStamped
-from simlab.shutdown import install_signal_shutdown_handler, shutdown_node, spin_until_shutdown
+from simlab.shutdown import shutdown_node, spin_until_shutdown
 
 def apply_transform(ps_in: PoseStamped, ts: TransformStamped, target_frame: str) -> PoseStamped:
     # ts gives a transform that converts data in source into target
@@ -205,7 +203,6 @@ class MocapPathBuilder(Node):
         
 def main():
     rclpy.init()
-    install_signal_shutdown_handler()
     node = MocapPathBuilder()
     try:
         spin_until_shutdown(node)

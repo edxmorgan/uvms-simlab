@@ -15,6 +15,23 @@ class VehicleTrajectoryGeneratorTemplate(ABC):
     active: bool
 
     @abstractmethod
+    def current_reference(self):
+        """Return owned XYZ position, velocity, acceleration arrays, or None.
+
+        This read-only snapshot uses the execution clock without advancing it.
+        It is available immediately after start, and absent when inactive.
+        """
+        pass
+
+    def preview_samples(self, *, horizon=None, sample_dt=0.05):
+        """Return (seconds-from-now, xyz) for the actual generated trajectory.
+
+        Unsupported generators fail closed at the execution validation boundary.
+        Preview must not advance the execution clock or consume a control step.
+        """
+        raise NotImplementedError('trajectory generator does not implement timed preview')
+
+    @abstractmethod
     def start_from_path(
         self,
         current_position: Sequence[float],

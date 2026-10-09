@@ -1,21 +1,18 @@
 # rigid_bodies_pub.py
-import math
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from std_msgs.msg import Header
 from geometry_msgs.msg import Pose, Point, Quaternion
-from mocap4r2_msgs.msg import RigidBodies, RigidBody, Marker
+from mocap4r2_msgs.msg import RigidBodies, RigidBody
 from scipy.spatial.transform import Rotation as R
 from simlab.robot import Robot
 from typing import List, Tuple
-import numpy as np
 import numpy as np
 import tf2_ros
 from tf2_ros import TransformException
 from geometry_msgs.msg import TransformStamped
 from rclpy.duration import Duration
-from geometry_msgs.msg import PoseStamped, Pose, Point, Quaternion
 
 def apply_transform_pose(p_in: Pose, ts: TransformStamped) -> Pose:
     """

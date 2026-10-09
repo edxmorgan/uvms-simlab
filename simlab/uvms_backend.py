@@ -47,14 +47,12 @@ from simlab.srv import (
     BackendWaypointCommand,
 )
 from ros2_control_blue_reach_5.msg import DynamicObstacleArray
-from ros2_control_blue_reach_5.srv import ResetSimUvms, SetDynamicObstacles
+from ros2_control_blue_reach_5.srv import ResetSimUvms
 from simlab.planner_markers import PathPlanner
 from simlab.motion_planning.trajectory_generators import vehicle_trajectory_generator_class
-from simlab.dynamic_obstacle_sources import DynamicObstacleSourceRequest, dynamic_obstacle_source_class
 from simlab.motion_planning.dynamic_replanners import dynamic_replanner_class
 from simlab.motion_planning.dynamic_replanners.base import DynamicReplannerTemplate
 from simlab.dynamic_world import DynamicWorldModel
-from simlab.utils.frames import PoseX
 from simlab.vehicle_waypoint_mission import (
     VehicleWaypointMission,
     VehicleWaypointViz,
@@ -96,10 +94,9 @@ class UVMSBackendCore:
             SetParameters,
             "/sim_camera_renderer_node/set_parameters",
         )
-        self.dynamic_obstacles_client = self.node.create_client(
-            SetDynamicObstacles,
-            "/dynamic_obstacle_sim_node/set_dynamic_obstacles",
-        )
+        from simlab.srv import EditDynamicObstacles
+        self.obstacle_edit_client = self.node.create_client(
+            EditDynamicObstacles, '/dynamic_obstacle_sim_node/edit_dynamic_obstacles')
         self.mcap_recording_active = False
         self._pending_camera_robot: Robot | None = None
         self.use_vehicle_hardware = bool(self.node.get_parameter_or("use_vehicle_hardware", False).value)
@@ -152,22 +149,22 @@ class UVMSBackendCore:
         robot_collision_radius = geometry.compute_bounding_sphere_radius(all_pts, quantile=0.995, pad=0.03)
         self.node.get_logger().info(f"Planner robot approximation sphere radius set to {robot_collision_radius:.3f} m")
         self.fcl_world.set_robot_collision_radius(robot_collision_radius)
-        self.dynamic_world = None
+        self.dynamic_world = DynamicWorldModel(
+            self.node, world_frame=self.world_frame,
+            robot_radius_provider=lambda: float(self.fcl_world.vehicle_radius))
         self.dynamic_obstacle_snapshot = DynamicObstacleArray()
-        self.dynamic_obstacle_source_name = str(
-            parameter_or_default(self.node, "dynamic_obstacle_source", "path_sphere")
-        ).strip()
-        dynamic_obstacle_source_class(self.dynamic_obstacle_source_name)
-        self.node.get_logger().info(
-            f"Dynamic obstacle source: {self.dynamic_obstacle_source_name}"
-        )
         self.dynamic_obstacle_snapshot.header.frame_id = self.world_frame
+        self.dynamic_obstacle_snapshot_sub = self.node.create_subscription(
+            DynamicObstacleArray, '/dynamic_obstacles', self._on_dynamic_obstacle_snapshot,
+            QoSProfile(depth=1, reliability=QoSReliabilityPolicy.RELIABLE,
+                       durability=QoSDurabilityPolicy.TRANSIENT_LOCAL))
 
         viz_qos = QoSProfile(history=QoSHistoryPolicy.KEEP_LAST,depth=1,durability=QoSDurabilityPolicy.VOLATILE,
                     reliability=QoSReliabilityPolicy.RELIABLE)
         planner_viz_qos = QoSProfile(
             history=QoSHistoryPolicy.KEEP_LAST,
-            depth=10,
+            # Shared by path, goal, target and mission markers; retain full bursts.
+            depth=100,
             durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
             reliability=QoSReliabilityPolicy.RELIABLE,
         )
@@ -182,9 +179,9 @@ class UVMSBackendCore:
         self.target_vehicle_marker_in_world_tf_timer = self.node.create_timer(1.0 / 20.0, self.target_vehicle_in_world_tf_timer_callback)
         self.target_arm_base_marker_tf_timer = self.node.create_timer(1.0 / 20.0, self.target_arm_base_tf_timer_callback)
         self.target_endeffector_in_world_tf_timer = self.node.create_timer(1.0 / 20.0, self.target_endeffector_in_world_tf_timer_callback)
-        self.vehicle_target_cloud_timer = self.node.create_timer(1.0 / 2.0, self.vehicle_target_cloud_timer_callback)
-        self.task_on_vehicle_solve_timer = self.node.create_timer(1.0 / 5.0, self.plan_and_execute_task_trajectory_wrt_vehicle)
-        self.robot_metrics_overlay_timer = self.node.create_timer(1.0 / 5.0, self.publish_robot_metrics_overlay_callback)
+        self.vehicle_target_cloud_timer = self.node.create_timer(1.0 / 20.0, self.vehicle_target_cloud_timer_callback)
+        self.task_on_vehicle_solve_timer = self.node.create_timer(1.0 / 20.0, self.plan_and_execute_task_trajectory_wrt_vehicle)
+        self.robot_metrics_overlay_timer = self.node.create_timer(1.0 / 20.0, self.publish_robot_metrics_overlay_callback)
         self.research_overlay_timer = self.node.create_timer(1.0, self.publish_research_overlay_callback)
         
         self.planner_marker_publisher = self.node.create_publisher(Marker, "planned_waypoints_marker", planner_viz_qos)
@@ -265,6 +262,8 @@ class UVMSBackendCore:
         self.dynamic_replanner_timer = None
         self.dynamic_replanning_enabled = False
         self.dynamic_replanning_rate = float(parameter_or_default(self.node, "dynamic_replanning_rate", 3.0))
+        self.dynamic_braking_deceleration = float(parameter_or_default(self.node, 'dynamic_braking_deceleration', 0.1))
+        self.dynamic_replanning_latency_budget = float(parameter_or_default(self.node, 'dynamic_replanning_latency_budget', 1.5))
         self.dynamic_replanning_cooldown = float(parameter_or_default(self.node, "dynamic_replanning_cooldown", 1.0))
         self.dynamic_replanning_lookahead_time = float(
             parameter_or_default(self.node, "dynamic_replanning_lookahead_time", 4.0)
@@ -288,6 +287,10 @@ class UVMSBackendCore:
 
     def close(self) -> None:
         self._disable_dynamic_replanning()
+        if self.dynamic_world is not None:
+            self.dynamic_world.close()
+            self.dynamic_world = None
+        self.node.destroy_subscription(self.dynamic_obstacle_snapshot_sub)
         for robot in self.robots:
             robot.close()
         self.robots.clear()
@@ -333,9 +336,6 @@ class UVMSBackendCore:
             self.dynamic_replanner_timer.cancel()
             self.node.destroy_timer(self.dynamic_replanner_timer)
             self.dynamic_replanner_timer = None
-        if self.dynamic_world is not None:
-            self.dynamic_world.close()
-            self.dynamic_world = None
         self.node.get_logger().info("Dynamic replanning disabled.")
 
     def _recreate_dynamic_replanner_timer(self) -> None:
@@ -517,74 +517,35 @@ class UVMSBackendCore:
         self._reset_dynamic_replanner_history(reset_count=True)
         return True, f"world profile request sent: {profile_name}"
 
-    def spawn_path_obstacle(
-        self,
-        robot_index: int,
-        *,
-        name: str = "",
-        distance_ahead: float = 4.0,
-        radius: float = 0.8,
-        source_name: str | None = None,
-    ) -> tuple[bool, str]:
-        robot = self._robot_for_api(int(robot_index))
-        if robot is None:
-            return False, f"invalid robot_index={robot_index}"
-
-        try:
-            selected_source = self.dynamic_obstacle_source_name if source_name is None else source_name
-            source = dynamic_obstacle_source_class(selected_source)()
-            result = source.create(
-                DynamicObstacleSourceRequest(
-                    robot=robot,
-                    existing_obstacles=self.dynamic_obstacle_snapshot,
-                    world_frame=self.world_frame,
-                    name=name,
-                    distance_ahead=distance_ahead,
-                    radius=radius,
-                    robot_collision_radius=float(self.fcl_world.vehicle_radius),
-                    robot_clearance_margin=float(self.dynamic_replanning_safety_margin),
-                )
-            )
-        except ValueError as exc:
-            return False, str(exc)
-        if result is None:
-            return False, (
-                f"no safe path-obstacle placement available for {robot.prefix}; "
-                "create a longer active path or reduce obstacle radius/distance_ahead"
-            )
-
-        obstacle_msg = copy.deepcopy(self.dynamic_obstacle_snapshot)
-        obstacle_msg.header.frame_id = obstacle_msg.header.frame_id or self.world_frame
-        obstacle_msg.obstacles.append(result.obstacle)
-        if not self._apply_dynamic_obstacles(obstacle_msg, f"dynamic obstacle '{result.obstacle.id}'"):
-            return False, "dynamic obstacle simulator is not ready"
-
-        xyz = np.asarray(result.center_world, dtype=float).round(3).tolist()
-        radius_m = float(result.obstacle.collision_dimensions[0]) if result.obstacle.collision_dimensions else 0.0
-        detail = result.detail_fields
-        return (
-            True,
-            f"dynamic obstacle '{result.obstacle.id}' from source '{source.registry_name}' requested at {xyz}, "
-            f"radius={radius_m:.3f} m, "
-            f"path_ahead={float(detail.get('path_ahead_m', 0.0)):.3f} m, "
-            f"euclidean_from_robot={float(detail.get('euclidean_from_robot_m', 0.0)):.3f} m, "
-            f"remaining_path={float(detail.get('remaining_path_m', 0.0)):.3f} m, "
-            f"nearest_path_index={int(detail.get('nearest_path_index', 0))}, "
-            f"goal_clearance={float(detail.get('goal_clearance_m', 0.0)):.3f} m, "
-            f"robot_clearance={float(detail.get('robot_clearance_m', 0.0)):.3f} m, "
-            f"robot_clearance_margin={float(detail.get('robot_clearance_margin_m', 0.0)):.3f} m",
-        )
-
-
     def dynamic_obstacle_snapshot_for_recording(self):
         return copy.deepcopy(self.dynamic_obstacle_snapshot)
 
+    def _on_dynamic_obstacle_snapshot(self, message):
+        # Only authoritative publications update the editing/recording snapshot.
+        self.dynamic_obstacle_snapshot = copy.deepcopy(message)
+
     def clear_dynamic_obstacles(self) -> tuple[bool, str]:
-        obstacle_msg = dynamic_obstacles_from_world_profile({"frame_id": self.world_frame, "obstacles": []}, self.world_frame)
-        if not self._apply_dynamic_obstacles(obstacle_msg, "clear dynamic obstacles"):
+        if not self._edit_obstacles('clear'):
             return False, "dynamic obstacle simulator is not ready"
         self._reset_dynamic_replanner_history(reset_count=True)
         return True, "dynamic obstacle clear request sent"
+
+    def _edit_obstacles(self, operation, items=(), ids=()):
+        from simlab.srv import EditDynamicObstacles
+        if not self.obstacle_edit_client.service_is_ready():
+            return False
+        request = EditDynamicObstacles.Request(operation=operation, ids=list(ids))
+        request.obstacles.header.frame_id = self.world_frame
+        request.obstacles.obstacles = list(items)
+        def done(future):
+            try:
+                result = future.result()
+                log = self.node.get_logger().info if result.success else self.node.get_logger().warn
+                log(f'Obstacle {operation}: {result.message}')
+            except Exception as exc:
+                self.node.get_logger().warn(f'Obstacle {operation} failed: {exc}')
+        self.obstacle_edit_client.call_async(request).add_done_callback(done)
+        return True
 
     def _reset_dynamic_replanner_history(self, *, reset_count: bool = False) -> None:
         for replanner in self.dynamic_replanners.values():
@@ -593,32 +554,9 @@ class UVMSBackendCore:
     def _apply_dynamic_obstacles(self, obstacle_msg, label: str) -> bool:
         if obstacle_msg is None:
             return True
-        service_name = "/dynamic_obstacle_sim_node/set_dynamic_obstacles"
-        if not self.dynamic_obstacles_client.wait_for_service(timeout_sec=0.2):
-            self.node.get_logger().warn(f"dynamic obstacle service {service_name} is not ready.")
-            return False
-        requested_obstacles = copy.deepcopy(obstacle_msg)
-        request = SetDynamicObstacles.Request()
-        request.obstacles = requested_obstacles
-        future = self.dynamic_obstacles_client.call_async(request)
-
-        def _done_callback(done_future) -> None:
-            try:
-                response = done_future.result()
-            except Exception as exc:
-                self.node.get_logger().warn(f"{label} failed: {exc}")
-                return
-            if response is not None and response.success:
-                self.dynamic_obstacle_snapshot = copy.deepcopy(requested_obstacles)
-                if self.dynamic_world is not None:
-                    self.dynamic_world.update_from_msg(requested_obstacles)
-                self.node.get_logger().info(f"{label} applied: {response.message}")
-            else:
-                message = "" if response is None else response.message
-                self.node.get_logger().warn(f"{label} rejected: {message}")
-
-        future.add_done_callback(_done_callback)
-        return True
+        if obstacle_msg.header.frame_id != self.world_frame:
+            raise ValueError(f"{label}: expected frame {self.world_frame}")
+        return self._edit_obstacles('replace', obstacle_msg.obstacles)
 
     def select_replay_profile(self, robot: Robot, profile_name: str) -> tuple[bool, str]:
         controller = self._cmd_replay_controller(robot)
@@ -872,16 +810,6 @@ class UVMSBackendCore:
                 return self._api_response(response, *self.set_world_profile(request.name))
             if command == "clear_dynamic_obstacles":
                 return self._api_response(response, *self.clear_dynamic_obstacles())
-            if command == "spawn_path_obstacle":
-                return self._api_response(
-                    response,
-                    *self.spawn_path_obstacle(
-                        int(request.robot_index),
-                        name=request.name,
-                        distance_ahead=request.distance_ahead if request.distance_ahead > 0.0 else 4.0,
-                        radius=request.radius if request.radius > 0.0 else 0.8,
-                    ),
-                )
             if command == "enable_dynamic_replanning":
                 return self._api_response(
                     response,
@@ -1570,12 +1498,6 @@ class UVMSBackendCore:
         self.node.get_logger().warn(f"Failed to dispatch vehicle waypoint mission for {robot.prefix}.")
         return False
 
-    def _is_robot_at_waypoint(self, robot: Robot, goal_pose: Pose, tolerance_m: float) -> bool:
-        pose_now = robot._pose_from_state_in_frame(self.world_frame)
-        if pose_now is None:
-            return False
-        return pose_position_distance(pose_now, goal_pose) <= float(tolerance_m)
-
     def _robot_waypoint_tracking_metrics(self, robot: Robot, goal_pose: Pose) -> dict | None:
         pose_now = robot._pose_from_state_in_frame(self.world_frame)
         if pose_now is None:
@@ -1617,6 +1539,10 @@ class UVMSBackendCore:
     def vehicle_waypoint_execution_callback(self) -> None:
         for robot in self.robots:
             mission = self.vehicle_waypoint_missions[robot.k_robot]
+            if getattr(robot, 'navigation_blocked_goal', None) is not None:
+                if mission.executing:
+                    mission.pause()
+                continue
             if not mission.executing:
                 continue
             if robot.control_mode in (ControlMode.REPLAY, ControlMode.REPLAY_SETTLE):
