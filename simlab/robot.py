@@ -3531,6 +3531,33 @@ class Robot(Base):
                 self.publish_commands([0.0] * 6, [0.0] * 5)
                 return
 
+            # This combined message requires references for both subsystems.
+            # Command/zero-command playback has no pose reference: do not invent
+            # one from measured state or leak a previous planner target.
+            if (getattr(active_controller, "enabled", False)
+                    and feedback_spec is not None
+                    and vehicle_mode in ("track_reference", "hold_initial")
+                    and manipulator_mode in ("track_reference", "hold_initial")):
+                reference_pose = PoseX.from_pose(
+                    xyz=np.asarray(target_pos[:3], dtype=float),
+                    rot=np.asarray(target_pos[3:6], dtype=float),
+                    rot_rep="euler_xyz", frame="NED",
+                ).get_pose_as_Pose_msg(frame="NWU")
+                world_reference = self.try_transform_pose(
+                    pose_in_source=reference_pose, target_frame=self.world_frame,
+                    source_frame=self.map_frame, warn_context=f"replay reference ({self.prefix})",
+                )
+                if world_reference is not None:
+                    self.reference_pub.publish_replay_targets(
+                        stamp_msg=self.node.get_clock().now().to_msg(),
+                        world_pose=world_reference, target_ned_pose=target_pos,
+                        target_body_vel=target_vel if vehicle_mode == "track_reference" else np.zeros(6),
+                        target_body_acc=target_acc if vehicle_mode == "track_reference" else np.zeros(6),
+                        q_ref=q_ref,
+                        dq_ref=dq_ref if manipulator_mode == "track_reference" else np.zeros(5),
+                        ddq_ref=ddq_ref if manipulator_mode == "track_reference" else np.zeros(5),
+                    )
+
             self.publish_commands(
                 np.asarray(cmd_body_wrench, float).tolist(),
                 np.asarray(cmd_arm_tau, float).tolist(),
