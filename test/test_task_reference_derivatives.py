@@ -31,7 +31,7 @@ def test_accepted_ik_endpoint_clears_derivatives():
     from unittest.mock import Mock
     from geometry_msgs.msg import Pose
     from scipy.spatial.transform import Rotation as R
-    from simlab.motion_planning.endpoint_ik import EndpointIK
+    from simlab.robot import EndpointIK
     from simlab.uvms_parameters_sim import ReachParams as P
     from pathlib import Path
     r=robot();r.world_frame='world';r.prefix='robot_1_'
