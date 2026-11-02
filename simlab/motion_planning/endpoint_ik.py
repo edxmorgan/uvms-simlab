@@ -7,6 +7,19 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 
+def aligned_target_rotation(marker_rotation, axis):
+    """Point tool +Z along the selected marker axis, with deterministic roll.
+
+    Keep marker +X as tool +X where perpendicular; for marker X alignment,
+    use marker +Y as tool +X. All three choices are proper rotations.
+    """
+    axis = np.asarray(axis, dtype=float)
+    if axis.shape != (3,) or not any(np.array_equal(axis, a) for a in np.eye(3)):
+        raise ValueError('IK alignment axis must be +X, +Y or +Z')
+    x = np.array([0., 1., 0.]) if axis[0] == 1 else np.array([1., 0., 0.])
+    return np.asarray(marker_rotation) @ np.column_stack((x, np.cross(axis, x), axis))
+
+
 class EndpointIK:
     """Bounded endpoint IK; returned configurations do not certify a safe path."""
     def __init__(self, resource_directory):

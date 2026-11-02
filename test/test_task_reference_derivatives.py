@@ -1,3 +1,4 @@
+import pytest
 from types import SimpleNamespace
 from simlab.robot import Robot, ControlSpace
 
@@ -25,7 +26,8 @@ def test_joint_mode_preserves_trajectory_derivatives():
     assert r.body_vel_command==before
 
 
-def test_accepted_ik_endpoint_clears_derivatives():
+@pytest.mark.parametrize("axis", [[1.,0.,0.], [0.,1.,0.], [0.,0.,1.]])
+def test_accepted_ik_endpoint_clears_derivatives(axis):
     # Exercise the production acceptance path with frame conversion supplied.
     import numpy as np
     from unittest.mock import Mock
@@ -41,7 +43,7 @@ def test_accepted_ik_endpoint_clears_derivatives():
     r.endpoint_ik=EndpointIK(Path(__file__).resolve().parents[1]/'resource')
     r.fk_eval=r.endpoint_ik.fk
     r.ik_joint_lower=np.array([.01]*4);r.ik_joint_upper=np.array([6.27,3.4,3.4,5.7])
-    r.ik_base_align_w=1.;r.ik_position_tolerance=.01;r.ik_orientation_tolerance=.05
+    r.ik_tool_axis=np.array(axis);r.ik_base_align_w=1.;r.ik_position_tolerance=.01;r.ik_orientation_tolerance=.05
     pose=np.array(r.fk_eval(r.arm.q_command,P.base_T0_new,[0,0,-2,0,0,0],P.tipOffset)[-1]).ravel()
     target=Pose();target.position.x,target.position.y,target.position.z=pose[:3]
     target.orientation.w,target.orientation.x,target.orientation.y,target.orientation.z=pose[3:]
@@ -49,4 +51,9 @@ def test_accepted_ik_endpoint_clears_derivatives():
     r.endpoint_ik.solve=Mock(wraps=r.endpoint_ik.solve)
     Robot.solve_inverse_kinematics_wrt_world_frame(r,target)
     assert r.endpoint_ik.solve.call_args.kwargs["base_align_weight"]==1.
+    # The selected marker axis must reach the solver as the requested tool +Z.
+    marker_rotation=R.from_quat(pose[[4,5,6,3]]).as_matrix()
+    np.testing.assert_allclose(r.endpoint_ik.solve.call_args.args[3][:,2],marker_rotation@axis,atol=1e-10)
+    assert r.endpoint_ik.last_report['position_error_m']<1e-6
+    assert r.endpoint_ik.last_report['orientation_error_rad']<1e-6
     assert r.body_vel_command==[0.]*6 and r.arm.dq_command==[0.]*4

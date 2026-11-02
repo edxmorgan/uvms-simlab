@@ -388,6 +388,10 @@ class InteractiveControlsNode(Node):
                 MenuHandler.CHECKED if active_dynamics_profile == profile_name else MenuHandler.UNCHECKED,
             )
 
+        for mid, axis in self.axis_menu_map.items():
+            checked = (selected_robot.ik_base_align_w > 0 if axis is None
+                       else np.array_equal(selected_robot.ik_tool_axis, axis))
+            self.menu_handler.setCheckState(mid, MenuHandler.CHECKED if checked else MenuHandler.UNCHECKED)
         del selected_k_robot
         self.menu_handler.reApply(self.server)
         self.server.applyChanges()
@@ -419,11 +423,11 @@ class InteractiveControlsNode(Node):
         self.mcap_recording_active = active
         self.menu_handler.setCheckState(
             self.start_recording_handle,
-            MenuHandler.UNCHECKED if active else MenuHandler.CHECKED,
+            MenuHandler.CHECKED if active else MenuHandler.UNCHECKED,
         )
         self.menu_handler.setCheckState(
             self.stop_recording_handle,
-            MenuHandler.CHECKED if active else MenuHandler.UNCHECKED,
+            MenuHandler.UNCHECKED if active else MenuHandler.CHECKED,
         )
         self.menu_handler.reApply(self.server)
         self.server.applyChanges()
@@ -694,15 +698,15 @@ class InteractiveControlsNode(Node):
     def toggle_align_with_base_weight(self, feedback: InteractiveMarkerFeedback):
         robot = self.uvms_backend.robot_selected
 
-        enabled = self.menu_handler.getCheckState(feedback.menu_entry_id) == MenuHandler.CHECKED
-        self.menu_handler.setCheckState(feedback.menu_entry_id, MenuHandler.UNCHECKED if enabled else MenuHandler.CHECKED)
-
-        weight = 1.0 if self.menu_handler.getCheckState(feedback.menu_entry_id) == MenuHandler.CHECKED else 0.0
+        # Selected robot owns the setting; a stale checkbox must not invert it.
+        weight = 0.0 if robot.ik_base_align_w > 0 else 1.0
         ok, message = self.uvms_backend.set_robot_ik_base_align_weight(robot, weight)
         if not ok:
             self.get_logger().warn(message)
             return
-        self.menu_handler.apply(self.server, feedback.marker_name)
+        self.menu_handler.setCheckState(feedback.menu_entry_id,
+            MenuHandler.CHECKED if weight > 0 else MenuHandler.UNCHECKED)
+        self.menu_handler.reApply(self.server)
         self.server.applyChanges()
         self.get_logger().info(message)
     

@@ -56,3 +56,15 @@ def test_alignment_objective_matches_first_link_fk_for_mount_rotations():
             first=np.array(solver.fk(z[7:],mount,np.zeros(6),P.tipOffset)[0]).ravel()
             expected=1+R.from_quat(first[[4,5,6,3]]).as_matrix()[0,0]
             assert on-off==pytest.approx(expected,abs=1e-10)
+
+
+@pytest.mark.parametrize('axis', np.eye(3))
+def test_axis_target_is_proper_rotation_without_parallel_axis_singularity(axis):
+    from simlab.motion_planning.endpoint_ik import aligned_target_rotation
+    marker=R.from_euler('xyz',[.2,-.4,.8]).as_matrix()
+    target=aligned_target_rotation(marker,axis)
+    np.testing.assert_allclose(target.T@target,np.eye(3),atol=1e-12)
+    assert np.linalg.det(target)==pytest.approx(1.)
+    np.testing.assert_allclose(target[:,2],marker@axis,atol=1e-12)
+    if axis[2]==1:
+        np.testing.assert_allclose(target,marker,atol=1e-12)

@@ -632,11 +632,17 @@ class UVMSBackendCore:
         return ok, f"grasper {action} requested for {robot.prefix}" if ok else f"grasper {action} rejected for {robot.prefix}"
 
     def set_robot_ik_tool_axis(self, robot: Robot, axis) -> tuple[bool, str]:
-        robot.ik_tool_axis = np.asarray(axis, dtype=float)
+        axis = np.asarray(axis, dtype=float)
+        if axis.shape != (3,) or not any(np.array_equal(axis, a) for a in np.eye(3)):
+            return False, 'IK alignment axis must be +X, +Y or +Z'
+        robot.ik_tool_axis = axis.copy()
         return True, f"IK tool axis set for {robot.prefix}"
 
     def set_robot_ik_base_align_weight(self, robot: Robot, weight: float) -> tuple[bool, str]:
-        robot.ik_base_align_w = float(weight)
+        weight = float(weight)
+        if not np.isfinite(weight) or weight < 0:
+            return False, 'IK base alignment weight must be finite and nonnegative'
+        robot.ik_base_align_w = weight
         return True, f"IK base align weight set for {robot.prefix}"
 
     def _clip_pose_to_environment_bounds(self, pose: Pose) -> tuple[Pose, bool]:

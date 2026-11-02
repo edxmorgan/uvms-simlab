@@ -51,7 +51,7 @@ from simlab.dynamics_profiles import (
 )
 from simlab.planner_markers import PathPlanner
 from simlab.motion_planning.trajectory_generators import VehicleTrajectoryGeneratorTemplate
-from simlab.motion_planning.endpoint_ik import EndpointIK
+from simlab.motion_planning.endpoint_ik import EndpointIK, aligned_target_rotation
 from simlab.uvms_parameters import ReachParams
 from simlab.utils.joint_limits import position_endpoints, velocity_limit
 from simlab.utils.frames import PoseX
@@ -2303,6 +2303,7 @@ class Robot(Base):
             frame="NWU",
         ).get_rot(frame="NWU", rot_rep="matrix")
         try:
+            target_rot = aligned_target_rotation(target_rot, self.ik_tool_axis)
             x_world_next, q_next = self.endpoint_ik.solve(
                 q, world_pose, p_des, target_rot, ReachParams.base_T0_new,
                 ReachParams.tipOffset, self.ik_joint_lower, self.ik_joint_upper,
