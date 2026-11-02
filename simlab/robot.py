@@ -50,7 +50,9 @@ from simlab.dynamics_profiles import (
 )
 from simlab.planner_markers import PathPlanner
 from simlab.motion_planning.trajectory_generators import VehicleTrajectoryGeneratorTemplate
+from simlab.motion_planning.endpoint_ik import EndpointIK
 from simlab.uvms_parameters import ReachParams
+from simlab.utils.joint_limits import position_endpoints, velocity_limit
 from simlab.utils.frames import PoseX
 from tf2_ros import TransformException, Buffer
 from tf2_geometry_msgs import do_transform_pose, do_transform_vector3
@@ -535,7 +537,7 @@ class Robot(Base):
         vehicle_J_path = os.path.join(package_share_directory, 'model_functions/vehicle/J_uv.casadi')
         vehicle_ned2body_acc_path = os.path.join(package_share_directory, 'model_functions/vehicle/ned2body_acc.casadi')
         vehicle_ned2body_vel_path = os.path.join(package_share_directory, 'model_functions/vehicle/ned2body_vel.casadi')
-        ik_wb_path = os.path.join(package_share_directory, 'whole_body/ik.so')
+        self.endpoint_ik = EndpointIK(package_share_directory)
 
         self.fk_eval = ca.Function.load(fk_path) #  forward kinematics
         # also set a class attribute fk_eval so it can be shared
@@ -547,12 +549,6 @@ class Robot(Base):
         if not hasattr(Robot, "ik_eval_cls"):
             Robot.ik_eval_cls = self.ik_eval
 
-
-        self.ik_wb_eval = ca.external('mapacc_task_based_ik',ik_wb_path) #  inverse kinematics
-
-        # also set a class attribute ik_eval so it can be shared
-        if not hasattr(Robot, "ik_wb_eval_cls"):
-            Robot.ik_wb_eval_cls = self.ik_wb_eval
 
         self.vehicle_J = ca.Function.load(vehicle_J_path)
         self.vehicle_ned2body_acc = ca.Function.load(vehicle_ned2body_acc_path)
@@ -566,6 +562,12 @@ class Robot(Base):
         self.arm_IOs = f'{prefix}_arm_IOs'
         self.map_frame = f"{prefix}map" 
         self.arm = Manipulator(node, n_joint, prefix)
+        description = node.get_parameter('robot_description').value
+        bounds = [position_endpoints(description, name, actuator_bounds=True) for name in self.arm.joints]
+        self.ik_joint_lower = np.array([b[0] for b in bounds])
+        self.ik_joint_upper = np.array([b[1] for b in bounds])
+        self.ik_joint_velocity = np.array([velocity_limit(description, name)
+                                           for name in self.arm.joints])
         self.ned_pose = [0] * 6
         self.body_vel = [0] * 6
         self.body_acc = [0] * 6
@@ -693,6 +695,15 @@ class Robot(Base):
         # inverse IK tool axis and alignment weight CONFIGURATIONS
         self.ik_tool_axis = np.array([0.0, 0.0, 1.0], dtype=float)
         self.ik_base_align_w = 0.0
+        for name, default in (('task_ik_position_tolerance', 0.01),
+                              ('task_ik_orientation_tolerance', 0.05)):
+            if not node.has_parameter(name):
+                node.declare_parameter(name, default)
+        self.ik_position_tolerance = float(node.get_parameter('task_ik_position_tolerance').value)
+        self.ik_orientation_tolerance = float(node.get_parameter('task_ik_orientation_tolerance').value)
+        if (not np.isfinite(self.ik_position_tolerance) or self.ik_position_tolerance <= 0 or
+                not np.isfinite(self.ik_orientation_tolerance) or self.ik_orientation_tolerance <= 0):
+            raise ValueError('Task IK endpoint tolerances must be finite and positive')
 
         self.traj_path_poses = []
         self.max_traj_pose_count = 500  # cap RViz message size
@@ -974,6 +985,16 @@ class Robot(Base):
     def set_control_space(self, control_space_name: str) -> None:
         self.control_space = control_space_name
         self.task_based_controller = (control_space_name == ControlSpace.TASK_SPACE)
+        if self.task_based_controller:
+            # The trajectory sampler stops in task mode. Its last moving sample
+            # must not survive as feedforward for a stationary IK endpoint.
+            self._clear_task_reference_derivatives()
+
+    def _clear_task_reference_derivatives(self):
+        self.body_vel_command = [0.0] * 6
+        self.body_acc_command = [0.0] * 6
+        self.arm.dq_command = [0.0] * len(self.arm.q_command)
+        self.arm.ddq_command = [0.0] * len(self.arm.q_command)
 
     def list_control_spaces(self) -> list:
         return [m.value for m in ControlSpace]
@@ -986,42 +1007,6 @@ class Robot(Base):
     def manipulator_inverse_kinematics(cls, target_position):
         return cls.ik_eval_cls(target_position).full().flatten().tolist()
     
-    @classmethod
-    def manipulator_whole_body_inverse_kinematics(
-        cls,
-        q,
-        world_pose,
-        kp,
-        p_des,
-        w_rp,
-        w_reg,
-        k_rp,
-        a_des_x, a_des_z,
-        k_axis,
-        w_axis,
-        w_align, k_align,
-        dt,
-        base_T0,
-        tipOffset,
-    ):
-        x_world_next, q_next, e_p_task_star_new, e_axis_task_star_new = cls.ik_wb_eval_cls(
-            q,
-            world_pose,
-            kp,
-            p_des,
-            w_rp,
-            w_reg,
-            k_rp,
-            a_des_x, a_des_z,
-            k_axis,
-            w_axis,
-            w_align, k_align,
-            dt,
-            base_T0,
-            tipOffset,
-        )
-        return x_world_next, q_next, e_p_task_star_new, e_axis_task_star_new
-
     def _mocap_pose_cb(self, msg: PoseStamped):
         p = msg.pose.position
         q = msg.pose.orientation
@@ -2053,7 +2038,7 @@ class Robot(Base):
             return
 
         stamp_now = self.node.get_clock().now().to_msg()
-        if self.sim_reset_hold:
+        if self.sim_reset_hold or self.task_based_controller:
             k_planner.clear_path(stamp_now, self.world_frame)
             return
         pr = None if k_planner.planned_result is None else dict(k_planner.planned_result)
@@ -2079,7 +2064,7 @@ class Robot(Base):
             return
 
         stamp_now = self.node.get_clock().now().to_msg()
-        if self.sim_reset_hold:
+        if self.sim_reset_hold or self.task_based_controller:
             k_planner.clear_target(stamp_now, self.world_frame)
             return
         if self.control_mode == ControlMode.PLANNER and k_trajectory.active:
@@ -2256,6 +2241,12 @@ class Robot(Base):
             self.node.get_logger().warn(f"IK aborted, manipulator joint state vector is empty.")
             return
 
+        if (not np.all(np.isfinite(q)) or
+                np.any(q < self.ik_joint_lower - 1e-9) or
+                np.any(q > self.ik_joint_upper + 1e-9)):
+            self.node.get_logger().error('Task IK rejected: measured joints outside enforced limits')
+            return
+
         p_now, rpy_now = PoseX.from_pose(
             xyz=np.array(
                 [
@@ -2289,20 +2280,6 @@ class Robot(Base):
             dtype=float,
         )
         
-        w_rp = 1.0
-        w_reg = 0.02
-        w_axis = 1.5
-        w_align = float(self.ik_base_align_w)
-
-        kp = np.array([1.0, 1.0, 1.0], dtype=float)
-        k_rp = 0.2
-        k_axis = 1.0
-        k_align = 1.0
-        
-        dt = 1.0 / 500.0
-
-        tool_axis_z_align = np.asarray(self.ik_tool_axis, dtype=float).reshape(3)
-        tool_axis_x_align = np.array([1.0, 0.0, 0.0])
         target_rot = PoseX.from_pose(
             xyz=np.array(
                 [
@@ -2324,34 +2301,15 @@ class Robot(Base):
             rot_rep="quat_wxyz",
             frame="NWU",
         ).get_rot(frame="NWU", rot_rep="matrix")
-        a_des_z = target_rot @ tool_axis_z_align
-        a_des_x = target_rot @ tool_axis_x_align
-        x_world_next, q_next, e_p_task_star_new, e_axis_task_star_new = self.manipulator_whole_body_inverse_kinematics(
-            q,
-            world_pose,
-            kp,
-            p_des,
-            w_rp,
-            w_reg,
-            k_rp,
-            a_des_x, a_des_z,
-            k_axis,
-            w_axis,
-            w_align, k_align,
-            dt,
-            np.asarray(ReachParams.base_T0_new, dtype=float),
-            np.asarray(ReachParams.tipOffset, dtype=float),
-        )
-
-        def _to_1d(arr):
-            if hasattr(arr, "full"):
-                arr = arr.full()
-            return np.asarray(arr, dtype=float).reshape(-1)
-
-        x_world_next = _to_1d(x_world_next)
-        q_next = _to_1d(q_next)
-        e_p_task_star_new = _to_1d(e_p_task_star_new)
-        e_axis_task_star_new = _to_1d(e_axis_task_star_new)
+        try:
+            x_world_next, q_next = self.endpoint_ik.solve(
+                q, world_pose, p_des, target_rot, ReachParams.base_T0_new,
+                ReachParams.tipOffset, self.ik_joint_lower, self.ik_joint_upper,
+                self.ik_position_tolerance, self.ik_orientation_tolerance,
+                base_align_weight=self.ik_base_align_w)
+        except (RuntimeError, ValueError) as error:
+            self.node.get_logger().warn(f'Task IK rejected; previous targets retained: {error}')
+            return
 
         if q_next.size != q.size:
             self.node.get_logger().warn(
@@ -2359,7 +2317,11 @@ class Robot(Base):
                 f"(expected {q.size}, got {q_next.size})."
             )
             return 
-        self.arm.q_command = q_next.tolist()
+        if (not np.all(np.isfinite(q_next)) or
+                np.any(q_next < self.ik_joint_lower - 1e-9) or
+                np.any(q_next > self.ik_joint_upper + 1e-9)):
+            self.node.get_logger().error('Task IK rejected: joint target outside enforced limits')
+            return
 
         if x_world_next.size != 6:
             self.node.get_logger().warn(
@@ -2367,6 +2329,22 @@ class Robot(Base):
                 f"(got {x_world_next.size})."
             )
             return 
+        if not np.all(np.isfinite(x_world_next)):
+            self.node.get_logger().error("Task IK rejected: nonfinite vehicle target")
+            return
+        # Velocity-task residuals are not endpoint pose errors. Check actual FK.
+        fk_pose = np.asarray(self.fk_eval(
+            q_next, ReachParams.base_T0_new, x_world_next, ReachParams.tipOffset)[-1],
+            dtype=float).reshape(-1)
+        position_error = float(np.linalg.norm(fk_pose[:3] - p_des))
+        actual_rot = R.from_quat(fk_pose[[4, 5, 6, 3]])
+        orientation_error = float((R.from_matrix(target_rot).inv() * actual_rot).magnitude())
+        if position_error > self.ik_position_tolerance or orientation_error > self.ik_orientation_tolerance:
+            self.node.get_logger().warn(
+                f'Task IK rejected: endpoint error {position_error:.4f} m, '
+                f'{np.degrees(orientation_error):.2f} deg; previous targets retained')
+            return
+
         pose_next = PoseX.from_pose(
             xyz=x_world_next[0:3],
             rot=x_world_next[3:6],
@@ -2386,6 +2364,8 @@ class Robot(Base):
             )
             return 
         p_cmd_ned, rpy_cmd_ned = res_map_ned
+        self.arm.q_command = q_next.tolist()
+        self._clear_task_reference_derivatives()
         self.pose_command = [
             float(p_cmd_ned[0]),
             float(p_cmd_ned[1]),
