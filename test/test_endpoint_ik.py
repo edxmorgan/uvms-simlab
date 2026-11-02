@@ -2,7 +2,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 from scipy.spatial.transform import Rotation as R
-from simlab.robot import EndpointIK
+from simlab.motion_planning.endpoint_ik import EndpointIK
 from simlab.uvms_parameters_sim import ReachParams as P
 
 ROOT=Path(__file__).resolve().parents[1]/'resource'
