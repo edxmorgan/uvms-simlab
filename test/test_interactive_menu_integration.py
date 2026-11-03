@@ -54,10 +54,11 @@ def test_alignment_toggle_uses_robot_state_not_stale_checkbox(ui):
     assert ui.uvms_backend.robot_selected.ik_base_align_w==1
 
 
-def test_robot_refresh_restores_ik_checks(ui):
+def test_robot_refresh_restores_ik_and_grasper_checks(ui):
     robot=ui.uvms_backend.robot_selected;robot.ik_tool_axis=np.array([1.,0.,0.]);robot.ik_base_align_w=0
     ui._refresh_robot_menu_state(0)
     assert [ui.menu_handler.getCheckState(h) for h in ui.axis_menu_map]==[MH.CHECKED,MH.UNCHECKED,MH.UNCHECKED,MH.UNCHECKED]
+    assert [ui.menu_handler.getCheckState(h) for h in ui.grasp_menu_map]==[MH.CHECKED,MH.UNCHECKED]
 
 
 @pytest.mark.parametrize('method,field,backend',[
@@ -129,3 +130,21 @@ def test_invalid_axis_does_not_change_setting(axis):
     robot=NS(ik_tool_axis=np.array([0,0,1]))
     assert not Backend.set_robot_ik_tool_axis(None,robot,axis)[0]
     np.testing.assert_array_equal(robot.ik_tool_axis,[0,0,1])
+
+
+def test_arm_marker_offers_only_supported_dofs_and_restores_task_rotation():
+    import copy
+    from geometry_msgs.msg import Pose
+    from visualization_msgs.msg import InteractiveMarkerControl as C
+    from simlab.utils.interactive_markers import make_UVMS_Dof_Marker
+    marker=make_UVMS_Dof_Marker('arm','arm','base','arm_task',False,
+        C.MOVE_ROTATE_3D,Pose(),.2,show_6dof=True)
+    node=NS(arm_base_task_marker=marker,_arm_full_controls=copy.deepcopy(marker.controls))
+    UI._configure_arm_marker_mode(node,False)
+    assert marker.controls[0].interaction_mode==C.MOVE_3D
+    assert all(c.interaction_mode!=C.ROTATE_AXIS for c in marker.controls)
+    UI._configure_arm_marker_mode(node,True)
+    assert sum(c.interaction_mode==C.ROTATE_AXIS for c in marker.controls)==3
+    assert marker.controls[0].interaction_mode==C.MOVE_ROTATE_3D
+
+

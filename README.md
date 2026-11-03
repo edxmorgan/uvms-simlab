@@ -3,6 +3,56 @@
 A field-ready ROS 2 lab for **Underwater Vehicle–Manipulator Systems**. `uvms_simlab` layers interactive teleoperation, collision-aware planning, and hardware-in-the-loop tooling on top of [uvms-simulator](https://github.com/edxmorgan/uvms-simulator) so you can go from concept to wet tests without rebuilding infrastructure.
 
 
+## Kinematics
+
+`simlab/motion_planning/kinematics/` contains forward and inverse modules:
+
+- `forward/__init__.py`: shared loader for the exported FK model.
+- `inverse/__init__.py`: IK registry and solver selection.
+- `inverse/base.py`: request/result types, interfaces and shared validation.
+- `inverse/whole_body.py`: whole-body pose solver.
+- `inverse/arm.py`: arm-only position solver.
+
+`simlab.motion_planning.kinematics.inverse` provides the IK registry. `Robot` selects its
+implementations through `whole_body_ik_name` (default `whole_body_endpoint`)
+and `manipulator_ik_name` (default `manipulator_position`). Each robot owns its
+solver instances. These are Python construction options, not ROS launch arguments
+or new menu entries; each capability currently has one implementation.
+
+Implement `WholeBodyIKTemplate` or `ManipulatorIKTemplate` in `kinematics/inverse/base.py` and
+register the class in `DEFAULT_IK_CLASSES` to add a solver. Selection uses the
+`IKCapability` enum, rejects mismatches and duplicate names. The old `task=`
+selector remains a compatibility adapter; production uses explicit capabilities.
+
+Both implementations expose `solve_request(request) -> IKResult`:
+
+- `ManipulatorIKRequest`: arm-base target XYZ. Vehicle remains fixed; orientation
+  is unconstrained. The existing analytic function is evaluated unchanged.
+- `WholeBodyIKRequest`: world NWU target position and SO(3) rotation, current vehicle
+  XYZ/extrinsic XYZ Euler angles, arm joints, mounting/tip transforms, bounds and
+  tolerances. Frame conversion and marker-axis selection remain outside the solver.
+- `IKResult`: status, joint solution, optional vehicle pose, message, per-call
+  diagnostics and explicit validation guarantees. Failures contain no solution.
+  Runtime is measured with a monotonic clock around solving and result validation;
+  it is not end-to-end ROS latency. Legacy `solve` methods remain available for
+  existing callers, but Robot uses the typed request path.
+
+Whole-body success checks finiteness, joint limits and FK endpoint tolerances.
+Robot independently checks the result with its own FK model through the same
+validator before converting/applying commands. Command and marker updates happen
+only after frame conversion succeeds. A failed arm solve is caught by the backend
+and leaves its previous target intact.
+
+Arm-only success guarantees finite output, **not** endpoint accuracy, joint-limit
+validation or orientation tracking. The existing workspace precheck remains; the
+analytic mapping can have a nonzero endpoint residual. This refactor does not
+silently upgrade that guarantee or change the analytic branch/formulation. A future
+bounded arm solver can be added without changing callers, but needs its own
+numerical validation and deployment tests.
+
+The kinematics refactor changes no CasADi functions, notebook formulations,
+optimization weights, controller gains or collision models. An IK endpoint is not a collision-checked trajectory.
+
 ## Highlights
 
 - **Direct RViz manipulation** – interactive markers drive the vehicle and arm-base targets without custom plugins.

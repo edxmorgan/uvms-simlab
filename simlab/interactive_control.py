@@ -15,6 +15,7 @@
 
 #!/usr/bin/env python3
 import gc
+import copy
 
 import rclpy
 from rclpy.node import Node
@@ -306,6 +307,9 @@ class InteractiveControlsNode(Node):
             show_6dof=True,
             ignore_dof=[]
         )
+        self._arm_full_controls = copy.deepcopy(self.arm_base_task_marker.controls)
+        # Vehicle dragging changes translation; the separate yaw handle changes heading.
+        self.uv_marker.controls[0].interaction_mode = InteractiveMarkerControl.MOVE_3D
         # Initial application of menu and markers
         self._apply_joint_control_mode(robot = self.uvms_backend.robot_selected)
         self._refresh_robot_menu_state(self.uvms_backend.robot_selected.k_robot)
@@ -319,7 +323,10 @@ class InteractiveControlsNode(Node):
         self.uvms_backend.release_selected_simulation()
 
     def plan_execute(self, feedback: InteractiveMarkerFeedback):
-        self.uvms_backend.plan_execute_selected()
+        if self.uvms_backend.plan_execute_selected() and not self.uvms_backend.robot_selected.task_based_controller:
+            self.uv_marker.pose = self.uvms_backend.target_vehicle_pose
+            self.server.setPose(self.uv_marker.name, self.uv_marker.pose)
+            self.server.applyChanges()
 
     def add_vehicle_waypoint(self, feedback: InteractiveMarkerFeedback):
         ok, message = self.uvms_backend.add_vehicle_waypoint_for_robot(self.uvms_backend.robot_selected)
@@ -502,7 +509,16 @@ class InteractiveControlsNode(Node):
             return
         marker.controls.append(marker_util.make_menu_control())
 
-    def _apply_joint_control_mode(self, robot:Robot, abort_motion=True, keep_now_target=False) -> None:
+    def _configure_arm_marker_mode(self, task_mode):
+        controls = copy.deepcopy(self._arm_full_controls)
+        if not task_mode:
+            controls = [c for c in controls if c.interaction_mode != InteractiveMarkerControl.ROTATE_AXIS]
+            controls[0].interaction_mode = InteractiveMarkerControl.MOVE_3D
+        self.arm_base_task_marker.controls = controls
+        self.arm_base_task_marker.description = ('End-effector pose target' if task_mode
+            else 'Arm position target (orientation unconstrained)')
+
+    def _apply_joint_control_mode(self, robot:Robot, abort_motion=True) -> None:
         if robot != self.uvms_backend.robot_selected:
             return
         if abort_motion:
@@ -510,11 +526,12 @@ class InteractiveControlsNode(Node):
         self._clear_markers()
 
         # uv marker (vehicle)
-        self.uv_marker.pose = getattr(self.uvms_backend, "_vehicle_desired_pose_from_ik_", self.uvms_backend.target_vehicle_pose)
+        self.uv_marker.pose = self.uvms_backend.target_vehicle_pose
         self.server.insert(self.uv_marker)
         self.server.setCallback(self.uv_marker.name, self.vehicle_marker_processFeedback)
 
-        # endeffector marker (arm base frame)
+        # Joint mode uses position-only arm IK; do not offer ignored rotation controls.
+        self._configure_arm_marker_mode(False)
         self.arm_base_task_marker.pose = self.uvms_backend.target_arm_base_endeffector_pose
         self.server.insert(self.arm_base_task_marker)
         self.server.setCallback(self.arm_base_task_marker.name, self.arm_base_task_marker_processFeedback)
@@ -528,16 +545,6 @@ class InteractiveControlsNode(Node):
         
         self.server.applyChanges()
 
-        if keep_now_target:
-            self.uvms_backend.set_vehicle_target(robot, self.uv_marker.pose)
-            arm_pose_world_new = robot.try_transform_pose(
-                self.uvms_backend.target_world_endeffector_pose,
-                target_frame=self.uvms_backend.arm_base_target_frame,
-                source_frame=self.uvms_backend.world_frame,
-                warn_context="set_endeffector_base_marker_pose",
-            )
-            if arm_pose_world_new is not None:
-                self.uvms_backend.set_task_target_arm_base(robot, arm_pose_world_new)
         self.get_logger().info("Switched to JOINT space control.")
 
 
@@ -547,6 +554,7 @@ class InteractiveControlsNode(Node):
         if abort_motion:
             robot.planner.planned_result = None
         self._clear_markers()
+        self._configure_arm_marker_mode(True)
 
         self.server.insert(self.arm_base_task_marker)
         self.server.setCallback(self.arm_base_task_marker.name, self.world_task_marker_processFeedback)
@@ -677,7 +685,7 @@ class InteractiveControlsNode(Node):
         if control_space_name == ControlSpace.TASK_SPACE:
             self._apply_task_control_mode(robot = robot)
         elif control_space_name == ControlSpace.JOINT_SPACE:
-            self._apply_joint_control_mode(robot = robot, keep_now_target=True)
+            self._apply_joint_control_mode(robot = robot)
 
         self.get_logger().info(message)
 
@@ -717,6 +725,8 @@ class InteractiveControlsNode(Node):
         self.get_logger().info(message)
     
     def vehicle_marker_processFeedback(self, feedback: InteractiveMarkerFeedback):
+        if feedback.event_type != InteractiveMarkerFeedback.POSE_UPDATE:
+            return
         ok, message = self.uvms_backend.set_vehicle_target(self.uvms_backend.robot_selected, feedback.pose)
         if not ok:
             self.get_logger().warn(message)
@@ -728,6 +738,9 @@ class InteractiveControlsNode(Node):
         self.sync_endeffector_world_marker_pose(self.uvms_backend.target_arm_base_endeffector_pose, self.uvms_backend.arm_base_target_frame)
 
     def arm_base_task_marker_processFeedback(self, feedback: InteractiveMarkerFeedback):
+        # Keep-alives, clicks and menu events are not new arm motion requests.
+        if feedback.event_type != InteractiveMarkerFeedback.POSE_UPDATE:
+            return
         ok, message = self.uvms_backend.set_task_target_arm_base(self.uvms_backend.robot_selected, feedback.pose)
         if ok:
             self.sync_endeffector_world_marker_pose(self.uvms_backend.target_arm_base_endeffector_pose, self.uvms_backend.arm_base_target_frame)
