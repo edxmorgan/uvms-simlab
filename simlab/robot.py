@@ -1771,6 +1771,12 @@ class Robot(Base):
         self.vehicle_pwm_command_publisher.publish(vehicle_pwm)
 
     def listener_callback(self, msg: DynamicJointState):
+        for name, values in zip(msg.joint_names, msg.interface_values):
+            if name == self.prefix + 'IOs' and 'identification.valid' in values.interface_names:
+                # Hardware-only sample interfaces distinguish real vehicle feedback.
+                fields = dict(zip(values.interface_names, values.values))
+                self._hardware_estimator_valid = fields.get('estimator_valid') == 1.0
+                self._hardware_estimator_received = self.node.get_clock().now().nanoseconds
         self.update_state(msg)
         self._last_state_received = time.monotonic()
 
@@ -3301,6 +3307,16 @@ class Robot(Base):
             wrench = getattr(self, "teleop_wrench_body_6", [0.0]*6)
             arm = getattr(self, "teleop_arm_effort_5", [0.0]*5)
             self.publish_commands(wrench, arm)
+            return
+
+        # A manual launch can switch modes through the joystick. Do not let its
+        # hardware teleoperation allowance authorize feedback/replay on an
+        # unavailable navigation estimate.
+        if hasattr(self, '_hardware_estimator_valid') and (
+            not self._hardware_estimator_valid or
+            self.node.get_clock().now().nanoseconds - self._hardware_estimator_received > 500_000_000
+        ):
+            self.publish_commands([0.0] * 6, [0.0] * 5)
             return
 
         if self.control_mode == ControlMode.REPLAY_SETTLE:
