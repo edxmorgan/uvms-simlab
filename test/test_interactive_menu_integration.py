@@ -125,6 +125,13 @@ def test_robot_selection_dispatch(ui):
     UI.switch_robot_in_use(ui,feedback(42));ui.configure_selected_robot.assert_called_once_with(robot)
 
 
+def test_obstacle_visibility_dispatch(ui):
+    ui.obstacle_editor=NS(visible=False)
+    ui.obstacle_editor.set_visible=lambda visible:setattr(ui.obstacle_editor,'visible',visible)
+    UI.toggle_obstacle_marker(ui,feedback())
+    assert ui.obstacle_editor.visible
+
+
 @pytest.mark.parametrize('axis',[None,[1,1,0],[0,0,0],[float('nan'),0,1]])
 def test_invalid_axis_does_not_change_setting(axis):
     robot=NS(ik_tool_axis=np.array([0,0,1]))

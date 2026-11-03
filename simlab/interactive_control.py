@@ -73,6 +73,9 @@ class InteractiveControlsNode(Node):
         grasper_root = self.menu_handler.insert("Grasper", callback=self.noop_menu_callback)
         self.reset_manager_parent = self.menu_handler.insert("Reset Manager", callback=self.noop_menu_callback)
         robot_control_parent = self.menu_handler.insert("Robot Control", callback=self.noop_menu_callback)
+        self.obstacle_marker_handle = self.menu_handler.insert(
+            "Obstacle marker", callback=self.toggle_obstacle_marker)
+        self.menu_handler.setCheckState(self.obstacle_marker_handle, MenuHandler.UNCHECKED)
 
         self.add_vehicle_waypoint_handle = self.menu_handler.insert(
             "Add",
@@ -431,6 +434,15 @@ class InteractiveControlsNode(Node):
 
     def noop_menu_callback(self, feedback: InteractiveMarkerFeedback):
         return
+
+    def toggle_obstacle_marker(self, feedback: InteractiveMarkerFeedback):
+        self.obstacle_editor.set_visible(not self.obstacle_editor.visible)
+        self.menu_handler.setCheckState(
+            self.obstacle_marker_handle,
+            MenuHandler.CHECKED if self.obstacle_editor.visible else MenuHandler.UNCHECKED,
+        )
+        self.menu_handler.reApply(self.server)
+        self.server.applyChanges()
 
     def _set_mcap_recording_menu_state(self, active: bool) -> None:
         self.mcap_recording_active = active
