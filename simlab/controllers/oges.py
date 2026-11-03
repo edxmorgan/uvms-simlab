@@ -25,12 +25,35 @@ except ImportError as exc:
 class OgesModelbasedController(ControllerTemplate):
     name = "OGES"
     registry_name = "Ours"
+    configuration_fields = ('vehicle_weights', 'arm_weights', 'vehicle_w_scale',
+                            'arm_w_scale', 'vehicle_lowpass_tau', 'arm_lowpass_tau',
+                            'use_vehicle_control_filter', 'use_arm_control_filter',
+                            'arm_u_min', 'arm_u_max', 'grasper_kp', 'grasper_kd')
+
+    def set_model_profile(self, model) -> None:
+        # Loaders may return parameter classes. Instantiate before assigning to
+        # avoid modifying defaults shared by other robots/controllers.
+        import copy
+        blue = self.blue() if isinstance(self.blue, type) else copy.copy(self.blue)
+        alpha = self.alpha_params() if isinstance(self.alpha_params, type) else copy.copy(self.alpha_params)
+        blue.sim_p = model.vehicle_oges
+        alpha.step_model_params = model.arm_oges
+        self.blue, self.alpha_params = blue, alpha
+        self.model_profile_sha256 = model.sha256
+
+    def configuration_snapshot(self) -> dict:
+        result = super().configuration_snapshot()
+        result['parameters'].update(
+            vehicle_model=np.asarray(self.blue.sim_p, dtype=float).reshape(-1).tolist(),
+            arm_model=np.asarray(self.alpha_params.step_model_params, dtype=float).reshape(-1).tolist(),
+            vehicle_u_min=np.asarray(self.blue.u_min, dtype=float).tolist(),
+            vehicle_u_max=np.asarray(self.blue.u_max, dtype=float).tolist())
+        return result
 
     def reset_controller_state(self) -> None:
         """Start an independent segment without previous-command filter memory."""
         self.vehicle_u_prev = np.zeros(6, dtype=float)
         self.arm_u_prev = np.zeros(self.arm_dof, dtype=float)
-
 
     def __init__(self, node: Node, arm_dof: int = 4, robot_prefix: str = ""):
         super().__init__(node, arm_dof, robot_prefix)

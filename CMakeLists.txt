@@ -22,6 +22,7 @@ set(msg_files
 )
 
 set(srv_files
+  "srv/ControllerConfiguration.srv"
   "srv/EditDynamicObstacles.srv"
   "srv/BackendRobotCommand.srv"
   "srv/BackendWorldCommand.srv"
@@ -101,6 +102,7 @@ install(FILES package.xml DESTINATION share/${PROJECT_NAME})
 if(BUILD_TESTING)
   find_package(ament_cmake_pytest REQUIRED)
   ament_add_pytest_test(test_controller_state test/test_controller_state.py)
+  ament_add_pytest_test(test_controller_configuration test/test_controller_configuration.py)
   ament_add_pytest_test(test_flake8 test/test_flake8.py)
   ament_add_pytest_test(test_vehicle_yaw_continuity test/test_vehicle_yaw_continuity.py)
   ament_add_pytest_test(test_bag_recorder_topics test/test_bag_recorder_topics.py)

@@ -12,6 +12,14 @@ from simlab.uvms_parameters import select_robot_params
 class LowLevelPidController(ControllerTemplate):
     name = "PID"
     registry_name = "PID"
+    configuration_fields = ('kp', 'ki', 'kd', 'vehicle_i_limit', 'arm_kp', 'arm_ki',
+                            'arm_kd', 'arm_u_min', 'arm_u_max',
+                            'vehicle_model_params', 'arm_model_params')
+
+    def set_model_profile(self, model) -> None:
+        self.vehicle_model_params = model.vehicle_baseline
+        self.arm_model_params = model.arm_baseline
+        self.model_profile_sha256 = model.sha256
 
     def __init__(self, node: Node, arm_dof: int = 4, robot_prefix: str = ""):
         super().__init__(node, arm_dof, robot_prefix)
