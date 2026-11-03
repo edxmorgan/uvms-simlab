@@ -15,14 +15,11 @@
 
 #!/usr/bin/env python3
 import copy
-import json
-import time
 from datetime import datetime
 from simlab.uvms_parameters import ReachParams
 from rclpy.node import Node
 from rclpy.parameter import Parameter as NodeParameter
 from rclpy.time import Time
-from rclpy.clock import Clock, ClockType
 from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
 from rcl_interfaces.srv import SetParameters
 import rclpy
@@ -39,9 +36,8 @@ from visualization_msgs.msg import Marker
 import tf2_ros
 from typing import Dict, List, TypeVar, cast
 from simlab.robot import Robot, ControlMode, ControlSpace, yaw_only_quat_wxyz
-from ruckig import Result as TrajectoryResult
-from geometry_msgs.msg import Pose, WrenchStamped
-from std_msgs.msg import Header, String, Float64MultiArray
+from geometry_msgs.msg import Pose
+from std_msgs.msg import Header, String
 import sensor_msgs_py.point_cloud2 as pc2
 from sensor_msgs.msg import PointCloud2
 from geometry_msgs.msg import PoseStamped

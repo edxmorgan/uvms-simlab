@@ -125,3 +125,26 @@ def test_robot_selection_dispatch(ui):
     UI.switch_robot_in_use(ui,feedback(42));ui.configure_selected_robot.assert_called_once_with(robot)
 
 
+@pytest.mark.parametrize('axis',[None,[1,1,0],[0,0,0],[float('nan'),0,1]])
+def test_invalid_axis_does_not_change_setting(axis):
+    robot=NS(ik_tool_axis=np.array([0,0,1]))
+    assert not Backend.set_robot_ik_tool_axis(None,robot,axis)[0]
+    np.testing.assert_array_equal(robot.ik_tool_axis,[0,0,1])
+
+
+def test_arm_marker_offers_only_supported_dofs_and_restores_task_rotation():
+    import copy
+    from geometry_msgs.msg import Pose
+    from visualization_msgs.msg import InteractiveMarkerControl as C
+    from simlab.utils.interactive_markers import make_UVMS_Dof_Marker
+    marker=make_UVMS_Dof_Marker('arm','arm','base','arm_task',False,
+        C.MOVE_ROTATE_3D,Pose(),.2,show_6dof=True)
+    node=NS(arm_base_task_marker=marker,_arm_full_controls=copy.deepcopy(marker.controls))
+    UI._configure_arm_marker_mode(node,False)
+    assert marker.controls[0].interaction_mode==C.MOVE_3D
+    assert all(c.interaction_mode!=C.ROTATE_AXIS for c in marker.controls)
+    UI._configure_arm_marker_mode(node,True)
+    assert sum(c.interaction_mode==C.ROTATE_AXIS for c in marker.controls)==3
+    assert marker.controls[0].interaction_mode==C.MOVE_ROTATE_3D
+
+
