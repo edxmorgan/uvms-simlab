@@ -101,6 +101,7 @@ install(FILES package.xml DESTINATION share/${PROJECT_NAME})
 
 if(BUILD_TESTING)
   find_package(ament_cmake_pytest REQUIRED)
+  ament_add_pytest_test(test_hardware_feedback_guard test/test_hardware_feedback_guard.py)
   ament_add_pytest_test(test_task_visualization test/test_task_visualization.py)
   ament_add_pytest_test(test_task_reference_derivatives test/test_task_reference_derivatives.py)
   ament_add_pytest_test(test_replay_reference_targets test/test_replay_reference_targets.py)
