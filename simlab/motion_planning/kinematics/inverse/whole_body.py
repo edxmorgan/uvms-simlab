@@ -5,6 +5,8 @@ import time
 import casadi as ca
 import numpy as np
 from scipy.spatial.transform import Rotation
+from simlab.motion_planning.kinematics.inverse.base import WholeBodyIKTemplate
+from simlab.motion_planning.kinematics.forward import load_forward_kinematics
 
 
 def aligned_target_rotation(marker_rotation, axis):
@@ -20,12 +22,13 @@ def aligned_target_rotation(marker_rotation, axis):
     return np.asarray(marker_rotation) @ np.column_stack((x, np.cross(axis, x), axis))
 
 
-class EndpointIK:
+class EndpointIK(WholeBodyIKTemplate):
     """Bounded endpoint IK; returned configurations do not certify a safe path."""
+    registry_name = 'whole_body_endpoint'
     def __init__(self, resource_directory):
         root = Path(resource_directory)
         self.solver = ca.Function.load(str(root/'whole_body/endpoint_ik_ipopt.casadi'))
-        self.fk = ca.Function.load(str(root/'model_functions/arm/fk_eval.casadi'))
+        self.fk = load_forward_kinematics(root)
         self.lock = threading.Lock()
         self.last_report = {}
 
