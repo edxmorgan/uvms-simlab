@@ -105,6 +105,16 @@ class ControllerSpec:
     name: str
     vehicle_fn: Callable[..., Any]
     arm_fn: Callable[..., Any]
+    factory: Callable[..., Any] = None
+
+    def resolve(self):
+        """Construct an opt-in deferred controller once, on first use."""
+        if self.factory is not None:
+            controller = self.factory()
+            self.vehicle_fn = controller.vehicle_controller
+            self.arm_fn = controller.arm_controller
+            self.factory = None
+        return self
 
 @dataclass
 class PlannerSpec:
@@ -602,6 +612,7 @@ class Robot(Base):
         self.controller_instances = [
             controller_class(self.node, self.n_joint, self.prefix)
             for controller_class in DEFAULT_CONTROLLER_CLASSES
+            if not getattr(controller_class, 'lazy_initialization', False)
         ]
         self.planner_action_client = PlannerActionClient(
             self.node,
@@ -791,6 +802,15 @@ class Robot(Base):
             )
 
         # Bind the default controller without activating closed-loop publishing.
+        for controller_class in DEFAULT_CONTROLLER_CLASSES:
+            if getattr(controller_class, 'lazy_initialization', False):
+                self._controllers[controller_class.registry_name] = ControllerSpec(
+                    name=controller_class.registry_name,
+                    vehicle_fn=None,
+                    arm_fn=None,
+                    factory=lambda cls=controller_class: cls(
+                        self.node, self.n_joint, self.prefix),
+                )
         self.set_controller("PID", activate=False)
 
         # Active path planner
@@ -819,7 +839,7 @@ class Robot(Base):
         if activate and self.control_mode == ControlMode.REPLAY_SETTLE and name != "CmdReplay":
             self.cancel_replay_settle(mark_failed=True)
             self.control_mode = ControlMode.PLANNER
-        spec = self._controllers[name]  # raises KeyError if missing, good fail-fast
+        spec = self._controllers[name].resolve()
         next_controller = getattr(spec.arm_fn, "__self__", None)
         if activate and self._controller_is_replay(next_controller):
             self.controller_name = name
@@ -860,6 +880,7 @@ class Robot(Base):
         spec = self._controllers.get(name)
         if spec is None:
             return None
+        spec.resolve()
         return getattr(spec.arm_fn, "__self__", None)
 
     def _controller_is_replay(self, controller) -> bool:
@@ -888,7 +909,7 @@ class Robot(Base):
                 f"Replay settle controller '{requested_controller}' is not available for {self.prefix}; "
                 f"using {settle_controller_name}."
             )
-        spec = self._controllers[settle_controller_name]
+        spec = self._controllers[settle_controller_name].resolve()
         self.vehicle_controller_fn = spec.vehicle_fn
         self.arm_controller_fn = spec.arm_fn
         self.controller_name = settle_controller_name
