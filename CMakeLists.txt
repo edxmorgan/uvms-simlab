@@ -68,6 +68,7 @@ function(simlab_python_entrypoint script_name module_name)
   install(PROGRAMS "${script_path}" DESTINATION lib/${PROJECT_NAME})
 endfunction()
 
+simlab_python_entrypoint(effort_visualization simlab.effort_visualization)
 simlab_python_entrypoint(interactive_controller simlab.interactive_control)
 simlab_python_entrypoint(dynamic_obstacle_sim_node simlab.obstacle_node)
 simlab_python_entrypoint(joystick_controller simlab.joystick_control)
@@ -96,10 +97,12 @@ install(
   DESTINATION share/${PROJECT_NAME}
 )
 
+install(FILES resource/effort_visualization.md DESTINATION share/${PROJECT_NAME})
 install(FILES package.xml DESTINATION share/${PROJECT_NAME})
 
 if(BUILD_TESTING)
   find_package(ament_cmake_pytest REQUIRED)
+  ament_add_pytest_test(test_effort_visualization test/test_effort_visualization.py)
   ament_add_pytest_test(test_flake8 test/test_flake8.py)
   ament_add_pytest_test(test_vehicle_yaw_continuity test/test_vehicle_yaw_continuity.py)
   ament_add_pytest_test(test_bag_recorder_topics test/test_bag_recorder_topics.py)
