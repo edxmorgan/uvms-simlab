@@ -30,6 +30,7 @@ class LowLevelInvDynController(ControllerTemplate):
         self.tracking_pid_controller = ca.Function.load(tracking_pid_path)
 
         self.arm_params, self.vehicle_params = select_robot_params(self.robot_prefix)
+        self.vehicle_pid_i_buffer = np.zeros(6, dtype=float)
         self.arm_pid_i_buffer = np.zeros(self.arm_dof + 1, dtype=float)
         self.arm_kp = self.arm_vector(
             list(self.arm_params.invdyn_kp) + list(self.arm_params.grasper_kp),
@@ -68,6 +69,7 @@ class LowLevelInvDynController(ControllerTemplate):
         )
 
     def reset_controller_state(self) -> None:
+        self.vehicle_pid_i_buffer = np.zeros(6, dtype=float)
         self.arm_pid_i_buffer = np.zeros(self.arm_dof + 1, dtype=float)
 
     def vehicle_controller(
@@ -82,7 +84,7 @@ class LowLevelInvDynController(ControllerTemplate):
         target_pos = self.vector(target_pos, 6, "target_pos")
         target_vel = self.vector(target_vel, 6, "target_vel")
         target_acc = self.vector(target_acc, 6, "target_acc")
-        buf = np.zeros(6, dtype=float)
+        buf = self.vector(self.vehicle_pid_i_buffer, 6, 'vehicle integral state')
 
         self.node.get_logger().debug(f"internal target_pos {target_pos} : controller active.")
         self.node.get_logger().debug(f"internal target_vel {target_vel} : controller active.")
@@ -108,7 +110,10 @@ class LowLevelInvDynController(ControllerTemplate):
             -self.vehicle_i_limit,
             self.vehicle_i_limit,
         )
-        return np.asarray(pid_control).reshape(-1)
+        command = np.asarray(pid_control, dtype=float).reshape(-1)
+        if command.shape != (6,) or not np.all(np.isfinite(command)):
+            raise ValueError('inverse dynamics returned a nonfinite or invalid vehicle wrench')
+        return np.clip(command, self.uv_u_min, self.uv_u_max)
 
     def arm_controller(
         self,

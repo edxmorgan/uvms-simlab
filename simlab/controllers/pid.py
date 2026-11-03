@@ -83,7 +83,7 @@ class LowLevelPidController(ControllerTemplate):
         target_pos = self.vector(target_pos, 6, "target_pos")
         target_vel = self.vector(target_vel, 6, "target_vel")
 
-        buf = np.zeros(6, dtype=float)
+        buf = self.vector(self.vehicle_pid_i_buffer, 6, 'vehicle integral state')
         pid_control, i_buf_next = self.uv_pid_controller(
             self.vehicle_model_params,
             self.kp,

@@ -26,6 +26,12 @@ class OgesModelbasedController(ControllerTemplate):
     name = "OGES"
     registry_name = "Ours"
 
+    def reset_controller_state(self) -> None:
+        """Start an independent segment without previous-command filter memory."""
+        self.vehicle_u_prev = np.zeros(6, dtype=float)
+        self.arm_u_prev = np.zeros(self.arm_dof, dtype=float)
+
+
     def __init__(self, node: Node, arm_dof: int = 4, robot_prefix: str = ""):
         super().__init__(node, arm_dof, robot_prefix)
         if NAMOR_IMPORT_ERROR is not None:
@@ -75,7 +81,7 @@ class OgesModelbasedController(ControllerTemplate):
 
         self.M_uv_matrix = load_uv_model_function("M_id.casadi")
         self.C_uv_mat = load_uv_model_function("C_id.casadi")
-        self.g_uv_vec = load_uv_model_function("g_id.casadi")
+        self.g_uv_vec = load_uv_model_function("g_depth_id.casadi")
         self.Dp_uv_vec = load_uv_model_function("body_damping_matrix_id.casadi")
         self.J_uv = load_uv_model_function("J_uv.casadi")
 
@@ -123,7 +129,7 @@ class OgesModelbasedController(ControllerTemplate):
 
         H_i = self.M_uv_matrix(self.blue.sim_p)
         C_i = self.C_uv_mat(vr_i, self.blue.sim_p)
-        g_i = self.g_uv_vec(eul, self.blue.sim_p)
+        g_i = self.g_uv_vec(state[:6], self.blue.sim_p)
         Dp_i = self.Dp_uv_vec(vr_i, self.blue.sim_p)
 
         F_i = g_i + C_i @ vr_i + Dp_i @ vr_i
