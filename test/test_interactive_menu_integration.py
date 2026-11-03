@@ -148,3 +148,17 @@ def test_arm_marker_offers_only_supported_dofs_and_restores_task_rotation():
     assert marker.controls[0].interaction_mode==C.MOVE_ROTATE_3D
 
 
+def test_new_vehicle_marker_goal_projects_to_joint_mode_heading():
+    from geometry_msgs.msg import Pose
+    from scipy.spatial.transform import Rotation as R
+    import copy
+    goal=Pose();goal.position.x=5.
+    q=R.from_euler('xyz',[.3,-.2,.7]).as_quat()
+    goal.orientation.x,goal.orientation.y,goal.orientation.z,goal.orientation.w=q
+    b=NS(set_robot_selected=Mock(),_clip_pose_to_environment_bounds=lambda p:(copy.deepcopy(p),False))
+    robot=NS(k_robot=0,task_based_controller=False,prefix='robot_1_')
+    assert Backend.set_vehicle_target(b,robot,goal)[0]
+    q=b.target_vehicle_pose.orientation
+    np.testing.assert_allclose(R.from_quat([q.x,q.y,q.z,q.w]).as_euler('xyz'),[0,0,.7],atol=1e-12)
+    assert b.target_vehicle_pose.position.x==5.
+    assert goal.orientation.x!=0  # caller's captured hold pose not mutated
