@@ -693,7 +693,8 @@ class Robot(Base):
         self._replay_record_controller = None
         self._replay_obstacle_record_path = None
         self._replay_obstacle_record = None
-        self.dynamic_obstacle_snapshot_provider = None
+        self.dynamic_obstacle_snapshot_provider: Callable[[], Any] | None = None
+        self._replay_reset_pending = False
         self._replay_last_cmd_body_wrench = [0.0] * 6
         self._replay_last_cmd_arm_tau = [0.0] * 5
         self._replay_last_recorded_sim_time = None
@@ -1263,6 +1264,12 @@ class Robot(Base):
             "ddq": self.arm.ddq_command,
             "trajectory_direction": self._reference_trajectory_direction_ned(),
         }
+        if self.control_mode == ControlMode.REPLAY:
+            # Replay computes references locally, not in the planner caches.
+            # A combined tracking score is undefined for command-only playback.
+            reference = getattr(self, '_replay_tracking_reference', None)
+            active = active and reference is not None
+            reference = reference or {}
         return self.performance_metrics.update(
             current=state,
             reference=reference,
@@ -3281,6 +3288,7 @@ class Robot(Base):
 
 
     def control_loop_callback(self):
+        self._replay_tracking_reference = None
         state = self.get_state()
         if state["status"] != "active":
             return
@@ -3402,6 +3410,18 @@ class Robot(Base):
                 and active_controller.has_pending_auto_start()
                 and hasattr(active_controller, "start_playback")
             ):
+                feedback = self.controller_instance(active_controller.feedback_controller_name())
+                needs_feedback = any(mode in ('track_reference', 'hold_initial') for mode in (
+                    active_controller.vehicle_subsystem_mode(),
+                    active_controller.manipulator_subsystem_mode()))
+                if needs_feedback and (feedback is None or self._controller_is_replay(feedback)):
+                    active_controller.mark_reset_failed()
+                    self.node.get_logger().error('Replay rejected: requested feedback controller unavailable')
+                    self.publish_commands([0.0] * 6, [0.0] * 5)
+                    return
+                if needs_feedback:
+                    feedback.reset_controller_state()
+                self.performance_metrics.reset()
                 if active_controller.start_playback(sim_time_sec=state["sim_time"]):
                     if (
                         hasattr(active_controller, "recording_enabled")
@@ -3424,14 +3444,6 @@ class Robot(Base):
                 else "PID"
             )
             feedback_spec = self._controllers.get(feedback_controller_name)
-            if feedback_spec is None and feedback_controller_name != "PID":
-                if not getattr(active_controller, "_warned_invalid_feedback_controller", False):
-                    self.node.get_logger().warn(
-                        f"CmdReplay feedback controller '{feedback_controller_name}' is not available for "
-                        f"{self.robot_name}; falling back to PID."
-                    )
-                    active_controller._warned_invalid_feedback_controller = True
-                feedback_spec = self._controllers.get("PID")
 
             vehicle_mode = (
                 active_controller.vehicle_subsystem_mode()
@@ -3443,8 +3455,19 @@ class Robot(Base):
                 if hasattr(active_controller, "manipulator_subsystem_mode")
                 else "replay_command"
             )
+            if feedback_spec is None and any(mode in ('track_reference', 'hold_initial')
+                                             for mode in (vehicle_mode, manipulator_mode)):
+                active_controller.mark_reset_failed()
+                self.node.get_logger().error('Replay rejected: requested feedback controller unavailable')
+                self.publish_commands([0.0] * 6, [0.0] * 5)
+                return
 
             veh_state_vec = np.array(list(state["pose"]) + list(state["body_vel"]), dtype=float)
+            if feedback_spec is not None and any(
+                mode in ('track_reference', 'hold_initial')
+                for mode in (vehicle_mode, manipulator_mode)
+            ):
+                feedback_spec.resolve()
             if vehicle_mode == "replay_command":
                 cmd_body_wrench = active_controller.vehicle_command_at(sample_index)
             elif vehicle_mode == "track_reference" and feedback_spec is not None:
@@ -3531,6 +3554,43 @@ class Robot(Base):
                 )
                 self.publish_commands([0.0] * 6, [0.0] * 5)
                 return
+
+            if (feedback_spec is not None
+                    and vehicle_mode in ('track_reference', 'hold_initial')
+                    and manipulator_mode in ('track_reference', 'hold_initial')):
+                self._replay_tracking_reference = dict(
+                    pose=np.asarray(target_pos, dtype=float).copy(),
+                    body_vel=np.asarray(target_vel if vehicle_mode == 'track_reference' else np.zeros(6)).copy(),
+                    body_acc=np.asarray(target_acc if vehicle_mode == 'track_reference' else np.zeros(6)).copy(),
+                    q=np.asarray(q_ref, dtype=float).copy(),
+                    dq=np.asarray(dq_ref if manipulator_mode == 'track_reference' else np.zeros(5)).copy(),
+                    ddq=np.asarray(ddq_ref if manipulator_mode == 'track_reference' else np.zeros(5)).copy(),
+                    trajectory_direction=np.zeros(3))
+            # Command/zero-command playback has no pose reference: do not invent
+            # one from measured state or leak a previous planner target.
+            if (getattr(active_controller, "enabled", False)
+                    and feedback_spec is not None
+                    and vehicle_mode in ("track_reference", "hold_initial")
+                    and manipulator_mode in ("track_reference", "hold_initial")):
+                reference_pose = PoseX.from_pose(
+                    xyz=np.asarray(target_pos[:3], dtype=float),
+                    rot=np.asarray(target_pos[3:6], dtype=float),
+                    rot_rep="euler_xyz", frame="NED",
+                ).get_pose_as_Pose_msg(frame="NWU")
+                world_reference = self.try_transform_pose(
+                    pose_in_source=reference_pose, target_frame=self.world_frame,
+                    source_frame=self.map_frame, warn_context=f"replay reference ({self.prefix})",
+                )
+                if world_reference is not None:
+                    self.reference_pub.publish_replay_targets(
+                        stamp_msg=self.node.get_clock().now().to_msg(),
+                        world_pose=world_reference, target_ned_pose=target_pos,
+                        target_body_vel=target_vel if vehicle_mode == "track_reference" else np.zeros(6),
+                        target_body_acc=target_acc if vehicle_mode == "track_reference" else np.zeros(6),
+                        q_ref=q_ref,
+                        dq_ref=dq_ref if manipulator_mode == "track_reference" else np.zeros(5),
+                        ddq_ref=ddq_ref if manipulator_mode == "track_reference" else np.zeros(5),
+                    )
 
             self.publish_commands(
                 np.asarray(cmd_body_wrench, float).tolist(),
