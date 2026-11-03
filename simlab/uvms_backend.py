@@ -15,6 +15,7 @@
 
 #!/usr/bin/env python3
 import copy
+import json
 from ruckig import Result as TrajectoryResult
 from datetime import datetime
 from simlab.uvms_parameters import ReachParams
