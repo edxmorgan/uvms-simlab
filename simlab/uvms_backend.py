@@ -218,6 +218,7 @@ class UVMSBackendCore:
         if not isinstance(prefixes, (list, tuple)) or not prefixes or not all(isinstance(p, str) for p in prefixes):
             raise ValueError('robots_prefix must be a nonempty sequence of strings')
         self.robots_prefix = list(prefixes)
+        self._setup_demo_wrench()
         for k, prefix in enumerate(self.robots_prefix):
             planner = PathPlanner(self.planner_marker_publisher, ns=f"planner/{prefix}", base_id=k)
             vehicle_cart_traj = vehicle_trajectory_generator_cls(
@@ -357,6 +358,71 @@ class UVMSBackendCore:
             self.node.destroy_timer(self.dynamic_replanner_timer)
             self.dynamic_replanner_timer = None
         self.node.get_logger().info("Dynamic replanning disabled.")
+
+    def _setup_demo_wrench(self) -> None:
+        """Single-owner command stream for the single-vehicle simulation demo.
+
+        This is requested external wrench, not measured contact or plant truth.
+        The simulator's existing global input cannot address individual robots.
+        """
+        if self.use_vehicle_hardware or len(self.robots_prefix) != 1:
+            return
+        self._demo_wrench_frame = self.robots_prefix[0] + 'base_link'
+        self._demo_wrench_command = None
+        self._demo_arm_command = None
+        self._demo_arm_pub = self.node.create_publisher(
+            Float64MultiArray, '/' + self.robots_prefix[0] + 'external_arm_torques', 1)
+        self._demo_wholebody_sub = self.node.create_subscription(
+            Float64MultiArray, '/disturbance_injection/wholebody',
+            self._receive_demo_wholebody, 1)
+        self._demo_wrench_pub = self.node.create_publisher(
+            WrenchStamped, '/contact_wrench_body', 1)
+        self._demo_wrench_sub = self.node.create_subscription(
+            WrenchStamped, '/disturbance_injection/body', self._receive_demo_wrench, 1)
+        self._demo_wrench_clock = Clock(clock_type=ClockType.STEADY_TIME)
+        self._demo_wrench_timer = self.node.create_timer(
+            0.1, self._publish_demo_wrench, clock=self._demo_wrench_clock)
+
+    def _receive_demo_wrench(self, msg: WrenchStamped) -> None:
+        values = [getattr(vector, axis)
+                  for vector in (msg.wrench.force, msg.wrench.torque)
+                  for axis in ('x', 'y', 'z')]
+        if (msg.header.frame_id not in ('', self._demo_wrench_frame)
+                or not np.all(np.isfinite(values))):
+            self.node.get_logger().warning(
+                'Rejected disturbance injection: expected finite body-frame wrench')
+            return
+        self._demo_wrench_command = (time.monotonic(), copy.deepcopy(msg.wrench))
+
+    def _receive_demo_wholebody(self, msg: Float64MultiArray) -> None:
+        """Body wrench followed by external joint torques e,d,c,b (SI units)."""
+        if len(msg.data) != 10 or not np.all(np.isfinite(msg.data)):
+            self.node.get_logger().warning(
+                'Rejected whole-body injection: expected 10 finite values')
+            return
+        wrench = WrenchStamped().wrench
+        for i, vector in enumerate((wrench.force, wrench.torque)):
+            for j, axis in enumerate(('x', 'y', 'z')):
+                setattr(vector, axis, float(msg.data[3*i+j]))
+        received = time.monotonic()
+        self._demo_wrench_command = (received, wrench)
+        self._demo_arm_command = (received, list(msg.data[6:]))
+
+    def _publish_demo_wrench(self) -> None:
+        msg = WrenchStamped()
+        msg.header.stamp = self.node.get_clock().now().to_msg()
+        msg.header.frame_id = self._demo_wrench_frame
+        command = self._demo_wrench_command
+        # Receipt-time watchdog: independent of paused/jumping simulation time.
+        if command is not None and time.monotonic() - command[0] < 1.0:
+            msg.wrench = copy.deepcopy(command[1])
+        self._demo_wrench_pub.publish(msg)
+        arm = Float64MultiArray()
+        arm.data = [0.0] * 4
+        command = self._demo_arm_command
+        if command is not None and time.monotonic() - command[0] < 1.0:
+            arm.data = list(command[1])
+        self._demo_arm_pub.publish(arm)
 
     def _recreate_dynamic_replanner_timer(self) -> None:
         if self.dynamic_replanner_timer is not None:

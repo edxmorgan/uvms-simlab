@@ -53,6 +53,76 @@ numerical validation and deployment tests.
 The kinematics refactor changes no CasADi functions, notebook formulations,
 optimization weights, controller gains or collision models. An IK endpoint is not a collision-checked trajectory.
 
+## Disturbance-estimation demo
+
+For an unlocked-arm disturbance experiment, stop the old simulator and launch:
+
+```bash
+source ~/ros_ws/install/setup.bash
+ros2 launch ros2_control_blue_reach_5 robot_system_multi_interface.launch.py \
+  use_manipulator_hardware:=false use_vehicle_hardware:=false \
+  sim_robot_count:=1 task:=interactive robot_name:=dory \
+  launch_voxelviz:=true arm_joint_locks:=false
+```
+
+This disables only artificial arm locks. Gravity, friction, actuator limiting,
+and joint-position limits remain enabled. The plant and EKF share the resulting
+zero lock mask. The default is `arm_joint_locks:=true`; physical arm hardware is
+unaffected. This startup choice persists through simulation resets and plant
+profile changes. Startup logs report `Artificial arm joint locks: disabled`.
+With live telemetry, all four `estimator_joint_locked.*` fields should be zero.
+Regenerate the PlotJuggler layout after launching, as described below.
+Removing locks permits estimation from motion; it does not guarantee small
+uncertainty at hard joint stops or under other unobservable conditions.
+
+In single-robot simulation, the existing backend publishes
+`/contact_wrench_body` at 10 Hz, zero by default. This is the requested external
+body wrench sent to the simulator, not measured contact or confirmed applied
+plant truth. No physical contact-response model is added.
+
+Inject a 1 N body-X disturbance from a sourced terminal:
+
+```bash
+ros2 topic pub -r 2 /disturbance_injection/body geometry_msgs/msg/WrenchStamped \
+  '{wrench: {force: {x: 1.0}}}'
+```
+
+For all ten disturbance DOFs, use the whole-body input instead:
+
+```bash
+ros2 topic pub -r 10 /disturbance_injection/wholebody std_msgs/msg/Float64MultiArray \
+  '{data: [1.0, 0.5, -0.5, 0.1, -0.1, 0.1, 0.05, -0.05, 0.03, -0.03]}'
+```
+
+Order: `[Fx, Fy, Fz, Tx, Ty, Tz, tau_e, tau_d, tau_c, tau_b]`.
+Forces are body-frame N; torques are Nm (arm torques follow each joint's
+positive coordinate). Gripper `a` is excluded. These are demonstration loads,
+not a contact model. Use one command source; do not simultaneously publish the
+body-only and whole-body inputs.
+
+The backend publishes arm loads to `/robot_1_external_arm_torques` at 10 Hz,
+zero by default, with the same one-second command expiry. The simulated arm
+also has an independent one-second steady-clock receipt watchdog and clears
+its cached load on reset. A continuing command stream can reapply the load
+after reset; stop the command publisher first when resetting.
+External loads are added after actuator limiting, only to plant dynamics;
+the native EKF receives actuator-only effort. Existing joint-lock reactions
+remain active and may balance an external load on a locked joint.
+Physical arm hardware does not subscribe to this simulation input.
+
+### Viewing disturbance estimates
+
+Use the standard RViz effort overlay or stream `/dynamic_joint_states` into
+PlotJuggler. Vehicle force/torque and arm e/d/c/b disturbance fields include
+validity and variance interfaces. Missing or unobservable values must not be
+interpreted as zero. Gripper disturbance is not estimated.
+
+Ctrl+C stops injection; it expires after one second. Use one injection source.
+The plant receives injected external loads; the EKF receives actuator effort,
+not the injected load. Locked joints and hard stops can make disturbances
+unobservable. Model mismatch can also contribute to the estimated disturbance.
+See the simulator arm EKF documentation for constraints and estimator behavior.
+
 ## Highlights
 
 - **Direct RViz manipulation** – interactive markers drive the vehicle and arm-base targets without custom plugins.
