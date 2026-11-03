@@ -1772,8 +1772,11 @@ class Robot(Base):
 
     def listener_callback(self, msg: DynamicJointState):
         for name, values in zip(msg.joint_names, msg.interface_values):
-            if name == self.prefix + 'IOs' and 'identification.valid' in values.interface_names:
-                # Hardware-only sample interfaces distinguish real vehicle feedback.
+            if (name == self.prefix + 'IOs'
+                    and 'estimator_valid' in values.interface_names
+                    and 'sim_step' not in values.interface_names):
+                # Native hardware feedback lacks the simulated completed-step counter.
+                # Optional identification sample exports are not a safety dependency.
                 fields = dict(zip(values.interface_names, values.values))
                 self._hardware_estimator_valid = fields.get('estimator_valid') == 1.0
                 self._hardware_estimator_received = self.node.get_clock().now().nanoseconds
