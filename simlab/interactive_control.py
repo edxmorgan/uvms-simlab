@@ -392,6 +392,12 @@ class InteractiveControlsNode(Node):
             checked = (selected_robot.ik_base_align_w > 0 if axis is None
                        else np.array_equal(selected_robot.ik_tool_axis, axis))
             self.menu_handler.setCheckState(mid, MenuHandler.CHECKED if checked else MenuHandler.UNCHECKED)
+        for mid, action in self.grasp_menu_map.items():
+            endpoint = (selected_robot.arm.grasper_open_position if action == 'open'
+                        else selected_robot.arm.grasper_closed_position)
+            self.menu_handler.setCheckState(mid, MenuHandler.CHECKED
+                if np.isclose(selected_robot.arm.grasp_command, endpoint) else MenuHandler.UNCHECKED)
+
         del selected_k_robot
         self.menu_handler.reApply(self.server)
         self.server.applyChanges()

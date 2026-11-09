@@ -413,13 +413,15 @@ class Manipulator(Base):
         self.grasper_q_dot = [0.0]
         self.grasper_q_ddot = [0.0]
         self.grasper_effort = [0.0]
+        self.grasper_closed_position, self.grasper_open_position = position_endpoints(
+            node.get_parameter("robot_description").value, self.alpha_axis_a)
         self.close_grasper()
 
     def open_grasper(self):
-        self.grasp_command = ReachParams.grasper_open
+        self.grasp_command = self.grasper_open_position
 
     def close_grasper(self):
-        self.grasp_command = ReachParams.grasper_close
+        self.grasp_command = self.grasper_closed_position
 
     def update_state(self, msg: DynamicJointState):
         self.q = self.get_interface_value(

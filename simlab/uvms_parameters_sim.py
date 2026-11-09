@@ -15,9 +15,6 @@ class ReachParams:
     joint_home = np.array([3.1, 0.7, 0.4, 2.1])
     endeffector_wrt_base_home = np.array([0.09669330716133118, 0.0, 0.1003517135977745])
 
-    grasper_open = 0.014
-    grasper_close = 0.0
-
     u_min = np.array([-1.5, -1.0, -1.0, -0.54])
     u_max = np.array([1.5, 1.0, 1.0, 0.54])
 
