@@ -237,7 +237,6 @@ class CmdReplayController(ControllerTemplate):
             expected_size=self.arm_dof + 1,
         )
         self.recording_config = self._merge_recording_config(self._default_recording_config(), recording)
-        self._warned_invalid_feedback_controller = False
         self.reset_config = self._merge_reset_config(
             self._default_reset_config(),
             manifest.get("reset", {}),
@@ -697,8 +696,22 @@ class CmdReplayController(ControllerTemplate):
         self.node.get_logger().info("CmdReplay stopped.")
 
     def begin_sequence(self, require_release_after_reset: bool) -> bool:
+        import uuid
         self._current_pass = 0
-        return self.request_reset(require_release_after_reset)
+        accepted = self.request_reset(require_release_after_reset)
+        if accepted:
+            self.execution_id = str(uuid.uuid4())
+        return accepted
+
+    def execution_snapshot(self) -> dict:
+        """Stable public readback for external replay orchestrators."""
+        return dict(schema_version=1, execution_id=getattr(self, 'execution_id', ''),
+                    state=self.playback_status(), profile=self.profile_name,
+                    feedback_controller=self.feedback_controller_name(),
+                    vehicle_mode=self.vehicle_subsystem_mode(),
+                    manipulator_mode=self.manipulator_subsystem_mode(),
+                    pass_index=self._current_pass, repeats=self.repeats,
+                    elapsed_sec=self._sample_time_sec, duration_sec=self.duration_sec)
 
     def needs_repeat_reset(self) -> bool:
         return self._repeat_reset_requested

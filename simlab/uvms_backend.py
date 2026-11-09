@@ -15,6 +15,7 @@
 
 #!/usr/bin/env python3
 import copy
+import json
 from datetime import datetime
 from simlab.uvms_parameters import ReachParams
 from rclpy.node import Node
@@ -667,26 +668,50 @@ class UVMSBackendCore:
             return False, f"choose CmdReplay controller for {robot.prefix} before replay"
         if hasattr(controller, "has_valid_playback") and not controller.has_valid_playback():
             return False, f"CmdReplay profile is not selected or has no valid samples for {robot.prefix}"
+        if getattr(robot, '_replay_reset_pending', False) or controller.playback_status() in ('resetting', 'armed', 'running'):
+            return False, 'replay already preparing or running; stop it before starting another execution'
+        if any(mode in ('track_reference', 'hold_initial') for mode in (
+                controller.vehicle_subsystem_mode(), controller.manipulator_subsystem_mode())):
+            feedback = robot.controller_instance(controller.feedback_controller_name())
+            if feedback is None or robot._controller_is_replay(feedback):
+                return False, 'requested feedback controller is unavailable'
 
         if not robot.activate_cmd_replay_controller():
             return False, f"CmdReplay activation failed for {robot.prefix}"
         request = controller.build_reset_request()
         if not controller.begin_sequence(request.hold_commands):
             return False, f"CmdReplay reset rejected for {robot.prefix}"
+        execution_id = controller.execution_id
+        robot._replay_reset_pending = True
+
+        def _still_preparing():
+            return (controller.execution_id == execution_id
+                    and controller.playback_status() == 'resetting'
+                    and robot.controller_name == 'CmdReplay')
 
         def _fail_replay_reset():
+            robot._replay_reset_pending = False
+            if not _still_preparing():
+                return
             controller.mark_reset_failed()
             robot.publish_commands([0.0] * 6, [0.0] * 5)
 
         if hasattr(controller, "reset_mode") and controller.reset_mode() == "controller_settle":
+            def _settle_after_dynamics():
+                robot._replay_reset_pending = False
+                if _still_preparing():
+                    robot.start_replay_controller_settle(controller)
             robot.apply_sim_dynamics_from_reset_request(
                 request,
-                on_success=lambda: robot.start_replay_controller_settle(controller),
+                on_success=_settle_after_dynamics,
                 on_failure=_fail_replay_reset,
             )
             return True, f"CmdReplay controller-settle reset requested for {robot.prefix}"
 
         def _start_after_reset():
+            robot._replay_reset_pending = False
+            if not _still_preparing():
+                return
             robot.set_control_mode(ControlMode.REPLAY)
             controller.mark_reset_succeeded()
 
@@ -695,7 +720,7 @@ class UVMSBackendCore:
             on_success=_start_after_reset,
             on_failure=_fail_replay_reset,
         )
-        return True, f"CmdReplay reset requested for {robot.prefix}"
+        return True, f"CmdReplay reset requested for {robot.prefix}; execution_id={execution_id}"
 
     def stop_replay(self, robot: Robot) -> tuple[bool, str]:
         controller = self._cmd_replay_controller(robot)
@@ -886,7 +911,19 @@ class UVMSBackendCore:
                 return self._api_response(response, *self.select_replay_profile(robot, request.name))
             if command == "replay_start":
                 return self._api_response(response, *self.start_replay(robot))
+            if command == 'replay_status':
+                controller = self._cmd_replay_controller(robot)
+                if controller is None:
+                    return self._api_response(response, False, 'CmdReplay unavailable')
+                status = controller.execution_snapshot()
+                status.update(robot_prefix=robot.prefix, commands_held=bool(robot.sim_reset_hold),
+                              reset_pending=bool(getattr(robot, '_replay_reset_pending', False)))
+                return self._api_response(response, True, json.dumps(status, allow_nan=False))
             if command == "replay_stop":
+                if request.name:
+                    controller = self._cmd_replay_controller(robot)
+                    if controller is None or getattr(controller, 'execution_id', '') != request.name:
+                        return self._api_response(response, False, 'execution_id mismatch; nothing stopped')
                 return self._api_response(response, *self.stop_replay(robot))
             if command == "grasper":
                 return self._api_response(response, *self.command_grasper(robot, request.name))
