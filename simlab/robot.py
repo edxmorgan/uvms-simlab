@@ -535,6 +535,7 @@ class Robot(Base):
         self._last_vehicle_target_yaw = None
         self._last_vehicle_cmd_yaw_step = 0.0
         self.tf_buffer = tf_buffer
+        self._tf_waiting = {}
         self.task_based_controller = False
         self._arm_feedback_hold = False
 
@@ -1122,8 +1123,8 @@ class Robot(Base):
             connecting_using_ds4drv=False,
             event_format="3Bh2b"  # Try "LhBB" if you experience mapping issues.
         )
-        # Enable debug mode to print raw event data.
-        self.ps4_controller.debug = True
+        # Raw event dumps can flood the control process output continuously.
+        self.ps4_controller.debug = False
 
         # Start the PS4 controller listener in a separate (daemon) thread.
         self.controller_thread = threading.Thread(target=self.ps4_controller.listen, daemon=True)
@@ -1366,6 +1367,7 @@ class Robot(Base):
         *,
         warn_context: str = "",
     ) -> Optional[Pose]:
+        key = (target_frame, source_frame)
         try:
             tf = self.tf_buffer.lookup_transform(
                 target_frame,
@@ -1373,12 +1375,23 @@ class Robot(Base):
                 rclpy.time.Time(),
             )
         except TransformException as ex:
-            msg = f"TF not ready: {target_frame} <- {source_frame}, {ex}"
-            if warn_context:
-                msg = f"{warn_context}, {msg}"
-            self.node.get_logger().warn(msg)
+            now = time.monotonic()
+            previous = self._tf_waiting.get(key)
+            if previous is None:
+                self.node.get_logger().info(
+                    f"Waiting for TF: {target_frame} <- {source_frame} ({self.prefix})")
+                self._tf_waiting[key] = now
+            elif now - previous >= 5.0:
+                msg = f"TF still unavailable: {target_frame} <- {source_frame}, {ex}"
+                if warn_context:
+                    msg = f"{warn_context}, {msg}"
+                self.node.get_logger().warn(msg)
+                self._tf_waiting[key] = now
             return None
 
+        if self._tf_waiting.pop(key, None) is not None:
+            self.node.get_logger().info(
+                f"TF ready: {target_frame} <- {source_frame} ({self.prefix})")
         return do_transform_pose(pose_in_source, tf)
 
     def get_frame_pose_in_frame(self, source_frame: str, target_frame: str) -> Optional[Pose]:
