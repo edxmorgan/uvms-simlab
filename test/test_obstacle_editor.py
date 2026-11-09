@@ -73,6 +73,9 @@ def test_marine_preview_uses_embedded_materials(selection_editor):
 @pytest.fixture
 def selection_editor(monkeypatch):
     class Server:
+        def erase(self, name):
+            self.marker = None
+
         def insert(self, marker, **kwargs):
             self.marker = copy.deepcopy(marker)
 
@@ -88,6 +91,9 @@ def selection_editor(monkeypatch):
     node.get_parameter.side_effect = lambda name: SimpleNamespace(value={
         'obstacle_preview_size': .8, 'obstacle_mesh_catalog': ''}[name])
     editor = ObstacleEditor(node, Server(), 'world')
+    assert editor.visible is False
+    assert editor.server.marker is None
+    editor.set_visible(True)
     scene = ObstacleScene()
     scene.obstacles.obstacles = [obstacle_from_config(
         {'id': name, 'type': 'sphere', 'dimensions': [1.]}, i)
@@ -99,6 +105,28 @@ def selection_editor(monkeypatch):
 def selection_titles(editor):
     handles = set(editor._selection_handles.values())
     return [entry.title for entry in editor.server.marker.menu_entries if entry.id in handles]
+
+
+def test_visibility_preserves_draft_and_does_not_edit_scene(selection_editor):
+    editor = selection_editor
+    editor._select('second')
+    editor.draft.pose.position.x = 7.
+    draft = copy.deepcopy(editor.draft)
+    editor.set_visible(False)
+    assert editor.server.marker is None
+    # A new scene snapshot must not make a hidden marker reappear.
+    scene = copy.deepcopy(editor.scene)
+    scene.obstacles.obstacles.append(obstacle_from_config(
+        {'id': 'third', 'type': 'sphere', 'dimensions': [1.]}, 2))
+    editor._snapshot(scene)
+    assert editor.server.marker is None
+    assert editor.draft == draft
+    assert editor.selected == 'second'
+    editor.set_visible(True)
+    assert editor.server.marker.name == editor.name
+    assert editor.server.marker.pose == draft.pose
+    editor.client.call_async.assert_not_called()
+    editor.world_client.call_async.assert_not_called()
 
 
 def test_selected_obstacle_checkbox_matches_robot_menu(selection_editor):
