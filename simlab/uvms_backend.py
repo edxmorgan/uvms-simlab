@@ -17,21 +17,26 @@
 import copy
 from datetime import datetime
 from simlab.uvms_parameters import ReachParams
-import rclpy
 from rclpy.node import Node
+from rclpy.parameter import Parameter as NodeParameter
+from rclpy.time import Time
 from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
 from rcl_interfaces.srv import SetParameters
+import rclpy
 from simlab.fcl_checker import FCLWorld
 import numpy as np
+from scipy.spatial.transform import Rotation
 from scipy.spatial import ConvexHull
 import os
 import ament_index_python
 from simlab.utils import geometry
+from simlab.utils.frames import PoseX
 from rclpy.qos import QoSProfile, QoSHistoryPolicy, QoSDurabilityPolicy, QoSReliabilityPolicy
 from visualization_msgs.msg import Marker
 import tf2_ros
-from typing import Dict, List
-from simlab.robot import Robot, ControlMode
+from typing import Dict, List, TypeVar, cast
+from simlab.robot import Robot, ControlMode, ControlSpace, yaw_only_quat_wxyz
+from ruckig import Result as TrajectoryResult
 from geometry_msgs.msg import Pose
 from std_msgs.msg import Header, String
 import sensor_msgs_py.point_cloud2 as pc2
@@ -65,12 +70,22 @@ from simlab.world_profiles import (
 )
 
 
-def parameter_or_default(node: Node, name: str, default):
-    parameter = node.get_parameter_or(name, default)
-    return getattr(parameter, "value", parameter)
+ParameterValueT = TypeVar('ParameterValueT')
+
+
+def parameter_or_default(node: Node, name: str, default: ParameterValueT) -> ParameterValueT:
+    parameter = node.get_parameter_or(name, NodeParameter(name, value=default))
+    return cast(ParameterValueT, parameter.value)
 
 
 class UVMSBackendCore:
+    @property
+    def selected_robot(self) -> Robot:
+        robot = self.robot_selected
+        if robot is None:
+            raise RuntimeError('No robot is selected')
+        return robot
+
     def __init__(self, node: Node,
                   urdf_string: str,
                   arm_base_wrt_vehicle_center_Pose: Pose, 
@@ -99,8 +114,8 @@ class UVMSBackendCore:
             EditDynamicObstacles, '/dynamic_obstacle_sim_node/edit_dynamic_obstacles')
         self.mcap_recording_active = False
         self._pending_camera_robot: Robot | None = None
-        self.use_vehicle_hardware = bool(self.node.get_parameter_or("use_vehicle_hardware", False).value)
-        self.camera_source = str(self.node.get_parameter_or("camera_source", "auto").value)
+        self.use_vehicle_hardware = parameter_or_default(self.node, "use_vehicle_hardware", False)
+        self.camera_source = parameter_or_default(self.node, "camera_source", "auto")
         self.urdf_string = urdf_string
         self.vehicle_target_frame = vehicle_target_frame
         self.world_frame = world_frame
@@ -171,12 +186,13 @@ class UVMSBackendCore:
         # publisher for FCL environment AABB
         self.env_aabb_pub = self.node.create_publisher(Marker, "fcl_environment_aabb", viz_qos)
         self.env_bounds_timer = self.node.create_timer(1.0 / 1.0, self.publish_fcl_environment_aabb_callback)
-        self.fcl_update_rate = float(self.node.get_parameter_or("interactive_fcl_update_rate", 10.0).value)
+        self.fcl_update_rate = float(parameter_or_default(self.node, "interactive_fcl_update_rate", 10.0))
         if self.fcl_update_rate > 0.0:
             self.fcl_update_timer = self.node.create_timer(1.0 / self.fcl_update_rate, self.fcl_update_callback)
         else:
             self.fcl_update_timer = None
         self.target_vehicle_marker_in_world_tf_timer = self.node.create_timer(1.0 / 20.0, self.target_vehicle_in_world_tf_timer_callback)
+        self.selected_marker_view_tf_timer = self.node.create_timer(1.0 / 20.0, self.selected_marker_view_tf_timer_callback)
         self.target_arm_base_marker_tf_timer = self.node.create_timer(1.0 / 20.0, self.target_arm_base_tf_timer_callback)
         self.target_endeffector_in_world_tf_timer = self.node.create_timer(1.0 / 20.0, self.target_endeffector_in_world_tf_timer_callback)
         self.vehicle_target_cloud_timer = self.node.create_timer(1.0 / 20.0, self.vehicle_target_cloud_timer_callback)
@@ -197,7 +213,10 @@ class UVMSBackendCore:
         self.node.get_logger().info(
             f"Vehicle trajectory generator: {self.vehicle_trajectory_generator_name}"
         )
-        self.robots_prefix = self.node.get_parameter('robots_prefix').value
+        prefixes = self.node.get_parameter('robots_prefix').value
+        if not isinstance(prefixes, (list, tuple)) or not prefixes or not all(isinstance(p, str) for p in prefixes):
+            raise ValueError('robots_prefix must be a nonempty sequence of strings')
+        self.robots_prefix = list(prefixes)
         for k, prefix in enumerate(self.robots_prefix):
             planner = PathPlanner(self.planner_marker_publisher, ns=f"planner/{prefix}", base_id=k)
             vehicle_cart_traj = vehicle_trajectory_generator_cls(
@@ -506,8 +525,57 @@ class UVMSBackendCore:
             return False, f"unknown control space '{control_space_name}'"
         if robot.control_mode in (ControlMode.REPLAY, ControlMode.REPLAY_SETTLE):
             return False, f"control-space switch rejected for {robot.prefix}; CmdReplay is active"
+        if robot.task_based_controller and control_space_name == ControlSpace.JOINT_SPACE:
+            ok, message = self._hold_measured_joint_space(robot)
+            if not ok:
+                return False, message
         robot.set_control_space(control_space_name)
         return True, f"control space set to {control_space_name} for {robot.prefix}"
+
+    def _hold_measured_joint_space(self, robot: Robot) -> tuple[bool, str]:
+        """Capture one measured configuration before replacing task-mode goals."""
+        state = robot.get_state()
+        pose = np.asarray(state['pose'], dtype=float).copy()
+        joints = np.asarray(state['q'], dtype=float)[:4].copy()
+        if (state['status'] != 'active' or pose.shape != (6,) or joints.shape != (4,)
+                or not np.all(np.isfinite(np.r_[pose, joints]))):
+            return False, 'Joint-space switch requires a valid measured configuration'
+        # Convert the same captured NED pose, not the old vehicle/task marker.
+        vehicle_map = PoseX.from_pose(xyz=pose[:3], rot=pose[3:],
+            rot_rep='euler_xyz', frame='NED').get_pose_as_Pose_msg(frame='NWU')
+        vehicle_world = robot.try_transform_pose(vehicle_map, target_frame=self.world_frame,
+            source_frame=robot.map_frame, warn_context='joint-space state capture')
+        if vehicle_world is None:
+            return False, 'Joint-space switch requires the measured vehicle world transform'
+        xyz = [vehicle_world.position.x, vehicle_world.position.y, vehicle_world.position.z]
+        quat = [vehicle_world.orientation.x, vehicle_world.orientation.y,
+                vehicle_world.orientation.z, vehicle_world.orientation.w]
+        try:
+            world_pose = np.r_[xyz, Rotation.from_quat(quat).as_euler('xyz')]
+            arm_local = np.asarray(robot.fk_eval(joints, np.zeros(6), np.zeros(6),
+                ReachParams.tipOffset)[-1], dtype=float).ravel()
+            arm_world = np.asarray(robot.fk_eval(joints, ReachParams.base_T0_new, world_pose,
+                ReachParams.tipOffset)[-1], dtype=float).ravel()
+            if not np.all(np.isfinite(np.r_[world_pose, arm_local, arm_world])):
+                raise ValueError('nonfinite FK')
+            arm_marker = PoseX.from_pose(xyz=arm_local[:3], rot=arm_local[3:],
+                rot_rep='quat_wxyz', frame='NWU').get_pose_as_Pose_msg()
+            task_marker = PoseX.from_pose(xyz=arm_world[:3], rot=arm_world[3:],
+                rot_rep='quat_wxyz', frame='NWU').get_pose_as_Pose_msg()
+        except (ValueError, RuntimeError) as error:
+            return False, f'Joint-space state capture failed: {error}'
+        # Cancel pending/old plans before re-enabling the joint-space sampler.
+        robot.abrupt_planner_stop(publish_zero=False)
+        self.vehicle_waypoint_missions[robot.k_robot].stop()
+        robot.pose_command = pose.tolist()  # retain measured roll/pitch too
+        robot.arm.q_command = joints.tolist()
+        robot._clear_task_reference_derivatives()
+        robot._arm_feedback_hold = True  # do not re-solve a held pose on another IK branch
+        robot.enable_planner_output()
+        self.target_vehicle_pose = vehicle_world
+        self.target_arm_base_endeffector_pose = arm_marker
+        self.target_world_endeffector_pose = task_marker
+        return True, 'Joint-space targets initialized from measured state'
 
     def set_robot_dynamics_profile(self, robot: Robot, profile_name: str, on_success=None) -> tuple[bool, str]:
         if "real" in robot.prefix:
@@ -672,6 +740,9 @@ class UVMSBackendCore:
     def set_vehicle_target(self, robot: Robot, pose: Pose) -> tuple[bool, str]:
         self.set_robot_selected(robot.k_robot)
         self.target_vehicle_pose, clipped = self._clip_pose_to_environment_bounds(pose)
+        if not robot.task_based_controller:
+            q = self.target_vehicle_pose.orientation
+            q.w, q.x, q.y, q.z = yaw_only_quat_wxyz([q.w, q.x, q.y, q.z]).tolist()
         suffix = " within environment bounds" if clipped else ""
         return True, f"vehicle target set for {robot.prefix}{suffix}"
 
@@ -686,6 +757,7 @@ class UVMSBackendCore:
         if not self.is_valid_arm_base_task(pose):
             return False, f"arm-base task target rejected for {robot.prefix}: outside reachable workspace"
         self.target_arm_base_endeffector_pose = pose
+        robot._arm_feedback_hold = False  # explicit, validated target replaces hold
         return True, f"arm-base task target set for {robot.prefix}"
 
     def add_vehicle_waypoint_for_robot(
@@ -722,8 +794,8 @@ class UVMSBackendCore:
             dtype=float,
         )
         pose_map_ned = robot.world_nwu_to_map_ned(
-            xyz_world_nwu=xyz_world,
-            quat_world_wxyz=quat_world_wxyz,
+            xyz_world_nwu=xyz_world.tolist(),
+            quat_world_wxyz=quat_world_wxyz.tolist(),
             warn_context=f"reset_vehicle_world({robot.prefix})",
         )
         if pose_map_ned is None:
@@ -752,7 +824,7 @@ class UVMSBackendCore:
 
         def _start_feedback_hold_after_reset() -> None:
             robot.set_control_mode(ControlMode.PLANNER)
-            robot.hold_pose_with_feedback(request.vehicle_pose)
+            robot.hold_pose_with_feedback(list(request.vehicle_pose))
             robot.release_simulation()
 
         robot.reset_simulation_with_state(request, on_success=_start_feedback_hold_after_reset)
@@ -780,6 +852,8 @@ class UVMSBackendCore:
         try:
             if command == "select_robot":
                 return self._api_response(response, *self.select_robot(request.robot_index))
+            if robot is None:
+                return self._api_response(response, False, f"invalid robot_index={request.robot_index}")
             if command == "set_controller":
                 return self._api_response(response, *self.set_robot_controller(robot, request.name))
             if command == "set_planner":
@@ -967,7 +1041,7 @@ class UVMSBackendCore:
         return self._call_recording_service(self.stop_recording_client, "stop", on_success=_mark_inactive)
 
     def reset_selected_simulation(self) -> bool:
-        robot = self.robot_selected
+        robot = self.selected_robot
         if "real" in robot.prefix:
             self.node.get_logger().warn(f"Reset Manager is disabled for real robot {robot.prefix}.")
             return False
@@ -990,7 +1064,7 @@ class UVMSBackendCore:
         return True, f"feedback hold requested for {robot.prefix}"
 
     def release_selected_simulation(self, *, feedback_hold: bool = False) -> bool:
-        robot = self.robot_selected
+        robot = self.selected_robot
         if "real" in robot.prefix:
             self.node.get_logger().warn(f"Reset Manager is disabled for real robot {robot.prefix}.")
             return False
@@ -1003,14 +1077,18 @@ class UVMSBackendCore:
         return True
 
     def plan_execute_selected(self) -> bool:
-        robot = self.robot_selected
+        robot = self.selected_robot
         if robot.controller_name == "CmdReplay":
             self.node.get_logger().warn(
                 "Plan & Execute requires a feedback controller; choose PID/InvDyn/OGES first."
             )
             return False
         if robot.control_mode != ControlMode.PLANNER:
-            robot.set_controller(robot.controller_name)
+            controller_name = robot.controller_name
+            if controller_name is None:
+                self.node.get_logger().warn('Select a feedback controller before planning.')
+                return False
+            robot.set_controller(controller_name)
 
         if robot.task_based_controller:
             self.plan_task_trajectory()
@@ -1021,21 +1099,21 @@ class UVMSBackendCore:
         return True
 
     def selected_vehicle_waypoint_mission(self) -> VehicleWaypointMission:
-        return self.vehicle_waypoint_missions[self.robot_selected.k_robot]
+        return self.vehicle_waypoint_missions[self.selected_robot.k_robot]
 
     def add_selected_vehicle_waypoint(self) -> int:
-        if self.robot_selected.task_based_controller:
+        if self.selected_robot.task_based_controller:
             self.node.get_logger().warn("Vehicle waypoints are only available for vehicle path planning.")
             return 0
         mission = self.selected_vehicle_waypoint_mission()
         count = mission.add_waypoint(self.target_vehicle_pose)
         self.node.get_logger().info(
-            f"Added vehicle waypoint {count} for {self.robot_selected.prefix} at "
+            f"Added vehicle waypoint {count} for {self.selected_robot.prefix} at "
             f"[{self.target_vehicle_pose.position.x:.2f}, {self.target_vehicle_pose.position.y:.2f}, {self.target_vehicle_pose.position.z:.2f}]"
         )
         if mission.executing:
             self.node.get_logger().info(
-                f"Extended active vehicle waypoint mission for {self.robot_selected.prefix}; "
+                f"Extended active vehicle waypoint mission for {self.selected_robot.prefix}; "
                 f"{len(mission.waypoints)} total waypoints queued."
             )
         return count
@@ -1044,10 +1122,10 @@ class UVMSBackendCore:
         mission = self.selected_vehicle_waypoint_mission()
         removed = mission.pop_last_waypoint()
         if removed is None:
-            self.node.get_logger().warn(f"No vehicle waypoints to remove for {self.robot_selected.prefix}.")
+            self.node.get_logger().warn(f"No vehicle waypoints to remove for {self.selected_robot.prefix}.")
             return False
         self.node.get_logger().info(
-            f"Removed last vehicle waypoint for {self.robot_selected.prefix}; {len(mission.waypoints)} remaining."
+            f"Removed last vehicle waypoint for {self.selected_robot.prefix}; {len(mission.waypoints)} remaining."
         )
         return True
 
@@ -1075,14 +1153,14 @@ class UVMSBackendCore:
         return True
 
     def remove_selected_vehicle_waypoint_at(self, waypoint_index: int) -> bool:
-        return self.remove_vehicle_waypoint_for_robot(self.robot_selected.k_robot, waypoint_index)
+        return self.remove_vehicle_waypoint_for_robot(self.selected_robot.k_robot, waypoint_index)
 
     def clear_selected_vehicle_waypoints(self) -> None:
         mission = self.selected_vehicle_waypoint_mission()
         mission.clear()
-        self.robot_selected.abrupt_planner_stop()
-        self._clear_vehicle_waypoint_viz(self.robot_selected)
-        self.node.get_logger().info(f"Cleared vehicle waypoints for {self.robot_selected.prefix}.")
+        self.selected_robot.abrupt_planner_stop()
+        self._clear_vehicle_waypoint_viz(self.selected_robot)
+        self.node.get_logger().info(f"Cleared vehicle waypoints for {self.selected_robot.prefix}.")
 
     def clear_vehicle_waypoints_for_robot(self, robot_k: int) -> None:
         robot = self.robots[robot_k]
@@ -1102,15 +1180,15 @@ class UVMSBackendCore:
     def stop_selected_vehicle_waypoints(self) -> None:
         mission = self.selected_vehicle_waypoint_mission()
         if not mission.executing:
-            self.node.get_logger().info(f"No active vehicle waypoint mission for {self.robot_selected.prefix}.")
+            self.node.get_logger().info(f"No active vehicle waypoint mission for {self.selected_robot.prefix}.")
             return
         mission.stop()
-        self.robot_selected.abrupt_planner_stop(publish_zero=False)
-        self.robot_selected.hold_current_state_with_feedback()
-        self.node.get_logger().info(f"Stopped vehicle waypoint mission for {self.robot_selected.prefix}.")
+        self.selected_robot.abrupt_planner_stop(publish_zero=False)
+        self.selected_robot.hold_current_state_with_feedback()
+        self.node.get_logger().info(f"Stopped vehicle waypoint mission for {self.selected_robot.prefix}.")
 
     def execute_selected_vehicle_waypoints(self) -> bool:
-        robot = self.robot_selected
+        robot = self.selected_robot
         if robot.control_mode in (ControlMode.REPLAY, ControlMode.REPLAY_SETTLE):
             self.node.get_logger().warn(
                 f"Vehicle waypoint mission ignored for {robot.prefix}; CmdReplay is active."
@@ -1185,7 +1263,7 @@ class UVMSBackendCore:
             ned_vel = np.asarray(state.get("ned_vel", [0.0] * 6), dtype=float).reshape(-1)
             linear_speed_mps = float(np.linalg.norm(ned_vel[:3])) if ned_vel.size >= 3 else 0.0
             controller_in_use = robot.controller_name
-            selected = ' *' if robot == self.robot_selected else ''
+            selected = ' *' if robot == self.selected_robot else ''
             hold_state = 'HELD' if robot.sim_reset_hold else 'RELEASED'
             total_energy = (
                 metrics['vehicle_control_energy_abs'] +
@@ -1270,8 +1348,8 @@ class UVMSBackendCore:
                 if getattr(self, "robot_selected", None) is r:
                     return
                 self.robot_selected = r
-                self.node.get_logger().info(f"Robot {self.robot_selected.prefix} selected for planning.")
-                self._set_camera_frame_for_robot(self.robot_selected)
+                self.node.get_logger().info(f"Robot {self.selected_robot.prefix} selected for planning.")
+                self._set_camera_frame_for_robot(self.selected_robot)
                 return
         self.node.get_logger().error(f"No robot with k_robot={robot_k}")
         raise ValueError(f"No robot with k_robot={robot_k}")
@@ -1373,6 +1451,18 @@ class UVMSBackendCore:
                                                                child_frame=self.vehicle_target_frame)
         self.tf_broadcaster.sendTransform(vehicle_target_t)
 
+    def selected_marker_view_tf_timer_callback(self):
+        """Keep RViz's marker view on the selected control-space goal."""
+        robot = self.robot_selected
+        if robot is None:
+            return
+        pose = (self.target_world_endeffector_pose if robot.task_based_controller
+                else self.target_vehicle_pose)
+        marker_view_t = geometry.get_broadcast_tf(
+            stamp=self.node.get_clock().now().to_msg(), pose=pose,
+            parent_frame=self.world_frame, child_frame='selected_marker_view_frame')
+        self.tf_broadcaster.sendTransform(marker_view_t)
+
     def target_arm_base_tf_timer_callback(self):
         stamp_now = self.node.get_clock().now().to_msg()
         arm_base_t = geometry.get_broadcast_tf(stamp=stamp_now,
@@ -1394,24 +1484,23 @@ class UVMSBackendCore:
         self.tf_broadcaster.sendTransform(endeffector_t)
 
     def vehicle_target_cloud_timer_callback(self):
-        if not self.robot_selected.task_based_controller:
-            header = Header()
-            header.frame_id = self.vehicle_target_frame
-            # These are interactive target-frame clouds. A zero stamp lets RViz
-            # render them with the latest target TF instead of waiting for an
-            # exact timestamp match from a separate TF timer.
-            header.stamp = rclpy.time.Time().to_msg()
-
-            if self.taskspace_pc_publisher_.get_subscription_count() > 0:
-                rov_cloud_msg = pc2.create_cloud_xyz32(header, self.workspace_pts)
-                self.taskspace_pc_publisher_.publish(rov_cloud_msg)
-
-            if self.rov_pc_publisher_.get_subscription_count() > 0:
-                cloud_msg = pc2.create_cloud_xyz32(header, self.rov_ellipsoid_cl_pts)
-                self.rov_pc_publisher_.publish(cloud_msg)
+        header = Header()
+        header.frame_id = self.vehicle_target_frame
+        # Use the latest target TF; its timer has an independent timestamp.
+        header.stamp = Time().to_msg()
+        # RViz retains the last cloud when publication stops. Explicitly clear
+        # vehicle-target previews in task mode, including for new subscribers.
+        task_mode = self.selected_robot.task_based_controller
+        empty = np.empty((0, 3), dtype=np.float32)
+        if self.taskspace_pc_publisher_.get_subscription_count() > 0:
+            self.taskspace_pc_publisher_.publish(pc2.create_cloud_xyz32(
+                header, empty if task_mode else self.workspace_pts))
+        if self.rov_pc_publisher_.get_subscription_count() > 0:
+            self.rov_pc_publisher_.publish(pc2.create_cloud_xyz32(
+                header, empty if task_mode else self.rov_ellipsoid_cl_pts))
 
     def is_valid_arm_base_task(self, target_arm_base_endeffector_pose: Pose) -> bool:
-        pose_v = self.robot_selected.try_transform_pose(
+        pose_v = self.selected_robot.try_transform_pose(
             target_arm_base_endeffector_pose,
             target_frame=self.vehicle_target_frame,
             source_frame=self.arm_base_target_frame, 
@@ -1422,7 +1511,7 @@ class UVMSBackendCore:
 
         p = pose_v.position
         xyz = np.array([p.x, p.y, p.z], dtype=float)
-        return geometry.is_point_valid(self.workspace_hull, self.vehicle_body_hull, xyz)
+        return bool(geometry.is_point_valid(self.workspace_hull, self.vehicle_body_hull, xyz))
 
     def initialise_target_Poses(self):
         self.target_vehicle_pose = Pose()
@@ -1438,19 +1527,21 @@ class UVMSBackendCore:
     def reset_selected_robot_targets(self):
         self.initialise_target_Poses()
         self.node.get_logger().info(
-            f"Reset planner and marker targets for {self.robot_selected.prefix}."
+            f"Reset planner and marker targets for {self.selected_robot.prefix}."
         )
 
     def plan_vehicle_trajectory(self):
-        if self.robot_selected.control_mode in (ControlMode.REPLAY, ControlMode.REPLAY_SETTLE):
-            self.robot_selected.abrupt_planner_stop()
+        if self.selected_robot.control_mode in (ControlMode.REPLAY, ControlMode.REPLAY_SETTLE):
+            self.selected_robot.abrupt_planner_stop()
             self.node.get_logger().warn(
-                f"Planner request ignored for {self.robot_selected.prefix}; CmdReplay is active."
+                f"Planner request ignored for {self.selected_robot.prefix}; CmdReplay is active."
             )
             return False
-        self.robot_selected.set_control_mode(ControlMode.PLANNER)
+        self.selected_robot.set_control_mode(ControlMode.PLANNER)
+        # A fresh vehicle plan is XYZ+yaw, even if the mode-switch hold retained tilt.
+        self.set_vehicle_target(self.selected_robot, self.target_vehicle_pose)
         goal_pose = self.target_vehicle_pose
-        return self.robot_selected.plan_vehicle_trajectory_action(
+        return self.selected_robot.plan_vehicle_trajectory_action(
             goal_pose=goal_pose,
             time_limit=1.0,
             robot_collision_radius=float(self.fcl_world.vehicle_radius),
@@ -1635,7 +1726,7 @@ class UVMSBackendCore:
         if self.robot_selected is None:
             return
         stamp_now = self.node.get_clock().now().to_msg()
-        selected_robot = self.robot_selected
+        selected_robot = self.selected_robot
         for robot in self.robots:
             viz = self.vehicle_waypoint_viz[robot.k_robot]
             if robot.k_robot != selected_robot.k_robot:
@@ -1652,13 +1743,20 @@ class UVMSBackendCore:
     def solve_execute_inverse_kinematics_wrt_vehicle_frame(self, task_pose:Pose):
         msg = {'is_success':False,'result':None}
         if self.is_valid_arm_base_task(task_pose):
-            q_ik_sol = self.robot_selected.manipulator_inverse_kinematics(
-                np.array([task_pose.position.x, task_pose.position.y, task_pose.position.z]))
+            try:
+                q_ik_sol = self.robot_selected.manipulator_inverse_kinematics(
+                    np.array([task_pose.position.x, task_pose.position.y, task_pose.position.z]))
+            except (ValueError, RuntimeError) as error:
+                self.node.get_logger().warn(f'Arm IK rejected; previous target retained: {error}',
+                                            throttle_duration_sec=2.)
+                return msg
             msg['is_success'] = True
             msg['result'] = q_ik_sol
         return msg
 
     def plan_and_execute_task_trajectory_wrt_vehicle(self):
+        if getattr(self.robot_selected, "_arm_feedback_hold", False):
+            return
         if self.robot_selected.sim_reset_hold:
             return
         if not self.robot_selected.task_based_controller:
