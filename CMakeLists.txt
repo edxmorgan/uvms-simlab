@@ -13,10 +13,13 @@ find_package(ros2_control_blue_reach_5 0.1.0 REQUIRED)
 
 set(action_files
   "action/PlanVehicle.action"
+  "action/RunDisturbance.action"
 )
 
 set(msg_files
   "msg/ObstacleScene.msg"
+  "msg/DisturbanceRunStatus.msg"
+  "msg/TaskWrenchEstimate.msg"
   "msg/ControllerPerformance.msg"
   "msg/ReferenceTargets.msg"
 )
@@ -70,6 +73,9 @@ function(simlab_python_entrypoint script_name module_name)
 endfunction()
 
 simlab_python_entrypoint(interactive_controller simlab.interactive_control)
+simlab_python_entrypoint(disturbance_injection_node simlab.disturbance_injection_node)
+simlab_python_entrypoint(disturbance_run simlab.disturbance_run)
+simlab_python_entrypoint(disturbance_plot simlab.disturbance_plot)
 simlab_python_entrypoint(dynamic_obstacle_sim_node simlab.obstacle_node)
 simlab_python_entrypoint(joystick_controller simlab.joystick_control)
 simlab_python_entrypoint(direct_thruster_controller simlab.direct_thruster_control)
@@ -101,6 +107,8 @@ install(FILES package.xml DESTINATION share/${PROJECT_NAME})
 
 if(BUILD_TESTING)
   find_package(ament_cmake_pytest REQUIRED)
+  ament_add_pytest_test(test_tool_wrench test/test_tool_wrench.py)
+  ament_add_pytest_test(test_task_wrench_estimation test/test_task_wrench_estimation.py)
   ament_add_pytest_test(test_task_visualization test/test_task_visualization.py)
   ament_add_pytest_test(test_task_reference_derivatives test/test_task_reference_derivatives.py)
   ament_add_pytest_test(test_replay_reference_targets test/test_replay_reference_targets.py)
@@ -109,6 +117,7 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_geometric_vehicle_control test/test_geometric_vehicle_control.py)
   ament_add_pytest_test(test_endpoint_ik test/test_endpoint_ik.py)
   ament_add_pytest_test(test_arm_hold_ownership test/test_arm_hold_ownership.py)
+  ament_add_pytest_test(test_disturbance_injection_node test/test_disturbance_injection_node.py)
   ament_add_pytest_test(test_flake8 test/test_flake8.py)
   ament_add_pytest_test(test_vehicle_yaw_continuity test/test_vehicle_yaw_continuity.py)
   ament_add_pytest_test(test_bag_recorder_topics test/test_bag_recorder_topics.py)
