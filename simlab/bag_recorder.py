@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+import os
 from typing import Any, Callable, List
 
 import rclpy
@@ -62,7 +63,10 @@ class BagRecorder(Node):
         self._topic_names: List[str] = []
         self._topics = list(topics)
         self._topics.extend(self._dynamic_obstacle_topic_specs())
+        self._topics.extend(self._transform_topic_specs())
         self._topics.extend(self._desired_target_topic_specs(robot_prefixes))
+        self._topics.extend(self._disturbance_topic_specs(robot_prefixes))
+        self._topics.extend(self._evaluation_trace_topic_specs(robot_prefixes))
 
         self._topic_names = [spec.name for spec in self._topics]
 
@@ -94,6 +98,26 @@ class BagRecorder(Node):
         for sub in self._subs:
             self.destroy_subscription(sub)
         self._subs = []
+
+    @staticmethod
+    def _transform_topic_specs() -> List[TopicSpec]:
+        from tf2_msgs.msg import TFMessage
+        # Preserve both operational localization and physical camera geometry.
+        return [TopicSpec(topic, TFMessage, "tf2_msgs/msg/TFMessage",
+                          transient_local_qos(depth=100) if topic.endswith('tf_static') else 100)
+                for topic in ('/tf', '/tf_static', '/simulation_truth/tf',
+                              '/simulation_truth/tf_static')]
+
+    @staticmethod
+    def _evaluation_trace_topic_specs(robot_prefixes: List[str]) -> List[TopicSpec]:
+        # Same explicit opt-in as the simulator publisher. Keep evaluation data
+        # in the standard MCAP session instead of a second recorder.
+        if "UVMS_EKF_EVALUATION_TRACE" not in os.environ:
+            return []
+        from std_msgs.msg import Float64MultiArray
+        return [TopicSpec(f"/{prefix}ekf_evaluation_trace", Float64MultiArray,
+                          "std_msgs/msg/Float64MultiArray", 2048)
+                for prefix in robot_prefixes]
 
     @staticmethod
     def _dynamic_obstacle_topic_specs() -> List[TopicSpec]:
@@ -138,6 +162,26 @@ class BagRecorder(Node):
                     qos_depth=10,
                 )
             )
+        return topics
+
+    @staticmethod
+    def _disturbance_topic_specs(robot_prefixes: List[str]) -> List[TopicSpec]:
+        from ros2_control_blue_reach_5.msg import DisturbanceCommand, DisturbanceState
+        from simlab.msg import DisturbanceRunStatus, TaskWrenchEstimate
+        from geometry_msgs.msg import WrenchStamped
+
+        topics = []
+        for prefix in robot_prefixes:
+            base = f"/{prefix}/disturbance/"
+            for suffix, cls, type_str in (
+                ("command", DisturbanceCommand, "ros2_control_blue_reach_5/msg/DisturbanceCommand"),
+                ("vehicle/state", DisturbanceState, "ros2_control_blue_reach_5/msg/DisturbanceState"),
+                ("arm/state", DisturbanceState, "ros2_control_blue_reach_5/msg/DisturbanceState"),
+                ("status", DisturbanceRunStatus, "simlab/msg/DisturbanceRunStatus"),
+                ("task_wrench", WrenchStamped, "geometry_msgs/msg/WrenchStamped"),
+                ("task_estimate", TaskWrenchEstimate, "simlab/msg/TaskWrenchEstimate"),
+            ):
+                topics.append(TopicSpec(name=base+suffix, msg_cls=cls, type_str=type_str, qos_depth=100))
         return topics
 
     def start_recording(self) -> tuple[bool, str]:
@@ -212,9 +256,12 @@ def main(args=None):
 
     from control_msgs.msg import DynamicJointState
     from geometry_msgs.msg import PoseStamped
-    from sensor_msgs.msg import CameraInfo, Image
+    from sensor_msgs.msg import CameraInfo, Image, Imu
 
+    from rclpy.qos import qos_profile_sensor_data
     topics = [
+        TopicSpec("/mavros/imu/data_raw", Imu, "sensor_msgs/msg/Imu", qos_profile_sensor_data),
+        TopicSpec("/mavros/imu/data", Imu, "sensor_msgs/msg/Imu", qos_profile_sensor_data),
         TopicSpec(
             name="dynamic_joint_states",
             msg_cls=DynamicJointState,
