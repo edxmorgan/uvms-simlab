@@ -193,3 +193,9 @@ def test_sensor_noise_menu_uses_confirmed_state(ui):
     UI._refresh_sensor_noise_menu(ui)
     assert all(ui.menu_handler.getCheckState(h) == MH.UNCHECKED
                for h in (on, off))
+
+
+def test_robot_refresh_restores_ik_checks(ui):
+    robot=ui.uvms_backend.robot_selected;robot.ik_tool_axis=np.array([1.,0.,0.]);robot.ik_base_align_w=0
+    ui._refresh_robot_menu_state(0)
+    assert [ui.menu_handler.getCheckState(h) for h in ui.axis_menu_map]==[MH.CHECKED,MH.UNCHECKED,MH.UNCHECKED,MH.UNCHECKED]
