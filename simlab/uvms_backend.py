@@ -419,6 +419,10 @@ class UVMSBackendCore:
         return True, self._dynamic_replanning_status_message()
 
     def _create_backend_api_services(self) -> None:
+        from simlab.srv import ControllerConfiguration
+        self.node.create_service(
+            ControllerConfiguration, '/backend/controller_configuration',
+            self._controller_configuration_callback)
         self.node.create_service(
             BackendRobotCommand,
             "/backend/robot_command",
@@ -443,6 +447,18 @@ class UVMSBackendCore:
             "Backend API ready: /backend/robot_command, /backend/world_command, "
             "/backend/pose_command, /backend/waypoint_command"
         )
+
+    def _controller_configuration_callback(self, request, response):
+        from simlab.controller_configuration import controller_configuration
+        try:
+            robot = self._robot_for_api(request.robot_index)
+            if robot is None:
+                raise ValueError('invalid robot_index')
+            response.configuration_json = controller_configuration(robot, request)
+            response.success, response.message = True, 'effective controller configuration'
+        except Exception as exc:
+            response.success, response.message = False, str(exc)
+        return response
 
     def _robot_for_api(self, robot_index: int) -> Robot | None:
         if 0 <= int(robot_index) < len(self.robots):
