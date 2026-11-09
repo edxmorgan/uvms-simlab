@@ -347,12 +347,15 @@ class PS4Controller(Controller):
 class Base:
     def get_interface_value(self, msg: DynamicJointState, dof_names: list, interface_names: list):
         names = msg.joint_names
-        return [
+        result = [
             msg.interface_values[names.index(joint_name)].values[
                 msg.interface_values[names.index(joint_name)].interface_names.index(interface_name)
             ]
             for joint_name, interface_name in zip(dof_names, interface_names)
         ]
+        if not np.all(np.isfinite(result)):
+            raise ValueError(f"Nonfinite feedback for {list(zip(dof_names, interface_names))}")
+        return result
 
 class Axis_Interface_names:
     manipulator_position = 'position'
@@ -362,29 +365,29 @@ class Axis_Interface_names:
     manipulator_estimation_acceleration = "estimated_acceleration"
     manipulator_effort = 'effort'
     
-    floating_base_x = 'position.x'
-    floating_base_y = 'position.y'
-    floating_base_z = 'position.z'
+    floating_base_x = 'position_estimate.x'
+    floating_base_y = 'position_estimate.y'
+    floating_base_z = 'position_estimate.z'
 
-    floating_base_roll = 'roll'
-    floating_base_pitch = 'pitch'
-    floating_base_yaw = 'yaw'
+    floating_base_roll = 'roll_estimate'
+    floating_base_pitch = 'pitch_estimate'
+    floating_base_yaw = 'yaw_estimate'
 
-    floating_dx = 'velocity.x'
-    floating_dy = 'velocity.y'
-    floating_dz = 'velocity.z'
+    floating_dx = 'velocity_estimate.x'
+    floating_dy = 'velocity_estimate.y'
+    floating_dz = 'velocity_estimate.z'
 
-    floating_roll_vel = 'angular_velocity.x'
-    floating_pitch_vel = 'angular_velocity.y'
-    floating_yaw_vel = 'angular_velocity.z'
+    floating_roll_vel = 'angular_velocity_estimate.x'
+    floating_pitch_vel = 'angular_velocity_estimate.y'
+    floating_yaw_vel = 'angular_velocity_estimate.z'
 
-    floating_du = 'linear_acceleration.x'
-    floating_dv = 'linear_acceleration.y'
-    floating_dw = 'linear_acceleration.z'
+    floating_du = 'linear_acceleration_estimate.x'
+    floating_dv = 'linear_acceleration_estimate.y'
+    floating_dw = 'linear_acceleration_estimate.z'
 
-    floating_dp = 'angular_acceleration.x'
-    floating_dq = 'angular_acceleration.y'
-    floating_dr = 'angular_acceleration.z'
+    floating_dp = 'angular_acceleration_estimate.x'
+    floating_dq = 'angular_acceleration_estimate.y'
+    floating_dr = 'angular_acceleration_estimate.z'
 
     floating_force_x = 'force.x'
     floating_force_y = 'force.y'
@@ -441,51 +444,63 @@ class Manipulator(Base):
         self.grasp_command = self.grasper_closed_position
 
     def update_state(self, msg: DynamicJointState):
-        self.q = self.get_interface_value(
+        q = self.get_interface_value(
             msg,
             self.joints,
-            [Axis_Interface_names.manipulator_position] * 4
+            [Axis_Interface_names.manipulator_filtered_position] * 4
         )
-        self.dq = self.get_interface_value(
+        dq = self.get_interface_value(
             msg,
             self.joints,
-            [Axis_Interface_names.manipulator_velocity] * 4
+            [Axis_Interface_names.manipulator_filtered_velocity] * 4
         )
-        self.ddq = self.get_interface_value(
+        ddq = self.get_interface_value(
             msg,
             self.joints,
             [Axis_Interface_names.manipulator_estimation_acceleration] * 4
         )
-        self.effort = self.get_interface_value(
+        effort = self.get_interface_value(
             msg,
             self.joints,
             [Axis_Interface_names.manipulator_effort] * 4
         )
-        self.sim_period = self.get_interface_value(
+        sim_period = self.get_interface_value(
             msg,
             [self.alpha_axis_e],
             [Axis_Interface_names.sim_period]
         )
-        self.grasper_q = self.get_interface_value(
+        grasper_q = self.get_interface_value(
             msg,
             self.grasper,
-            [Axis_Interface_names.manipulator_position]
+            [Axis_Interface_names.manipulator_filtered_position]
         )
-        self.grasper_q_dot = self.get_interface_value(
+        grasper_q_dot = self.get_interface_value(
             msg,
             self.grasper,
-            [Axis_Interface_names.manipulator_velocity]
+            [Axis_Interface_names.manipulator_filtered_velocity]
         )
-        self.grasper_q_ddot = self.get_interface_value(
+        grasper_q_ddot = self.get_interface_value(
             msg,
             self.grasper,
             [Axis_Interface_names.manipulator_estimation_acceleration]
         )
-        self.grasper_effort = self.get_interface_value(
+        grasper_effort = self.get_interface_value(
             msg,
             self.grasper,
             [Axis_Interface_names.manipulator_effort]
         )
+        self.__dict__.update(
+            q=q,
+            dq=dq,
+            ddq=ddq,
+            effort=effort,
+            sim_period=sim_period,
+            grasper_q=grasper_q,
+            grasper_q_dot=grasper_q_dot,
+            grasper_q_ddot=grasper_q_ddot,
+            grasper_effort=grasper_effort,
+        )
+
     def get_state(self) -> Dict[str, np.ndarray]:
         return {
             'arm_effort': list(self.effort) + list(self.grasper_effort),
@@ -598,6 +613,9 @@ class Robot(Base):
         self.arm_gravity = 0.0
         self.prefix = prefix
         self.status = 'inactive'
+        self._feedback_fault = False
+        self._last_state_received = None
+        self._feedback_stop_applied = False
         self.sim_time = 0.0
         self.start_time = 0.0
         self.joint4_frame = f"{self.prefix}joint_4"
@@ -1115,8 +1133,13 @@ class Robot(Base):
 
 
     def update_state(self, msg: DynamicJointState):
-        self.arm.update_state(msg)
-        self.ned_pose = self.get_interface_value(
+        for name, values in zip(msg.joint_names, msg.interface_values):
+            if name == self.floating_base_IOs:
+                fields = dict(zip(values.interface_names, values.values))
+                value = fields.get("sensor_noise_enabled")
+                sensor_noise_enabled = bool(value) if value in (0.0, 1.0) else None
+                break
+        ned_pose = self.get_interface_value(
             msg,
             [self.floating_base_IOs] * 6,
             [
@@ -1130,7 +1153,7 @@ class Robot(Base):
         )
 
 
-        self.body_vel = self.get_interface_value(
+        body_vel = self.get_interface_value(
             msg,
             [self.floating_base_IOs] * 6,
             [
@@ -1143,7 +1166,7 @@ class Robot(Base):
             ]
         )
 
-        self.body_acc = self.get_interface_value(
+        body_acc = self.get_interface_value(
             msg,
             [self.floating_base_IOs] * 6,
             [
@@ -1156,11 +1179,11 @@ class Robot(Base):
             ]
         )
 
-        self.J_UV = self.vehicle_J(self.ned_pose[3:6]).full()
+        J_UV = self.vehicle_J(ned_pose[3:6]).full()
 
-        self.ned_vel = self.to_ned_velocity(self.J_UV, self.body_vel)
+        ned_vel = self.to_ned_velocity(J_UV, body_vel)
 
-        self.body_forces = self.get_interface_value(
+        body_forces = self.get_interface_value(
             msg,
             [self.floating_base_IOs] * 6,
             [
@@ -1173,38 +1196,56 @@ class Robot(Base):
             ]
         )
 
-        self.vehicle_control_power = self.get_interface_value(
+        vehicle_control_power = self.get_interface_value(
             msg,
             [self.floating_base_IOs],
             [Axis_Interface_names.floating_control_power_abs]
         )[0]
-        self.vehicle_control_energy = self.get_interface_value(
+        vehicle_control_energy = self.get_interface_value(
             msg,
             [self.floating_base_IOs],
             [Axis_Interface_names.floating_control_energy_abs]
         )[0]
-        self.arm_control_power = self.get_interface_value(
+        arm_control_power = self.get_interface_value(
             msg,
             [self.arm_IOs],
             [Axis_Interface_names.arm_control_power_abs]
         )[0]
-        self.arm_control_energy = self.get_interface_value(
+        arm_control_energy = self.get_interface_value(
             msg,
             [self.arm_IOs],
             [Axis_Interface_names.arm_control_energy_abs]
         )[0]
-        self.arm_payload_mass = self.get_interface_value(
+        arm_payload_mass = self.get_interface_value(
             msg,
             [self.arm_IOs],
             [Axis_Interface_names.arm_payload_mass]
         )[0]
-        self.arm_gravity = self.get_interface_value(
+        arm_gravity = self.get_interface_value(
             msg,
             [self.arm_IOs],
             [Axis_Interface_names.arm_gravity]
         )[0]
    
         dynamics_sim_time = self.get_interface_value(msg,[self.floating_base_IOs],[Axis_Interface_names.sim_time])[0]
+        if not np.all(np.isfinite(J_UV)) or not np.all(np.isfinite(ned_vel)):
+            raise ValueError("Nonfinite vehicle velocity transform")
+        self.arm.update_state(msg)
+        self.__dict__.update(
+            sensor_noise_enabled=sensor_noise_enabled,
+            ned_pose=ned_pose,
+            body_vel=body_vel,
+            body_acc=body_acc,
+            J_UV=J_UV,
+            ned_vel=ned_vel,
+            body_forces=body_forces,
+            vehicle_control_power=vehicle_control_power,
+            vehicle_control_energy=vehicle_control_energy,
+            arm_control_power=arm_control_power,
+            arm_control_energy=arm_control_energy,
+            arm_payload_mass=arm_payload_mass,
+            arm_gravity=arm_gravity,
+        )
         if self.status == 'inactive':
             self.start_time = copy.copy(dynamics_sim_time)
             self.status = 'active'
@@ -1778,6 +1819,23 @@ class Robot(Base):
         self.vehicle_pwm_command_publisher.publish(vehicle_pwm)
 
     def listener_callback(self, msg: DynamicJointState):
+        for name, values in zip(msg.joint_names, msg.interface_values):
+            if (name == self.prefix + 'IOs'
+                    and 'estimator_valid' in values.interface_names
+                    and 'sim_step' not in values.interface_names):
+                # Hardware validity must not depend on optional identification exports.
+                fields = dict(zip(values.interface_names, values.values))
+                self._hardware_estimator_valid = fields.get('estimator_valid') == 1.0
+                self._hardware_estimator_received = self.node.get_clock().now().nanoseconds
+        try:
+            self.update_state(msg)
+        except (ValueError, IndexError) as error:
+            if not getattr(self, '_feedback_fault', False):
+                self.node.get_logger().error(f"[{self.prefix}] Invalid feedback: {error}")
+            self._feedback_fault = True
+            return
+        self._feedback_fault = False
+        self._last_state_received = time.monotonic()
         pending = getattr(self, '_reset_feedback_pending', None)
         if pending is not None and pending['after_stamp_ns'] is not None:
             stamp_ns = msg.header.stamp.sec * 1_000_000_000 + msg.header.stamp.nanosec
@@ -3356,6 +3414,38 @@ class Robot(Base):
                 self.sim_reset_hold = True
                 self.node.get_logger().error('Simulation reset timed out waiting for fresh state feedback')
             return
+        last_received = getattr(self, '_last_state_received', None)
+        feedback_unavailable = getattr(self, '_feedback_fault', False) or (
+            last_received is not None and time.monotonic() - last_received > 0.5)
+        if feedback_unavailable:
+            now = time.monotonic()
+            if getattr(self, '_feedback_stale_since', None) is None:
+                self._feedback_stale_since = now
+            # A synchronous planner can temporarily occupy the executor. Send
+            # zero immediately, but let queued feedback run before cancelling.
+            # Invalid samples have no grace period.
+            if (not getattr(self, '_feedback_fault', False)
+                    and now - self._feedback_stale_since < 0.5):
+                self.publish_vehicle_and_arm([0.0] * 6, [0.0] * 5)
+                return
+            if not getattr(self, '_feedback_stop_applied', False):
+                self.abrupt_planner_stop()
+                self.cancel_replay_settle(mark_failed=True)
+                self._zero_teleop_commands()
+                self.teleop_wrench_body_6 = [0.0] * 6
+                self.teleop_arm_effort_5 = [0.0] * 5
+                self._menu_grasper_effort = 0.0
+                self._menu_grasper_until_sec = 0.0
+                controller = self.active_controller_instance()
+                if controller is not None and hasattr(controller, 'mark_reset_failed'):
+                    controller.mark_reset_failed()
+                self._feedback_stop_applied = True
+                self.node.get_logger().error(
+                    f"[{self.prefix}] Feedback unavailable; motion cancelled. Replan after feedback recovers.")
+            self.publish_commands([0.0] * 6, [0.0] * 5)
+            return
+        self._feedback_stop_applied = False
+        self._feedback_stale_since = None
         state = self.get_state()
         if state["status"] != "active":
             return
@@ -3368,6 +3458,16 @@ class Robot(Base):
             wrench = getattr(self, "teleop_wrench_body_6", [0.0]*6)
             arm = getattr(self, "teleop_arm_effort_5", [0.0]*5)
             self.publish_commands(wrench, arm)
+            return
+
+        # A manual launch can switch modes through the joystick. Do not let its
+        # hardware teleoperation allowance authorize feedback/replay on an
+        # unavailable navigation estimate.
+        if hasattr(self, '_hardware_estimator_valid') and (
+            not self._hardware_estimator_valid or
+            self.node.get_clock().now().nanoseconds - self._hardware_estimator_received > 500_000_000
+        ):
+            self.publish_commands([0.0] * 6, [0.0] * 5)
             return
 
         if self.control_mode == ControlMode.REPLAY_SETTLE:
