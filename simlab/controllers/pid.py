@@ -12,6 +12,15 @@ from simlab.uvms_parameters import select_robot_params
 class LowLevelPidController(ControllerTemplate):
     name = "PID"
     registry_name = "PID"
+    attitude_error = 'so3_log_body'
+    configuration_fields = ('attitude_error', 'kp', 'ki', 'kd', 'vehicle_i_limit', 'arm_kp', 'arm_ki',
+                            'arm_kd', 'arm_u_min', 'arm_u_max',
+                            'vehicle_model_params', 'arm_model_params', 'uv_u_min', 'uv_u_max')
+
+    def set_model_profile(self, model) -> None:
+        self.vehicle_model_params = model.vehicle_baseline
+        self.arm_model_params = model.arm_baseline
+        self.model_profile_sha256 = model.sha256
 
     def __init__(self, node: Node, arm_dof: int = 4, robot_prefix: str = ""):
         super().__init__(node, arm_dof, robot_prefix)
@@ -26,6 +35,8 @@ class LowLevelPidController(ControllerTemplate):
         self.vehicle_pid_i_buffer = np.zeros(6, dtype=float)
         self.vehicle_i_limit = self.vehicle_params.i_limit
         self.vehicle_model_params = self.vehicle_params.model_params
+        self.uv_u_min = np.asarray(self.vehicle_params.u_min, dtype=float)
+        self.uv_u_max = np.asarray(self.vehicle_params.u_max, dtype=float)
         self.kp = self.vehicle_params.pid_kp
         self.ki = self.vehicle_params.pid_ki
         self.kd = self.vehicle_params.pid_kd
@@ -83,7 +94,7 @@ class LowLevelPidController(ControllerTemplate):
         target_pos = self.vector(target_pos, 6, "target_pos")
         target_vel = self.vector(target_vel, 6, "target_vel")
 
-        buf = np.zeros(6, dtype=float)
+        buf = self.vector(self.vehicle_pid_i_buffer, 6, 'vehicle integral state')
         pid_control, i_buf_next = self.uv_pid_controller(
             self.vehicle_model_params,
             self.kp,
@@ -101,7 +112,10 @@ class LowLevelPidController(ControllerTemplate):
             -self.vehicle_i_limit,
             self.vehicle_i_limit,
         )
-        return np.asarray(pid_control).reshape(-1)
+        command = np.asarray(pid_control, dtype=float).reshape(-1)
+        if command.shape != (6,) or not np.all(np.isfinite(command)):
+            raise ValueError('PID returned a nonfinite or invalid vehicle wrench')
+        return np.clip(command, self.uv_u_min, self.uv_u_max)
 
     def arm_controller(
         self,

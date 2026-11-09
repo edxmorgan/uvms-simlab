@@ -100,6 +100,7 @@ install(FILES package.xml DESTINATION share/${PROJECT_NAME})
 
 if(BUILD_TESTING)
   find_package(ament_cmake_pytest REQUIRED)
+  ament_add_pytest_test(test_geometric_vehicle_control test/test_geometric_vehicle_control.py)
   ament_add_pytest_test(test_flake8 test/test_flake8.py)
   ament_add_pytest_test(test_vehicle_yaw_continuity test/test_vehicle_yaw_continuity.py)
   ament_add_pytest_test(test_bag_recorder_topics test/test_bag_recorder_topics.py)
