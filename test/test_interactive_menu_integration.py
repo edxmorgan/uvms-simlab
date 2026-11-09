@@ -54,10 +54,11 @@ def test_alignment_toggle_uses_robot_state_not_stale_checkbox(ui):
     assert ui.uvms_backend.robot_selected.ik_base_align_w==1
 
 
-def test_robot_refresh_restores_ik_checks(ui):
+def test_robot_refresh_restores_ik_and_grasper_checks(ui):
     robot=ui.uvms_backend.robot_selected;robot.ik_tool_axis=np.array([1.,0.,0.]);robot.ik_base_align_w=0
     ui._refresh_robot_menu_state(0)
     assert [ui.menu_handler.getCheckState(h) for h in ui.axis_menu_map]==[MH.CHECKED,MH.UNCHECKED,MH.UNCHECKED,MH.UNCHECKED]
+    assert [ui.menu_handler.getCheckState(h) for h in ui.grasp_menu_map]==[MH.CHECKED,MH.UNCHECKED]
 
 
 @pytest.mark.parametrize('method,field,backend',[
@@ -124,8 +125,77 @@ def test_robot_selection_dispatch(ui):
     UI.switch_robot_in_use(ui,feedback(42));ui.configure_selected_robot.assert_called_once_with(robot)
 
 
+def test_obstacle_visibility_dispatch(ui):
+    ui.obstacle_editor=NS(visible=False)
+    ui.obstacle_editor.set_visible=lambda visible:setattr(ui.obstacle_editor,'visible',visible)
+    UI.toggle_obstacle_marker(ui,feedback())
+    assert ui.obstacle_editor.visible
+
+
 @pytest.mark.parametrize('axis',[None,[1,1,0],[0,0,0],[float('nan'),0,1]])
 def test_invalid_axis_does_not_change_setting(axis):
     robot=NS(ik_tool_axis=np.array([0,0,1]))
     assert not Backend.set_robot_ik_tool_axis(None,robot,axis)[0]
     np.testing.assert_array_equal(robot.ik_tool_axis,[0,0,1])
+
+
+def test_arm_marker_offers_only_supported_dofs_and_restores_task_rotation():
+    import copy
+    from geometry_msgs.msg import Pose
+    from visualization_msgs.msg import InteractiveMarkerControl as C
+    from simlab.utils.interactive_markers import make_UVMS_Dof_Marker
+    marker=make_UVMS_Dof_Marker('arm','arm','base','arm_task',False,
+        C.MOVE_ROTATE_3D,Pose(),.2,show_6dof=True)
+    node=NS(arm_base_task_marker=marker,_arm_full_controls=copy.deepcopy(marker.controls))
+    UI._configure_arm_marker_mode(node,False)
+    assert marker.controls[0].interaction_mode==C.MOVE_3D
+    assert all(c.interaction_mode!=C.ROTATE_AXIS for c in marker.controls)
+    UI._configure_arm_marker_mode(node,True)
+    assert sum(c.interaction_mode==C.ROTATE_AXIS for c in marker.controls)==3
+    assert marker.controls[0].interaction_mode==C.MOVE_ROTATE_3D
+
+
+def test_new_vehicle_marker_goal_projects_to_joint_mode_heading():
+    from geometry_msgs.msg import Pose
+    from scipy.spatial.transform import Rotation as R
+    import copy
+    goal=Pose();goal.position.x=5.
+    q=R.from_euler('xyz',[.3,-.2,.7]).as_quat()
+    goal.orientation.x,goal.orientation.y,goal.orientation.z,goal.orientation.w=q
+    b=NS(set_robot_selected=Mock(),_clip_pose_to_environment_bounds=lambda p:(copy.deepcopy(p),False))
+    robot=NS(k_robot=0,task_based_controller=False,prefix='robot_1_')
+    assert Backend.set_vehicle_target(b,robot,goal)[0]
+    q=b.target_vehicle_pose.orientation
+    np.testing.assert_allclose(R.from_quat([q.x,q.y,q.z,q.w]).as_euler('xyz'),[0,0,.7],atol=1e-12)
+    assert b.target_vehicle_pose.position.x==5.
+    assert goal.orientation.x!=0  # caller's captured hold pose not mutated
+
+
+def test_sensor_noise_menu_uses_confirmed_state(ui):
+    ui.sensor_noise_menu_map = {ui.menu_handler.insert(label): value
+                                for label, value in (("On", True), ("Off", False))}
+    ui._sensor_noise_menu_state = None
+    robot = ui.uvms_backend.robot_selected
+    robot.sensor_noise_enabled = True
+    on, off = ui.sensor_noise_menu_map
+    UI._refresh_sensor_noise_menu(ui)
+    assert ui.menu_handler.getCheckState(on) == MH.CHECKED
+    UI.set_sensor_noise(ui, feedback(off))
+    robot.set_sensor_noise.assert_called_once_with(False)
+    assert ui.menu_handler.getCheckState(on) == MH.CHECKED
+    robot.sensor_noise_enabled = False
+    UI._refresh_sensor_noise_menu(ui)
+    assert ui.menu_handler.getCheckState(off) == MH.CHECKED
+    count = ui.server.applyChanges.call_count
+    UI._refresh_sensor_noise_menu(ui)
+    assert ui.server.applyChanges.call_count == count
+    robot.sensor_noise_enabled = None
+    UI._refresh_sensor_noise_menu(ui)
+    assert all(ui.menu_handler.getCheckState(h) == MH.UNCHECKED
+               for h in (on, off))
+
+
+def test_robot_refresh_restores_ik_checks(ui):
+    robot=ui.uvms_backend.robot_selected;robot.ik_tool_axis=np.array([1.,0.,0.]);robot.ik_base_align_w=0
+    ui._refresh_robot_menu_state(0)
+    assert [ui.menu_handler.getCheckState(h) for h in ui.axis_menu_map]==[MH.CHECKED,MH.UNCHECKED,MH.UNCHECKED,MH.UNCHECKED]

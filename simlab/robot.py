@@ -51,7 +51,12 @@ from simlab.dynamics_profiles import (
 )
 from simlab.planner_markers import PathPlanner
 from simlab.motion_planning.trajectory_generators import VehicleTrajectoryGeneratorTemplate
-from simlab.motion_planning.endpoint_ik import EndpointIK, aligned_target_rotation
+from simlab.motion_planning.kinematics.inverse.whole_body import aligned_target_rotation
+from simlab.motion_planning.kinematics.inverse import ik_class
+from simlab.motion_planning.kinematics.forward import load_forward_kinematics
+from simlab.motion_planning.kinematics.inverse.base import (
+    IKCapability, ManipulatorIKRequest, WholeBodyIKRequest, validate_pose_endpoint,
+)
 from simlab.uvms_parameters import ReachParams
 from simlab.utils.joint_limits import position_endpoints, velocity_limit
 from simlab.utils.frames import PoseX
@@ -490,7 +495,9 @@ class Robot(Base):
                   planner=None,
                   vehicle_cart_traj=None,
                   world_frame: str = "world",
-                  create_subscriptions: bool = True):
+                  create_subscriptions: bool = True,
+                  whole_body_ik_name: str = 'whole_body_endpoint',
+                  manipulator_ik_name: str = 'manipulator_position'):
         self.planner: PathPlanner = planner
         self.vehicle_cart_traj: VehicleTrajectoryGeneratorTemplate = vehicle_cart_traj
         self.menu_handle = None
@@ -502,6 +509,7 @@ class Robot(Base):
         self._last_vehicle_cmd_yaw_step = 0.0
         self.tf_buffer = tf_buffer
         self.task_based_controller = False
+        self._arm_feedback_hold = False
 
         self.dynamics_states_sub = None
         
@@ -534,23 +542,17 @@ class Robot(Base):
     
         package_share_directory = ament_index_python.get_package_share_directory(
                 'simlab')
-        fk_path = os.path.join(package_share_directory, 'model_functions/arm/fk_eval.casadi')
-        ik_path = os.path.join(package_share_directory, 'model_functions/arm/ik_eval.casadi')
 
         vehicle_J_path = os.path.join(package_share_directory, 'model_functions/vehicle/J_uv.casadi')
         vehicle_ned2body_acc_path = os.path.join(package_share_directory, 'model_functions/vehicle/ned2body_acc.casadi')
         vehicle_ned2body_vel_path = os.path.join(package_share_directory, 'model_functions/vehicle/ned2body_vel.casadi')
-        self.endpoint_ik = EndpointIK(package_share_directory)
+        self.endpoint_ik = ik_class(whole_body_ik_name, capability=IKCapability.WHOLE_BODY_POSE)(package_share_directory)
+        self.manipulator_ik = ik_class(manipulator_ik_name, capability=IKCapability.MANIPULATOR_POSITION)(package_share_directory)
 
-        self.fk_eval = ca.Function.load(fk_path) #  forward kinematics
+        self.fk_eval = load_forward_kinematics(package_share_directory)
         # also set a class attribute fk_eval so it can be shared
         if not hasattr(Robot, "fk_eval_cls"):
             Robot.fk_eval_cls = self.fk_eval
-
-        self.ik_eval = ca.Function.load(ik_path) #  inverse kinematics
-        # also set a class attribute ik_eval so it can be shared
-        if not hasattr(Robot, "ik_eval_cls"):
-            Robot.ik_eval_cls = self.ik_eval
 
 
         self.vehicle_J = ca.Function.load(vehicle_J_path)
@@ -1008,9 +1010,11 @@ class Robot(Base):
     def uvms_Forward_kinematics(cls, joint_qx, base_T0, world_pose, tipOffset):
         return cls.fk_eval_cls(joint_qx, base_T0, world_pose, tipOffset)
 
-    @classmethod
-    def manipulator_inverse_kinematics(cls, target_position):
-        return cls.ik_eval_cls(target_position).full().flatten().tolist()
+    def manipulator_inverse_kinematics(self, target_position):
+        result = self.manipulator_ik.solve_request(ManipulatorIKRequest(target_position))
+        if not result.success:
+            raise ValueError(result.message)
+        return list(result.joints)
     
     def _mocap_pose_cb(self, msg: PoseStamped):
         p = msg.pose.position
@@ -2004,7 +2008,7 @@ class Robot(Base):
         self._accept_planner_results = True
         self._preserve_active_plan_on_failure = not preempt_current
         if preempt_current:
-            self.hold_current_state_with_feedback()
+            self.hold_current_state_with_feedback(hold_arm=False)
 
         self.start_xyz, start_quat_wxyz_raw = self._pose_to_xyz_quat_wxyz(pose_now)
 
@@ -2014,7 +2018,7 @@ class Robot(Base):
 
         self._log_plan_context(self.start_xyz, self.start_quat_wxyz, goal_xyz, goal_quat_wxyz)
 
-        self._save_vehicle_goal_from_target(goal_xyz, goal_quat_wxyz_raw)
+        self._save_vehicle_goal_from_target(goal_xyz, goal_quat_wxyz)
 
         sent = self.planner_action_client.send_goal(
             start_xyz=self.start_xyz,
@@ -2308,47 +2312,20 @@ class Robot(Base):
         ).get_rot(frame="NWU", rot_rep="matrix")
         try:
             target_rot = aligned_target_rotation(target_rot, self.ik_tool_axis)
-            x_world_next, q_next = self.endpoint_ik.solve(
+            request = WholeBodyIKRequest(
                 q, world_pose, p_des, target_rot, ReachParams.base_T0_new,
                 ReachParams.tipOffset, self.ik_joint_lower, self.ik_joint_upper,
                 self.ik_position_tolerance, self.ik_orientation_tolerance,
                 base_align_weight=self.ik_base_align_w)
+            result = self.endpoint_ik.solve_request(request)
+            if not result.success:
+                raise ValueError(result.message)
+            x_world_next = np.asarray(result.vehicle_pose, dtype=float)
+            q_next = np.asarray(result.joints, dtype=float)
+            # Command acceptance uses the robot model, independent of solver claims.
+            validate_pose_endpoint(request, x_world_next, q_next, self.fk_eval)
         except (RuntimeError, ValueError) as error:
             self.node.get_logger().warn(f'Task IK rejected; previous targets retained: {error}')
-            return
-
-        if q_next.size != q.size:
-            self.node.get_logger().warn(
-                f"IK result invalid, joint vector size mismatch "
-                f"(expected {q.size}, got {q_next.size})."
-            )
-            return 
-        if (not np.all(np.isfinite(q_next)) or
-                np.any(q_next < self.ik_joint_lower - 1e-9) or
-                np.any(q_next > self.ik_joint_upper + 1e-9)):
-            self.node.get_logger().error('Task IK rejected: joint target outside enforced limits')
-            return
-
-        if x_world_next.size != 6:
-            self.node.get_logger().warn(
-                f"IK result invalid, world pose vector must have size 6 "
-                f"(got {x_world_next.size})."
-            )
-            return 
-        if not np.all(np.isfinite(x_world_next)):
-            self.node.get_logger().error("Task IK rejected: nonfinite vehicle target")
-            return
-        # Velocity-task residuals are not endpoint pose errors. Check actual FK.
-        fk_pose = np.asarray(self.fk_eval(
-            q_next, ReachParams.base_T0_new, x_world_next, ReachParams.tipOffset)[-1],
-            dtype=float).reshape(-1)
-        position_error = float(np.linalg.norm(fk_pose[:3] - p_des))
-        actual_rot = R.from_quat(fk_pose[[4, 5, 6, 3]])
-        orientation_error = float((R.from_matrix(target_rot).inv() * actual_rot).magnitude())
-        if position_error > self.ik_position_tolerance or orientation_error > self.ik_orientation_tolerance:
-            self.node.get_logger().warn(
-                f'Task IK rejected: endpoint error {position_error:.4f} m, '
-                f'{np.degrees(orientation_error):.2f} deg; previous targets retained')
             return
 
         pose_next = PoseX.from_pose(
@@ -2357,7 +2334,6 @@ class Robot(Base):
             rot_rep="euler_xyz",
             frame="NWU",
         )
-        self._vehicle_desired_pose_from_ik_ = pose_next.get_pose_as_Pose_msg()
         _, quat_wxyz = pose_next.get_pose(frame="NWU", rot_rep="quat_wxyz")
         res_map_ned = self.world_nwu_to_map_ned(
             xyz_world_nwu=x_world_next[0:3],
@@ -2370,6 +2346,20 @@ class Robot(Base):
             )
             return 
         p_cmd_ned, rpy_cmd_ned = res_map_ned
+        if not np.all(np.isfinite(np.r_[p_cmd_ned, rpy_cmd_ned])):
+            self.node.get_logger().warn('Task IK rejected: nonfinite frame conversion')
+            return
+        # Quaternion/frame conversion returns principal Euler angles, whereas
+        # waypoint tracking and dynamics can accumulate multiple yaw turns.
+        # This is a new endpoint, not a winding trajectory: lift its yaw onto
+        # the nearest measured branch at acceptance (after the IK solve).
+        measured_yaw = float(self.ned_pose[5])
+        if not np.isfinite(measured_yaw):
+            self.node.get_logger().warn('Task IK rejected: nonfinite measured yaw')
+            return
+        rpy_cmd_ned = np.asarray(rpy_cmd_ned, dtype=float).copy()
+        rpy_cmd_ned[2] = self.normalize_angle(float(rpy_cmd_ned[2]), measured_yaw)
+        self._vehicle_desired_pose_from_ik_ = pose_next.get_pose_as_Pose_msg()
         self.arm.q_command = q_next.tolist()
         self._clear_task_reference_derivatives()
         self.pose_command = [
@@ -3241,8 +3231,11 @@ class Robot(Base):
         self.body_vel_command = [0.0]*6
         self.body_acc_command = [0.0]*6
 
-    def hold_pose_with_feedback(self, pose_ned_6: Sequence[float] | None = None) -> None:
+    def hold_pose_with_feedback(self, pose_ned_6: Sequence[float] | None = None, *, hold_arm: bool = True) -> None:
         """Hold a NED vehicle pose and current arm state with the selected feedback controller."""
+        # Vehicle-only replanning must preserve an independently requested arm goal.
+        if hold_arm:
+            self._arm_feedback_hold = True
         st = self.get_state()
         pose = np.asarray(st["pose"] if pose_ned_6 is None else pose_ned_6, dtype=float).copy()
         if pose.size != 6:
@@ -3256,14 +3249,16 @@ class Robot(Base):
         self.pose_command = pose.tolist()
         self.body_vel_command = [0.0] * 6
         self.body_acc_command = [0.0] * 6
-        self.arm.q_command = np.asarray(st["q"], dtype=float)[:4].tolist()
-        self.arm.dq_command = np.zeros((4,), dtype=float).tolist()
-        self.arm.ddq_command = np.zeros((4,), dtype=float).tolist()
+        if hold_arm:
+            self.arm.q_command = np.asarray(st["q"], dtype=float)[:4].tolist()
+            self.arm.dq_command = np.zeros((4,), dtype=float).tolist()
+            self.arm.ddq_command = np.zeros((4,), dtype=float).tolist()
         self.enable_planner_output()
 
-    def hold_current_state_with_feedback(self) -> None:
-        """Hold the measured state with the selected feedback controller."""
-        self.hold_pose_with_feedback()
+    def hold_current_state_with_feedback(self, *, hold_arm: bool = True) -> None:
+        """Hold measured state, optionally preserving independent arm references."""
+        self.hold_pose_with_feedback(hold_arm=hold_arm)
+
 
     def control_loop_callback(self):
         state = self.get_state()
