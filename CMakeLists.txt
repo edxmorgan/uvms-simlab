@@ -22,6 +22,7 @@ set(msg_files
 )
 
 set(srv_files
+  "srv/ControllerConfiguration.srv"
   "srv/EditDynamicObstacles.srv"
   "srv/BackendRobotCommand.srv"
   "srv/BackendWorldCommand.srv"
