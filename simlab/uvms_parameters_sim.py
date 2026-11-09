@@ -12,6 +12,14 @@ import numpy as np
 class ReachParams:
     profile_name = "sim"
 
+    # Joint-space acceleration gains; fifth component is the scalar gripper.
+    # Matching surface/damping rates give a critically damped nominal error ODE.
+    smc_surface = np.r_[np.sqrt([40., 40., 750., 750.]), 1.]
+    smc_damping = np.r_[np.sqrt([40., 40., 750., 750.]), 4.]
+    smc_switching = np.array([.25, .25, .25, .25, .005])
+    smc_boundary = np.array([.02, .02, .02, .02, .002])
+    gripper_model = np.array([300., 400., 0.])  # mass, damping, stiffness
+
     joint_home = np.array([3.1, 0.7, 0.4, 2.1])
     endeffector_wrt_base_home = np.array([0.09669330716133118, 0.0, 0.1003517135977745])
 
@@ -63,6 +71,11 @@ class ReachParams:
 
 class VehicleControllerParams:
     profile_name = "sim"
+    # Body-wrench gains (different units from the arm acceleration gains).
+    smc_surface = np.array([.6, .6, .6, .8, .8, .8])
+    smc_damping = np.array([25., 25., 30., 3., 3., 3.])
+    smc_switching = np.array([2., 2., 2., .15, .15, .15])
+    smc_boundary = np.array([.05, .05, .05, .03, .03, .03])
 
     model_params = np.array(
         [

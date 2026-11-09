@@ -2,6 +2,7 @@ from simlab.controllers.base import ControllerTemplate
 from simlab.controllers.cmd_replay import CmdReplayController
 from simlab.controllers.invDyn import LowLevelInvDynController
 from simlab.controllers.pid import LowLevelPidController
+from simlab.controllers.sliding_mode import SlidingModeController
 
 try:
     from simlab.controllers.oges import NAMOR_IMPORT_ERROR, OgesModelbasedController
@@ -21,6 +22,7 @@ except ImportError:
 DEFAULT_CONTROLLER_CLASSES = [
     LowLevelPidController,
     LowLevelInvDynController,
+    SlidingModeController,
     CmdReplayController,
 ]
 
@@ -39,6 +41,7 @@ __all__ = [
     "DEFAULT_CONTROLLER_CLASSES",
     "LowLevelInvDynController",
     "LowLevelPidController",
+    "SlidingModeController",
 ]
 
 if OgesModelbasedController is not None and NAMOR_IMPORT_ERROR is None:
