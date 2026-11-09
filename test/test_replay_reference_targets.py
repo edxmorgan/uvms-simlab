@@ -6,8 +6,12 @@ import pytest
 from geometry_msgs.msg import Pose
 from builtin_interfaces.msg import Time
 
-from simlab.robot import Robot, ControlMode
+from simlab.robot import Robot, ControlMode, ControllerSpec
 from simlab.reference_targets import ReferenceTargetPublisher
+
+
+
+
 
 
 def test_replay_message_is_fresh_and_transforms_body_derivatives():
@@ -41,7 +45,8 @@ def test_replay_message_is_fresh_and_transforms_body_derivatives():
 @pytest.mark.parametrize('vehicle_mode', ['track_reference', 'hold_initial', 'replay_command', 'zero_command'])
 @pytest.mark.parametrize('arm_mode', ['track_reference', 'hold_initial', 'replay_command', 'zero_command'])
 @pytest.mark.parametrize('tf_ready', [True, False])
-def test_replay_publishes_controller_inputs_without_changing_commands(vehicle_mode, arm_mode, tf_ready):
+@pytest.mark.parametrize('deferred', [True, False])
+def test_replay_publishes_controller_inputs_without_changing_commands(vehicle_mode, arm_mode, tf_ready, deferred):
     robot = Robot.__new__(Robot)
     robot.node = Mock()
     robot.prefix, robot.map_frame, robot.world_frame = 'robot_1_', 'robot_1_map', 'world'
@@ -51,8 +56,13 @@ def test_replay_publishes_controller_inputs_without_changing_commands(vehicle_mo
                  body_vel=[0.] * 6, q=[0.] * 4, dq=[0.] * 4,
                  grasper_q=[0.], grasper_qdot=[0.], dt=.01)
     robot.get_state = lambda: state
-    spec = SimpleNamespace(vehicle_fn=Mock(return_value=[11.] * 6),
-                           arm_fn=Mock(return_value=[12.] * 5))
+    spec = ControllerSpec('PID', vehicle_fn=Mock(return_value=[11.] * 6),
+                          arm_fn=Mock(return_value=[12.] * 5))
+    if deferred:
+        instance = SimpleNamespace(vehicle_controller=spec.vehicle_fn, arm_controller=spec.arm_fn)
+        factory = Mock(return_value=instance)
+        spec.factory = factory
+        spec.vehicle_fn = spec.arm_fn = None
     robot._controllers = {'PID': spec}
     replay = SimpleNamespace(
         enabled=True, set_sim_time=Mock(), current_sample_index=lambda: 7,
@@ -72,6 +82,21 @@ def test_replay_publishes_controller_inputs_without_changing_commands(vehicle_mo
     robot.publish_commands = Mock()
     robot.control_loop_callback()
     supported = ('track_reference', 'hold_initial')
+    if deferred:
+        if vehicle_mode in supported or arm_mode in supported:
+            factory.assert_called_once_with()
+        else:
+            factory.assert_not_called()
+    if vehicle_mode in supported and arm_mode in supported:
+        reference = robot._replay_tracking_reference
+        vehicle = spec.vehicle_fn.call_args.kwargs
+        arm = spec.arm_fn.call_args.kwargs
+        for metric, control in [('pose', 'target_pos'), ('body_vel', 'target_vel'), ('body_acc', 'target_acc')]:
+            np.testing.assert_array_equal(reference[metric], vehicle[control])
+        for metric, control in [('q', 'q_ref'), ('dq', 'dq_ref'), ('ddq', 'ddq_ref')]:
+            np.testing.assert_array_equal(reference[metric], arm[control])
+    else:
+        assert robot._replay_tracking_reference is None
     if tf_ready and vehicle_mode in supported and arm_mode in supported:
         args = robot.reference_pub.publish_replay_targets.call_args.kwargs
         vehicle = spec.vehicle_fn.call_args.kwargs
@@ -86,3 +111,62 @@ def test_replay_publishes_controller_inputs_without_changing_commands(vehicle_mo
     expected_vehicle = 11. if vehicle_mode in supported else (9. if vehicle_mode == 'replay_command' else 0.)
     expected_arm = 12. if arm_mode in supported else (10. if arm_mode == 'replay_command' else 0.)
     robot.publish_commands.assert_called_once_with([expected_vehicle] * 6, [expected_arm] * 5)
+
+
+def test_oges_reset_clears_only_command_memory():
+    from simlab.controllers.oges import OgesModelbasedController
+    controller = OgesModelbasedController.__new__(OgesModelbasedController)
+    controller.arm_dof = 4
+    controller.vehicle_u_prev = np.ones(6)
+    controller.arm_u_prev = np.ones(4)
+    controller.vehicle_weights = np.arange(6.)
+    controller.reset_controller_state()
+    np.testing.assert_array_equal(controller.vehicle_u_prev, np.zeros(6))
+    np.testing.assert_array_equal(controller.arm_u_prev, np.zeros(4))
+    np.testing.assert_array_equal(controller.vehicle_weights, np.arange(6.))
+
+
+@pytest.mark.parametrize('reference', [None, dict(pose=[1.] * 6)])
+def test_metrics_never_use_planner_cache_for_replay(reference):
+    robot = Robot.__new__(Robot)
+    robot.get_state = lambda: dict(status='active')
+    robot.sim_reset_hold = False
+    robot.control_mode = ControlMode.REPLAY
+    robot.pose_command = robot.body_vel_command = robot.body_acc_command = [999.] * 6
+    robot.arm = SimpleNamespace(q_command=[999.] * 4, dq_command=[999.] * 4, ddq_command=[999.] * 4)
+    robot._reference_trajectory_direction_ned = lambda: np.zeros(3)
+    robot._replay_tracking_reference = reference
+    robot.performance_metrics = Mock()
+    robot._update_controller_performance_metrics()
+    args = robot.performance_metrics.update.call_args.kwargs
+    assert args['active'] is (reference is not None)
+    assert args['reference'] == (reference or {})
+
+
+@pytest.mark.parametrize('available', [True, False])
+def test_replay_pass_resets_selected_feedback_or_rejects_missing_controller(available):
+    robot = Robot.__new__(Robot)
+    robot.node = Mock()
+    robot.control_mode = ControlMode.REPLAY
+    robot.sim_reset_hold = False
+    robot.get_state = lambda: dict(status='active', sim_time=1.)
+    controller = SimpleNamespace(reset_controller_state=Mock()) if available else None
+    robot.controller_instance = lambda name: controller
+    robot.performance_metrics = Mock()
+    robot.publish_commands = Mock()
+    replay = SimpleNamespace(
+        set_sim_time=Mock(), has_pending_auto_start=lambda: True,
+        feedback_controller_name=lambda: 'Ours',
+        vehicle_subsystem_mode=lambda: 'track_reference',
+        manipulator_subsystem_mode=lambda: 'track_reference',
+        start_playback=Mock(return_value=False), mark_reset_failed=Mock(), enabled=False)
+    robot.active_controller_instance = lambda: replay
+    robot.control_loop_callback()
+    if available:
+        controller.reset_controller_state.assert_called_once()
+        robot.performance_metrics.reset.assert_called_once()
+        replay.start_playback.assert_called_once_with(sim_time_sec=1.)
+    else:
+        replay.start_playback.assert_not_called()
+        replay.mark_reset_failed.assert_called_once()
+    robot.publish_commands.assert_called_once_with([0.] * 6, [0.] * 5)

@@ -55,6 +55,7 @@ def test_cpu_uvms_rl_hover_vehicle_shapes_and_types():
 
     obs = env.reset()
     assert isinstance(obs, np.ndarray)
+    assert env.sim_observations().dtype == np.float64
     assert obs.shape == (16, 35)
 
     actions = np.zeros((16, env.action_dim), dtype=np.float32)
@@ -138,6 +139,8 @@ def test_gpu_uvms_rl_hover_vehicle_returns_cuda_tensors():
     obs, rewards, dones, info = env.step(actions)
 
     assert obs.is_cuda
+    assert env.sim_observations().dtype == torch.float64
+    assert env.actions().dtype == torch.float64
     assert rewards.is_cuda
     assert dones.is_cuda
     assert tuple(obs.shape) == (16, 35)

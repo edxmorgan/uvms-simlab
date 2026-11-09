@@ -2,14 +2,16 @@ import numpy as np
 from rclpy.node import Node
 
 from simlab.controllers.oges import OgesModelbasedController
+from simlab.controllers.model_profile import NominalModel
+from simlab.dynamics_profiles import load_robot_dynamics_profile
+from .diagnostics import DRDiagnostics
 
 try:
-    from namor import DRCLFOGES, ResidualBuffer, estimate_force_residual_from_velocity_error
+    from namor.controls.dr_clf_oges import DRCLFOGES, ResidualBuffer
     NAMOR_DR_IMPORT_ERROR = None
 except ImportError as exc:
     DRCLFOGES = None
     ResidualBuffer = None
-    estimate_force_residual_from_velocity_error = None
     NAMOR_DR_IMPORT_ERROR = exc
 
 
@@ -22,6 +24,23 @@ def _array(values) -> np.ndarray:
 class DistributionallyRobustOgesController(OgesModelbasedController):
     name = "DR-OGES"
     registry_name = "DR-Ours"
+    uses_dynamics_observations = True
+    lazy_initialization = True
+
+    def configuration_snapshot(self) -> dict:
+        result = super().configuration_snapshot()
+        result['parameters']['vehicle_residual_estimator'] = 'cpp_disturbance_ekf'
+        result['parameters']['arm_residual_estimator'] = 'cpp_disturbance_ekf'
+        for subsystem in ('vehicle', 'arm'):
+            projector = getattr(self, subsystem + '_dr_projector')
+            buffer = getattr(self, subsystem + '_residual_buffer')
+            if projector.residual_buffer is not buffer:
+                raise RuntimeError(f'{subsystem} residual collector is disconnected')
+            result['parameters'][subsystem + '_dr'] = {
+                key: value.tolist() if isinstance(value, np.ndarray) else value
+                for key, value in vars(projector).items()
+                if isinstance(value, (int, float, bool, str, np.ndarray, type(None)))}
+        return result
 
     def __init__(self, node: Node, arm_dof: int = 4, robot_prefix: str = ""):
         super().__init__(node, arm_dof, robot_prefix)
@@ -52,10 +71,16 @@ class DistributionallyRobustOgesController(OgesModelbasedController):
             projection_deadband=1e-6,
             slack_weight=1e8,
         )
-        self._prev_vehicle_sample = None
-        self._prev_arm_sample = None
+        self._observations = {'vehicle': None, 'arm': None}
         self.last_vehicle_dr_result = None
         self.last_arm_dr_result = None
+        self._diagnostics = DRDiagnostics(node, robot_prefix)
+        if 'real' not in robot_prefix:
+            # Both native simulation observers use this fixed nominal profile.
+            # Explicit runtime model configuration still goes through the
+            # existing boundary, and mismatched evidence remains rejected.
+            self.set_model_profile(NominalModel.from_profile(
+                load_robot_dynamics_profile('dory_alpha', node)))
         self.node.get_logger().info(
             "\033[96mDistributionally robust OGES controller active as DR-Ours.\033[0m"
         )
@@ -63,50 +88,66 @@ class DistributionallyRobustOgesController(OgesModelbasedController):
     def reset_controller_state(self) -> None:
         self.vehicle_u_prev = np.zeros(6, dtype=float)
         self.arm_u_prev = np.zeros(self.arm_dof, dtype=float)
-        self.vehicle_residual_buffer.clear()
-        self.arm_residual_buffer.clear()
-        self._prev_vehicle_sample = None
-        self._prev_arm_sample = None
+        self.reset_observations()
         self.last_vehicle_dr_result = None
         self.last_arm_dr_result = None
 
-    def _update_vehicle_residual(self, qdot_now: np.ndarray) -> None:
-        sample = self._prev_vehicle_sample
-        if sample is None:
-            return
-        try:
-            residual = estimate_force_residual_from_velocity_error(
-                sample["H"],
-                sample["qdot"],
-                qdot_now,
-                sample["u"],
-                sample["F"],
-                sample["dt"],
-            )
-        except (ValueError, np.linalg.LinAlgError) as exc:
-            self.node.get_logger().debug(f"DR-Ours skipped vehicle residual update: {exc}")
-            return
-        if np.all(np.isfinite(residual)):
-            self.vehicle_residual_buffer.append(residual)
+    def reset_observations(self) -> None:
+        self._observations = {'vehicle': None, 'arm': None}
+        self.vehicle_residual_buffer.clear()
+        self.arm_residual_buffer.clear()
 
-    def _update_arm_residual(self, qdot_now: np.ndarray) -> None:
-        sample = self._prev_arm_sample
-        if sample is None:
+    def set_model_profile(self, model) -> None:
+        super().set_model_profile(model)
+        self.reset_observations()
+
+    def observe_dynamics(self, subsystem, observation) -> None:
+        """Consume native EKF posterior means with the same contract for both subsystems.
+
+        Posterior means are correlated estimates; empirical DR statistics are
+        not certified independent-sample confidence bounds.
+        """
+        if subsystem not in ('vehicle', 'arm'):
+            raise ValueError('unknown disturbance subsystem')
+        previous = self._observations[subsystem]
+        buffer = getattr(self, subsystem + '_residual_buffer')
+        nominal = (self.blue.sim_p if subsystem == 'vehicle'
+                   else self.alpha_params.step_model_params)
+        reason = None
+        if observation is None:
+            reason = 'missing, stale or invalid C++ disturbance estimate'
+        elif not np.allclose(observation.model, np.asarray(nominal).reshape(-1),
+                             rtol=1e-9, atol=1e-10):
+            reason = 'C++ estimator nominal model differs from DR nominal model'
+        if reason is not None:
+            buffer.clear()
+            self._observations[subsystem] = None
+            if getattr(self, '_' + subsystem + '_rejection', None) != reason:
+                self.node.get_logger().warning(f'DR {subsystem} evidence unavailable: ' + reason)
+                self._diagnostics.emit(subsystem, 'residual_rejected', observation, reason=reason)
+            setattr(self, '_' + subsystem + '_rejection', reason)
             return
-        try:
-            residual = estimate_force_residual_from_velocity_error(
-                sample["H"],
-                sample["qdot"],
-                qdot_now,
-                sample["u"],
-                sample["F"],
-                sample["dt"],
-            )
-        except (ValueError, np.linalg.LinAlgError) as exc:
-            self.node.get_logger().debug(f"DR-Ours skipped arm residual update: {exc}")
-            return
-        if np.all(np.isfinite(residual)):
-            self.arm_residual_buffer.append(residual)
+        setattr(self, '_' + subsystem + '_rejection', None)
+        if previous is not None:
+            if observation.stamp <= previous.stamp or observation.generation < previous.generation:
+                return
+            if observation.generation == previous.generation and observation.step <= previous.step:
+                return
+            if (observation.generation != previous.generation
+                    or observation.stamp - previous.stamp > 0.5):
+                buffer.clear()
+        self._observations[subsystem] = observation
+        buffer.append(observation.force)
+        self._diagnostics.emit(subsystem, 'residual', observation,
+                               residual=observation.force, variance=observation.variance,
+                               estimator={'method': 'cpp_disturbance_ekf'}, sample_count=len(buffer))
+
+    def _expire_disturbance(self, subsystem):
+        observation = self._observations[subsystem]
+        if observation is not None:
+            age = self.node.get_clock().now().nanoseconds * 1e-9 - observation.stamp
+            if age < 0 or age > 0.5:
+                self.observe_dynamics(subsystem, None)
 
     def vehicle_controller(
         self,
@@ -117,14 +158,14 @@ class DistributionallyRobustOgesController(OgesModelbasedController):
         dt: float,
     ) -> np.ndarray:
         dt = float(dt)
+        self._expire_disturbance('vehicle')
 
         vr_i = np.asarray(state[6:12], dtype=float).reshape(-1)
         eul = np.asarray(state[3:6], dtype=float).reshape(-1)
-        self._update_vehicle_residual(vr_i)
 
         H_i = self.M_uv_matrix(self.blue.sim_p)
         C_i = self.C_uv_mat(vr_i.reshape(-1, 1), self.blue.sim_p)
-        g_i = self.g_uv_vec(eul.reshape(-1, 1), self.blue.sim_p)
+        g_i = self.g_uv_vec(state[:6], self.blue.sim_p)
         Dp_i = self.Dp_uv_vec(vr_i.reshape(-1, 1), self.blue.sim_p)
 
         F_i = g_i + C_i @ vr_i.reshape(-1, 1) + Dp_i @ vr_i.reshape(-1, 1)
@@ -189,15 +230,10 @@ class DistributionallyRobustOgesController(OgesModelbasedController):
             dt=dt,
         )
         self.last_vehicle_dr_result = result
+        self._diagnostics.projection('vehicle', self._observations['vehicle'],
+                                     result, u_nominal, dt)
         u = result.control
         self.vehicle_u_prev = u.copy()
-        self._prev_vehicle_sample = {
-            "H": H_np.copy(),
-            "F": F_np.copy(),
-            "qdot": vr_i.copy(),
-            "u": u.copy(),
-            "dt": dt,
-        }
         return u
 
     def arm_controller(
@@ -210,13 +246,13 @@ class DistributionallyRobustOgesController(OgesModelbasedController):
         dt: float,
     ) -> np.ndarray:
         dt = float(dt)
+        self._expire_disturbance('arm')
 
         q_arm = np.asarray(q[: self.arm_dof], dtype=float)
         qdot_arm = np.asarray(q_dot[: self.arm_dof], dtype=float)
         qref_arm = np.asarray(q_ref[: self.arm_dof], dtype=float)
         dqref_arm = np.asarray(dq_ref[: self.arm_dof], dtype=float)
         ddqref_arm = np.asarray(ddq_ref[: self.arm_dof], dtype=float)
-        self._update_arm_residual(qdot_arm)
 
         H_i = self.M_arm_matrix(q_arm, self.alpha_params.step_model_params)
         Cqot_i = self.Cqot_arm_vector(q_arm, qdot_arm, self.alpha_params.step_model_params)
@@ -281,15 +317,10 @@ class DistributionallyRobustOgesController(OgesModelbasedController):
             dt=dt,
         )
         self.last_arm_dr_result = result
+        self._diagnostics.projection('arm', self._observations['arm'],
+                                     result, arm_nominal, dt)
         arm_tau = result.control
         self.arm_u_prev = arm_tau.copy()
-        self._prev_arm_sample = {
-            "H": H_np.copy(),
-            "F": F_np.copy(),
-            "qdot": qdot_arm.copy(),
-            "u": arm_tau.copy(),
-            "dt": dt,
-        }
 
         grasp_err = q_ref[-1] - q[-1]
         grasp_d_err = dq_ref[-1] - q_dot[-1]

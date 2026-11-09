@@ -15,6 +15,7 @@
 
 import csv
 import json
+import time
 from datetime import datetime
 from pathlib import Path as FilePath
 
@@ -25,6 +26,7 @@ import ament_index_python
 import os
 import rclpy
 import casadi as ca
+from ruckig import Result as TrajectoryResult
 from nav_msgs.msg import Path
 from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped, Pose
@@ -32,7 +34,7 @@ from rclpy.qos import QoSProfile, QoSHistoryPolicy
 import copy
 from std_msgs.msg import Float32
 from ros2_control_blue_reach_5.srv import ResetSimUvms, SetSimCameraDynamics, SetSimDynamics
-from std_srvs.srv import Trigger
+from std_srvs.srv import Trigger, SetBool
 from pyPS4Controller.controller import Controller
 import threading
 import glob
@@ -40,6 +42,7 @@ from typing import Sequence, Dict, Callable, Any, Optional
 from control_msgs.msg import DynamicInterfaceGroupValues
 from std_msgs.msg import Float64MultiArray
 from simlab.controller_msg import FullRobotMsg
+from simlab.controllers.dr_oges.feedback import forward_dynamics_observations, reset_dynamics_observer
 from simlab.controllers import DEFAULT_CONTROLLER_CLASSES
 from simlab.dynamics_profiles import (
     camera_dynamics_from_profile,
@@ -50,7 +53,14 @@ from simlab.dynamics_profiles import (
 )
 from simlab.planner_markers import PathPlanner
 from simlab.motion_planning.trajectory_generators import VehicleTrajectoryGeneratorTemplate
+from simlab.motion_planning.kinematics.inverse.whole_body import aligned_target_rotation
+from simlab.motion_planning.kinematics.inverse import ik_class
+from simlab.motion_planning.kinematics.forward import load_forward_kinematics
+from simlab.motion_planning.kinematics.inverse.base import (
+    IKCapability, ManipulatorIKRequest, WholeBodyIKRequest, validate_pose_endpoint,
+)
 from simlab.uvms_parameters import ReachParams
+from simlab.utils.joint_limits import position_endpoints, velocity_limit
 from simlab.utils.frames import PoseX
 from tf2_ros import TransformException, Buffer
 from tf2_geometry_msgs import do_transform_pose, do_transform_vector3
@@ -96,6 +106,16 @@ class ControllerSpec:
     name: str
     vehicle_fn: Callable[..., Any]
     arm_fn: Callable[..., Any]
+    factory: Callable[..., Any] = None
+
+    def resolve(self):
+        """Construct an opt-in deferred controller once, on first use."""
+        if self.factory is not None:
+            controller = self.factory()
+            self.vehicle_fn = controller.vehicle_controller
+            self.arm_fn = controller.arm_controller
+            self.factory = None
+        return self
 
 @dataclass
 class PlannerSpec:
@@ -410,13 +430,15 @@ class Manipulator(Base):
         self.grasper_q_dot = [0.0]
         self.grasper_q_ddot = [0.0]
         self.grasper_effort = [0.0]
+        self.grasper_closed_position, self.grasper_open_position = position_endpoints(
+            node.get_parameter("robot_description").value, self.alpha_axis_a)
         self.close_grasper()
 
     def open_grasper(self):
-        self.grasp_command = ReachParams.grasper_open
+        self.grasp_command = self.grasper_open_position
 
     def close_grasper(self):
-        self.grasp_command = ReachParams.grasper_close
+        self.grasp_command = self.grasper_closed_position
 
     def update_state(self, msg: DynamicJointState):
         self.q = self.get_interface_value(
@@ -485,7 +507,9 @@ class Robot(Base):
                   planner=None,
                   vehicle_cart_traj=None,
                   world_frame: str = "world",
-                  create_subscriptions: bool = True):
+                  create_subscriptions: bool = True,
+                  whole_body_ik_name: str = 'whole_body_endpoint',
+                  manipulator_ik_name: str = 'manipulator_position'):
         self.planner: PathPlanner = planner
         self.vehicle_cart_traj: VehicleTrajectoryGeneratorTemplate = vehicle_cart_traj
         self.menu_handle = None
@@ -496,7 +520,9 @@ class Robot(Base):
         self._last_vehicle_target_yaw = None
         self._last_vehicle_cmd_yaw_step = 0.0
         self.tf_buffer = tf_buffer
+        self._tf_waiting = {}
         self.task_based_controller = False
+        self._arm_feedback_hold = False
 
         self.dynamics_states_sub = None
         
@@ -529,30 +555,18 @@ class Robot(Base):
     
         package_share_directory = ament_index_python.get_package_share_directory(
                 'simlab')
-        fk_path = os.path.join(package_share_directory, 'model_functions/arm/fk_eval.casadi')
-        ik_path = os.path.join(package_share_directory, 'model_functions/arm/ik_eval.casadi')
 
         vehicle_J_path = os.path.join(package_share_directory, 'model_functions/vehicle/J_uv.casadi')
         vehicle_ned2body_acc_path = os.path.join(package_share_directory, 'model_functions/vehicle/ned2body_acc.casadi')
         vehicle_ned2body_vel_path = os.path.join(package_share_directory, 'model_functions/vehicle/ned2body_vel.casadi')
-        ik_wb_path = os.path.join(package_share_directory, 'whole_body/ik.so')
+        self.endpoint_ik = ik_class(whole_body_ik_name, capability=IKCapability.WHOLE_BODY_POSE)(package_share_directory)
+        self.manipulator_ik = ik_class(manipulator_ik_name, capability=IKCapability.MANIPULATOR_POSITION)(package_share_directory)
 
-        self.fk_eval = ca.Function.load(fk_path) #  forward kinematics
+        self.fk_eval = load_forward_kinematics(package_share_directory)
         # also set a class attribute fk_eval so it can be shared
         if not hasattr(Robot, "fk_eval_cls"):
             Robot.fk_eval_cls = self.fk_eval
 
-        self.ik_eval = ca.Function.load(ik_path) #  inverse kinematics
-        # also set a class attribute ik_eval so it can be shared
-        if not hasattr(Robot, "ik_eval_cls"):
-            Robot.ik_eval_cls = self.ik_eval
-
-
-        self.ik_wb_eval = ca.external('mapacc_task_based_ik',ik_wb_path) #  inverse kinematics
-
-        # also set a class attribute ik_eval so it can be shared
-        if not hasattr(Robot, "ik_wb_eval_cls"):
-            Robot.ik_wb_eval_cls = self.ik_wb_eval
 
         self.vehicle_J = ca.Function.load(vehicle_J_path)
         self.vehicle_ned2body_acc = ca.Function.load(vehicle_ned2body_acc_path)
@@ -566,6 +580,12 @@ class Robot(Base):
         self.arm_IOs = f'{prefix}_arm_IOs'
         self.map_frame = f"{prefix}map" 
         self.arm = Manipulator(node, n_joint, prefix)
+        description = node.get_parameter('robot_description').value
+        bounds = [position_endpoints(description, name, actuator_bounds=True) for name in self.arm.joints]
+        self.ik_joint_lower = np.array([b[0] for b in bounds])
+        self.ik_joint_upper = np.array([b[1] for b in bounds])
+        self.ik_joint_velocity = np.array([velocity_limit(description, name)
+                                           for name in self.arm.joints])
         self.ned_pose = [0] * 6
         self.body_vel = [0] * 6
         self.body_acc = [0] * 6
@@ -594,6 +614,7 @@ class Robot(Base):
         self.controller_instances = [
             controller_class(self.node, self.n_joint, self.prefix)
             for controller_class in DEFAULT_CONTROLLER_CLASSES
+            if not getattr(controller_class, 'lazy_initialization', False)
         ]
         self.planner_action_client = PlannerActionClient(
             self.node,
@@ -652,6 +673,8 @@ class Robot(Base):
             Trigger,
             f"/{self.prefix}release_sim_uvms",
         )
+        self.sensor_noise_client = self.node.create_client(SetBool, f"/{self.prefix}set_sensor_noise")
+        self.sensor_noise_enabled = None  # Only confirmed simulator telemetry sets this.
         self.active_dynamics_profile = ""
 
         self.control_mode = ControlMode.TELEOP
@@ -674,7 +697,8 @@ class Robot(Base):
         self._replay_record_controller = None
         self._replay_obstacle_record_path = None
         self._replay_obstacle_record = None
-        self.dynamic_obstacle_snapshot_provider = None
+        self.dynamic_obstacle_snapshot_provider: Callable[[], Any] | None = None
+        self._replay_reset_pending = False
         self._replay_last_cmd_body_wrench = [0.0] * 6
         self._replay_last_cmd_arm_tau = [0.0] * 5
         self._replay_last_recorded_sim_time = None
@@ -693,6 +717,15 @@ class Robot(Base):
         # inverse IK tool axis and alignment weight CONFIGURATIONS
         self.ik_tool_axis = np.array([0.0, 0.0, 1.0], dtype=float)
         self.ik_base_align_w = 0.0
+        for name, default in (('task_ik_position_tolerance', 0.01),
+                              ('task_ik_orientation_tolerance', 0.05)):
+            if not node.has_parameter(name):
+                node.declare_parameter(name, default)
+        self.ik_position_tolerance = float(node.get_parameter('task_ik_position_tolerance').value)
+        self.ik_orientation_tolerance = float(node.get_parameter('task_ik_orientation_tolerance').value)
+        if (not np.isfinite(self.ik_position_tolerance) or self.ik_position_tolerance <= 0 or
+                not np.isfinite(self.ik_orientation_tolerance) or self.ik_orientation_tolerance <= 0):
+            raise ValueError('Task IK endpoint tolerances must be finite and positive')
 
         self.traj_path_poses = []
         self.max_traj_pose_count = 500  # cap RViz message size
@@ -774,6 +807,15 @@ class Robot(Base):
             )
 
         # Bind the default controller without activating closed-loop publishing.
+        for controller_class in DEFAULT_CONTROLLER_CLASSES:
+            if getattr(controller_class, 'lazy_initialization', False):
+                self._controllers[controller_class.registry_name] = ControllerSpec(
+                    name=controller_class.registry_name,
+                    vehicle_fn=None,
+                    arm_fn=None,
+                    factory=lambda cls=controller_class: cls(
+                        self.node, self.n_joint, self.prefix),
+                )
         self.set_controller("PID", activate=False)
 
         # Active path planner
@@ -802,8 +844,10 @@ class Robot(Base):
         if activate and self.control_mode == ControlMode.REPLAY_SETTLE and name != "CmdReplay":
             self.cancel_replay_settle(mark_failed=True)
             self.control_mode = ControlMode.PLANNER
-        spec = self._controllers[name]  # raises KeyError if missing, good fail-fast
+        spec = self._controllers[name].resolve()
         next_controller = getattr(spec.arm_fn, "__self__", None)
+        if previous_controller is not next_controller:
+            reset_dynamics_observer(self)
         if activate and self._controller_is_replay(next_controller):
             self.controller_name = name
             self.node.get_logger().info(
@@ -843,6 +887,7 @@ class Robot(Base):
         spec = self._controllers.get(name)
         if spec is None:
             return None
+        spec.resolve()
         return getattr(spec.arm_fn, "__self__", None)
 
     def _controller_is_replay(self, controller) -> bool:
@@ -871,7 +916,7 @@ class Robot(Base):
                 f"Replay settle controller '{requested_controller}' is not available for {self.prefix}; "
                 f"using {settle_controller_name}."
             )
-        spec = self._controllers[settle_controller_name]
+        spec = self._controllers[settle_controller_name].resolve()
         self.vehicle_controller_fn = spec.vehicle_fn
         self.arm_controller_fn = spec.arm_fn
         self.controller_name = settle_controller_name
@@ -974,6 +1019,16 @@ class Robot(Base):
     def set_control_space(self, control_space_name: str) -> None:
         self.control_space = control_space_name
         self.task_based_controller = (control_space_name == ControlSpace.TASK_SPACE)
+        if self.task_based_controller:
+            # The trajectory sampler stops in task mode. Its last moving sample
+            # must not survive as feedforward for a stationary IK endpoint.
+            self._clear_task_reference_derivatives()
+
+    def _clear_task_reference_derivatives(self):
+        self.body_vel_command = [0.0] * 6
+        self.body_acc_command = [0.0] * 6
+        self.arm.dq_command = [0.0] * len(self.arm.q_command)
+        self.arm.ddq_command = [0.0] * len(self.arm.q_command)
 
     def list_control_spaces(self) -> list:
         return [m.value for m in ControlSpace]
@@ -982,46 +1037,12 @@ class Robot(Base):
     def uvms_Forward_kinematics(cls, joint_qx, base_T0, world_pose, tipOffset):
         return cls.fk_eval_cls(joint_qx, base_T0, world_pose, tipOffset)
 
-    @classmethod
-    def manipulator_inverse_kinematics(cls, target_position):
-        return cls.ik_eval_cls(target_position).full().flatten().tolist()
+    def manipulator_inverse_kinematics(self, target_position):
+        result = self.manipulator_ik.solve_request(ManipulatorIKRequest(target_position))
+        if not result.success:
+            raise ValueError(result.message)
+        return list(result.joints)
     
-    @classmethod
-    def manipulator_whole_body_inverse_kinematics(
-        cls,
-        q,
-        world_pose,
-        kp,
-        p_des,
-        w_rp,
-        w_reg,
-        k_rp,
-        a_des_x, a_des_z,
-        k_axis,
-        w_axis,
-        w_align, k_align,
-        dt,
-        base_T0,
-        tipOffset,
-    ):
-        x_world_next, q_next, e_p_task_star_new, e_axis_task_star_new = cls.ik_wb_eval_cls(
-            q,
-            world_pose,
-            kp,
-            p_des,
-            w_rp,
-            w_reg,
-            k_rp,
-            a_des_x, a_des_z,
-            k_axis,
-            w_axis,
-            w_align, k_align,
-            dt,
-            base_T0,
-            tipOffset,
-        )
-        return x_world_next, q_next, e_p_task_star_new, e_axis_task_star_new
-
     def _mocap_pose_cb(self, msg: PoseStamped):
         p = msg.pose.position
         q = msg.pose.orientation
@@ -1082,8 +1103,8 @@ class Robot(Base):
             connecting_using_ds4drv=False,
             event_format="3Bh2b"  # Try "LhBB" if you experience mapping issues.
         )
-        # Enable debug mode to print raw event data.
-        self.ps4_controller.debug = True
+        # Raw event dumps can flood the control process output continuously.
+        self.ps4_controller.debug = False
 
         # Start the PS4 controller listener in a separate (daemon) thread.
         self.controller_thread = threading.Thread(target=self.ps4_controller.listen, daemon=True)
@@ -1093,6 +1114,12 @@ class Robot(Base):
 
 
     def update_state(self, msg: DynamicJointState):
+        for name, values in zip(msg.joint_names, msg.interface_values):
+            if name == self.floating_base_IOs:
+                fields = dict(zip(values.interface_names, values.values))
+                value = fields.get("sensor_noise_enabled")
+                self.sensor_noise_enabled = bool(value) if value in (0.0, 1.0) else None
+                break
         self.arm.update_state(msg)
         self.ned_pose = self.get_interface_value(
             msg,
@@ -1249,6 +1276,12 @@ class Robot(Base):
             "ddq": self.arm.ddq_command,
             "trajectory_direction": self._reference_trajectory_direction_ned(),
         }
+        if self.control_mode == ControlMode.REPLAY:
+            # Replay computes references locally, not in the planner caches.
+            # A combined tracking score is undefined for command-only playback.
+            reference = getattr(self, '_replay_tracking_reference', None)
+            active = active and reference is not None
+            reference = reference or {}
         return self.performance_metrics.update(
             current=state,
             reference=reference,
@@ -1297,6 +1330,7 @@ class Robot(Base):
         *,
         warn_context: str = "",
     ) -> Optional[Pose]:
+        key = (target_frame, source_frame)
         try:
             tf = self.tf_buffer.lookup_transform(
                 target_frame,
@@ -1304,12 +1338,23 @@ class Robot(Base):
                 rclpy.time.Time(),
             )
         except TransformException as ex:
-            msg = f"TF not ready: {target_frame} <- {source_frame}, {ex}"
-            if warn_context:
-                msg = f"{warn_context}, {msg}"
-            self.node.get_logger().warn(msg)
+            now = time.monotonic()
+            previous = self._tf_waiting.get(key)
+            if previous is None:
+                self.node.get_logger().info(
+                    f"Waiting for TF: {target_frame} <- {source_frame} ({self.prefix})")
+                self._tf_waiting[key] = now
+            elif now - previous >= 5.0:
+                msg = f"TF still unavailable: {target_frame} <- {source_frame}, {ex}"
+                if warn_context:
+                    msg = f"{warn_context}, {msg}"
+                self.node.get_logger().warn(msg)
+                self._tf_waiting[key] = now
             return None
 
+        if self._tf_waiting.pop(key, None) is not None:
+            self.node.get_logger().info(
+                f"TF ready: {target_frame} <- {source_frame} ({self.prefix})")
         return do_transform_pose(pose_in_source, tf)
 
     def get_frame_pose_in_frame(self, source_frame: str, target_frame: str) -> Optional[Pose]:
@@ -1750,7 +1795,15 @@ class Robot(Base):
         self.vehicle_pwm_command_publisher.publish(vehicle_pwm)
 
     def listener_callback(self, msg: DynamicJointState):
+        for name, values in zip(msg.joint_names, msg.interface_values):
+            if name == self.prefix + 'IOs' and 'identification.valid' in values.interface_names:
+                # Hardware-only sample interfaces distinguish real vehicle feedback.
+                fields = dict(zip(values.interface_names, values.values))
+                self._hardware_estimator_valid = fields.get('estimator_valid') == 1.0
+                self._hardware_estimator_received = self.node.get_clock().now().nanoseconds
         self.update_state(msg)
+        self._last_state_received = time.monotonic()
+        forward_dynamics_observations(self, msg)
 
     def world_robot_task_pose_callback(self):
         pose_world = self.get_frame_pose_in_frame(self.joint4_frame, self.world_frame)
@@ -2014,7 +2067,7 @@ class Robot(Base):
         self._accept_planner_results = True
         self._preserve_active_plan_on_failure = not preempt_current
         if preempt_current:
-            self.hold_current_state_with_feedback()
+            self.hold_current_state_with_feedback(hold_arm=False)
 
         self.start_xyz, start_quat_wxyz_raw = self._pose_to_xyz_quat_wxyz(pose_now)
 
@@ -2024,7 +2077,7 @@ class Robot(Base):
 
         self._log_plan_context(self.start_xyz, self.start_quat_wxyz, goal_xyz, goal_quat_wxyz)
 
-        self._save_vehicle_goal_from_target(goal_xyz, goal_quat_wxyz_raw)
+        self._save_vehicle_goal_from_target(goal_xyz, goal_quat_wxyz)
 
         sent = self.planner_action_client.send_goal(
             start_xyz=self.start_xyz,
@@ -2053,7 +2106,7 @@ class Robot(Base):
             return
 
         stamp_now = self.node.get_clock().now().to_msg()
-        if self.sim_reset_hold:
+        if self.sim_reset_hold or self.task_based_controller:
             k_planner.clear_path(stamp_now, self.world_frame)
             return
         pr = None if k_planner.planned_result is None else dict(k_planner.planned_result)
@@ -2079,7 +2132,7 @@ class Robot(Base):
             return
 
         stamp_now = self.node.get_clock().now().to_msg()
-        if self.sim_reset_hold:
+        if self.sim_reset_hold or self.task_based_controller:
             k_planner.clear_target(stamp_now, self.world_frame)
             return
         if self.control_mode == ControlMode.PLANNER and k_trajectory.active:
@@ -2138,6 +2191,15 @@ class Robot(Base):
 
             pos_nwu, vel_nwu, acc_nwu, res = self.vehicle_cart_traj.update(self.yaw_blend_factor)
             if pos_nwu is None:
+                # Translation can finish before the rate-limited heading reaches
+                # its goal. Continue settling yaw, but never resume a failed path.
+                if (self.vehicle_cart_traj.last_result == TrajectoryResult.Finished
+                        and str(getattr(self, 'vehicle_path_yaw_mode', 'path_heading')).strip().lower() != 'hold'):
+                    self.pose_command[5] = self.continuous_vehicle_command_yaw(
+                        float(self.final_goal_map_ned_6[5]), fallback_yaw=self.ned_pose[5],
+                        max_step=float(self.max_yaw_command_rate)*float(self.trajectory_sample_period))
+                    self.body_vel_command = [0.0]*6
+                    self.body_acc_command = [0.0]*6
                 return
             
             target_pose_nwu = np.asarray(pos_nwu, dtype=float)
@@ -2256,6 +2318,12 @@ class Robot(Base):
             self.node.get_logger().warn(f"IK aborted, manipulator joint state vector is empty.")
             return
 
+        if (not np.all(np.isfinite(q)) or
+                np.any(q < self.ik_joint_lower - 1e-9) or
+                np.any(q > self.ik_joint_upper + 1e-9)):
+            self.node.get_logger().error('Task IK rejected: measured joints outside enforced limits')
+            return
+
         p_now, rpy_now = PoseX.from_pose(
             xyz=np.array(
                 [
@@ -2289,20 +2357,6 @@ class Robot(Base):
             dtype=float,
         )
         
-        w_rp = 1.0
-        w_reg = 0.02
-        w_axis = 1.5
-        w_align = float(self.ik_base_align_w)
-
-        kp = np.array([1.0, 1.0, 1.0], dtype=float)
-        k_rp = 0.2
-        k_axis = 1.0
-        k_align = 1.0
-        
-        dt = 1.0 / 500.0
-
-        tool_axis_z_align = np.asarray(self.ik_tool_axis, dtype=float).reshape(3)
-        tool_axis_x_align = np.array([1.0, 0.0, 0.0])
         target_rot = PoseX.from_pose(
             xyz=np.array(
                 [
@@ -2324,56 +2378,30 @@ class Robot(Base):
             rot_rep="quat_wxyz",
             frame="NWU",
         ).get_rot(frame="NWU", rot_rep="matrix")
-        a_des_z = target_rot @ tool_axis_z_align
-        a_des_x = target_rot @ tool_axis_x_align
-        x_world_next, q_next, e_p_task_star_new, e_axis_task_star_new = self.manipulator_whole_body_inverse_kinematics(
-            q,
-            world_pose,
-            kp,
-            p_des,
-            w_rp,
-            w_reg,
-            k_rp,
-            a_des_x, a_des_z,
-            k_axis,
-            w_axis,
-            w_align, k_align,
-            dt,
-            np.asarray(ReachParams.base_T0_new, dtype=float),
-            np.asarray(ReachParams.tipOffset, dtype=float),
-        )
+        try:
+            target_rot = aligned_target_rotation(target_rot, self.ik_tool_axis)
+            request = WholeBodyIKRequest(
+                q, world_pose, p_des, target_rot, ReachParams.base_T0_new,
+                ReachParams.tipOffset, self.ik_joint_lower, self.ik_joint_upper,
+                self.ik_position_tolerance, self.ik_orientation_tolerance,
+                base_align_weight=self.ik_base_align_w)
+            result = self.endpoint_ik.solve_request(request)
+            if not result.success:
+                raise ValueError(result.message)
+            x_world_next = np.asarray(result.vehicle_pose, dtype=float)
+            q_next = np.asarray(result.joints, dtype=float)
+            # Command acceptance uses the robot model, independent of solver claims.
+            validate_pose_endpoint(request, x_world_next, q_next, self.fk_eval)
+        except (RuntimeError, ValueError) as error:
+            self.node.get_logger().warn(f'Task IK rejected; previous targets retained: {error}')
+            return
 
-        def _to_1d(arr):
-            if hasattr(arr, "full"):
-                arr = arr.full()
-            return np.asarray(arr, dtype=float).reshape(-1)
-
-        x_world_next = _to_1d(x_world_next)
-        q_next = _to_1d(q_next)
-        e_p_task_star_new = _to_1d(e_p_task_star_new)
-        e_axis_task_star_new = _to_1d(e_axis_task_star_new)
-
-        if q_next.size != q.size:
-            self.node.get_logger().warn(
-                f"IK result invalid, joint vector size mismatch "
-                f"(expected {q.size}, got {q_next.size})."
-            )
-            return 
-        self.arm.q_command = q_next.tolist()
-
-        if x_world_next.size != 6:
-            self.node.get_logger().warn(
-                f"IK result invalid, world pose vector must have size 6 "
-                f"(got {x_world_next.size})."
-            )
-            return 
         pose_next = PoseX.from_pose(
             xyz=x_world_next[0:3],
             rot=x_world_next[3:6],
             rot_rep="euler_xyz",
             frame="NWU",
         )
-        self._vehicle_desired_pose_from_ik_ = pose_next.get_pose_as_Pose_msg()
         _, quat_wxyz = pose_next.get_pose(frame="NWU", rot_rep="quat_wxyz")
         res_map_ned = self.world_nwu_to_map_ned(
             xyz_world_nwu=x_world_next[0:3],
@@ -2386,6 +2414,22 @@ class Robot(Base):
             )
             return 
         p_cmd_ned, rpy_cmd_ned = res_map_ned
+        if not np.all(np.isfinite(np.r_[p_cmd_ned, rpy_cmd_ned])):
+            self.node.get_logger().warn('Task IK rejected: nonfinite frame conversion')
+            return
+        # Quaternion/frame conversion returns principal Euler angles, whereas
+        # waypoint tracking and dynamics can accumulate multiple yaw turns.
+        # This is a new endpoint, not a winding trajectory: lift its yaw onto
+        # the nearest measured branch at acceptance (after the IK solve).
+        measured_yaw = float(self.ned_pose[5])
+        if not np.isfinite(measured_yaw):
+            self.node.get_logger().warn('Task IK rejected: nonfinite measured yaw')
+            return
+        rpy_cmd_ned = np.asarray(rpy_cmd_ned, dtype=float).copy()
+        rpy_cmd_ned[2] = self.normalize_angle(float(rpy_cmd_ned[2]), measured_yaw)
+        self._vehicle_desired_pose_from_ik_ = pose_next.get_pose_as_Pose_msg()
+        self.arm.q_command = q_next.tolist()
+        self._clear_task_reference_derivatives()
         self.pose_command = [
             float(p_cmd_ned[0]),
             float(p_cmd_ned[1]),
@@ -2411,6 +2455,7 @@ class Robot(Base):
         if mode == ControlMode.REPLAY and self.control_mode != ControlMode.REPLAY:
             self._mode_before_replay = self.control_mode
 
+        reset_dynamics_observer(self)
         self.control_mode = mode
         if mode == ControlMode.PLANNER and not self.sim_reset_hold:
             self._path_recording_enabled = True
@@ -2890,6 +2935,23 @@ class Robot(Base):
                 pass
         self.ps4_controller = None
 
+    def set_sensor_noise(self, enabled: bool) -> bool:
+        if not self.sensor_noise_client.service_is_ready():
+            self.node.get_logger().warning(f"[{self.prefix}] Sensor-noise control requires a simulated vehicle with the updated plugin.")
+            return False
+        request = SetBool.Request()
+        request.data = bool(enabled)
+        future = self.sensor_noise_client.call_async(request)
+        def finished(result):
+            try:
+                response = result.result()
+                log = self.node.get_logger().info if response.success else self.node.get_logger().warning
+                log(f"[{self.prefix}] {response.message}")
+            except Exception as error:
+                self.node.get_logger().warning(f"[{self.prefix}] Sensor-noise request failed: {error}")
+        future.add_done_callback(finished)
+        return True
+
     def reset_simulation(self) -> None:
         request = ResetSimUvms.Request()
         request.reset_manipulator = True
@@ -3255,8 +3317,11 @@ class Robot(Base):
         self.body_vel_command = [0.0]*6
         self.body_acc_command = [0.0]*6
 
-    def hold_pose_with_feedback(self, pose_ned_6: Sequence[float] | None = None) -> None:
+    def hold_pose_with_feedback(self, pose_ned_6: Sequence[float] | None = None, *, hold_arm: bool = True) -> None:
         """Hold a NED vehicle pose and current arm state with the selected feedback controller."""
+        # Vehicle-only replanning must preserve an independently requested arm goal.
+        if hold_arm:
+            self._arm_feedback_hold = True
         st = self.get_state()
         pose = np.asarray(st["pose"] if pose_ned_6 is None else pose_ned_6, dtype=float).copy()
         if pose.size != 6:
@@ -3270,16 +3335,19 @@ class Robot(Base):
         self.pose_command = pose.tolist()
         self.body_vel_command = [0.0] * 6
         self.body_acc_command = [0.0] * 6
-        self.arm.q_command = np.asarray(st["q"], dtype=float)[:4].tolist()
-        self.arm.dq_command = np.zeros((4,), dtype=float).tolist()
-        self.arm.ddq_command = np.zeros((4,), dtype=float).tolist()
+        if hold_arm:
+            self.arm.q_command = np.asarray(st["q"], dtype=float)[:4].tolist()
+            self.arm.dq_command = np.zeros((4,), dtype=float).tolist()
+            self.arm.ddq_command = np.zeros((4,), dtype=float).tolist()
         self.enable_planner_output()
 
-    def hold_current_state_with_feedback(self) -> None:
-        """Hold the measured state with the selected feedback controller."""
-        self.hold_pose_with_feedback()
+    def hold_current_state_with_feedback(self, *, hold_arm: bool = True) -> None:
+        """Hold measured state, optionally preserving independent arm references."""
+        self.hold_pose_with_feedback(hold_arm=hold_arm)
+
 
     def control_loop_callback(self):
+        self._replay_tracking_reference = None
         state = self.get_state()
         if state["status"] != "active":
             return
@@ -3292,6 +3360,16 @@ class Robot(Base):
             wrench = getattr(self, "teleop_wrench_body_6", [0.0]*6)
             arm = getattr(self, "teleop_arm_effort_5", [0.0]*5)
             self.publish_commands(wrench, arm)
+            return
+
+        # A manual launch can switch modes through the joystick. Do not let its
+        # hardware teleoperation allowance authorize feedback/replay on an
+        # unavailable navigation estimate.
+        if hasattr(self, '_hardware_estimator_valid') and (
+            not self._hardware_estimator_valid or
+            self.node.get_clock().now().nanoseconds - self._hardware_estimator_received > 500_000_000
+        ):
+            self.publish_commands([0.0] * 6, [0.0] * 5)
             return
 
         if self.control_mode == ControlMode.REPLAY_SETTLE:
@@ -3401,6 +3479,18 @@ class Robot(Base):
                 and active_controller.has_pending_auto_start()
                 and hasattr(active_controller, "start_playback")
             ):
+                feedback = self.controller_instance(active_controller.feedback_controller_name())
+                needs_feedback = any(mode in ('track_reference', 'hold_initial') for mode in (
+                    active_controller.vehicle_subsystem_mode(),
+                    active_controller.manipulator_subsystem_mode()))
+                if needs_feedback and (feedback is None or self._controller_is_replay(feedback)):
+                    active_controller.mark_reset_failed()
+                    self.node.get_logger().error('Replay rejected: requested feedback controller unavailable')
+                    self.publish_commands([0.0] * 6, [0.0] * 5)
+                    return
+                if needs_feedback:
+                    feedback.reset_controller_state()
+                self.performance_metrics.reset()
                 if active_controller.start_playback(sim_time_sec=state["sim_time"]):
                     if (
                         hasattr(active_controller, "recording_enabled")
@@ -3423,14 +3513,6 @@ class Robot(Base):
                 else "PID"
             )
             feedback_spec = self._controllers.get(feedback_controller_name)
-            if feedback_spec is None and feedback_controller_name != "PID":
-                if not getattr(active_controller, "_warned_invalid_feedback_controller", False):
-                    self.node.get_logger().warn(
-                        f"CmdReplay feedback controller '{feedback_controller_name}' is not available for "
-                        f"{self.robot_name}; falling back to PID."
-                    )
-                    active_controller._warned_invalid_feedback_controller = True
-                feedback_spec = self._controllers.get("PID")
 
             vehicle_mode = (
                 active_controller.vehicle_subsystem_mode()
@@ -3442,8 +3524,19 @@ class Robot(Base):
                 if hasattr(active_controller, "manipulator_subsystem_mode")
                 else "replay_command"
             )
+            if feedback_spec is None and any(mode in ('track_reference', 'hold_initial')
+                                             for mode in (vehicle_mode, manipulator_mode)):
+                active_controller.mark_reset_failed()
+                self.node.get_logger().error('Replay rejected: requested feedback controller unavailable')
+                self.publish_commands([0.0] * 6, [0.0] * 5)
+                return
 
             veh_state_vec = np.array(list(state["pose"]) + list(state["body_vel"]), dtype=float)
+            if feedback_spec is not None and any(
+                mode in ('track_reference', 'hold_initial')
+                for mode in (vehicle_mode, manipulator_mode)
+            ):
+                feedback_spec.resolve()
             if vehicle_mode == "replay_command":
                 cmd_body_wrench = active_controller.vehicle_command_at(sample_index)
             elif vehicle_mode == "track_reference" and feedback_spec is not None:
@@ -3531,7 +3624,17 @@ class Robot(Base):
                 self.publish_commands([0.0] * 6, [0.0] * 5)
                 return
 
-            # This combined message requires references for both subsystems.
+            if (feedback_spec is not None
+                    and vehicle_mode in ('track_reference', 'hold_initial')
+                    and manipulator_mode in ('track_reference', 'hold_initial')):
+                self._replay_tracking_reference = dict(
+                    pose=np.asarray(target_pos, dtype=float).copy(),
+                    body_vel=np.asarray(target_vel if vehicle_mode == 'track_reference' else np.zeros(6)).copy(),
+                    body_acc=np.asarray(target_acc if vehicle_mode == 'track_reference' else np.zeros(6)).copy(),
+                    q=np.asarray(q_ref, dtype=float).copy(),
+                    dq=np.asarray(dq_ref if manipulator_mode == 'track_reference' else np.zeros(5)).copy(),
+                    ddq=np.asarray(ddq_ref if manipulator_mode == 'track_reference' else np.zeros(5)).copy(),
+                    trajectory_direction=np.zeros(3))
             # Command/zero-command playback has no pose reference: do not invent
             # one from measured state or leak a previous planner target.
             if (getattr(active_controller, "enabled", False)

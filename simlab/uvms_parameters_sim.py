@@ -15,9 +15,6 @@ class ReachParams:
     joint_home = np.array([3.1, 0.7, 0.4, 2.1])
     endeffector_wrt_base_home = np.array([0.09669330716133118, 0.0, 0.1003517135977745])
 
-    grasper_open = 0.014
-    grasper_close = 0.0
-
     u_min = np.array([-1.5, -1.0, -1.0, -0.54])
     u_max = np.array([1.5, 1.0, 1.0, 0.54])
 
@@ -36,7 +33,8 @@ class ReachParams:
     grasper_u_min = np.array([-10.0])
     grasper_u_max = np.array([10.0])
 
-    gravity = 0.0
+    # Match the standard simulated arm plant (gravity vector in model frame).
+    gravity = 9.81
 
     # Transformation of UV body frame to manipulator base.
     base_T0_new = [0.190, 0.000, -0.120, 3.141592653589793, 0.000, 0.000]

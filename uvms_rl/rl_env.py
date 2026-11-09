@@ -108,9 +108,9 @@ class UvmsBatchEnv:
         if self.backend == "gpu":
             import torch
 
-            self._previous_actions = torch.zeros((self.robot_count, self.action_dim), dtype=torch.float32, device=self.device)
+            self._previous_actions = torch.zeros((self.robot_count, self.action_dim), dtype=torch.float64, device=self.device)
         else:
-            self._previous_actions = np.zeros((self.robot_count, self.action_dim), dtype=np.float32)
+            self._previous_actions = np.zeros((self.robot_count, self.action_dim), dtype=np.float64)
 
         task_config_with_shape = dict(task_config or {})
         task_config_with_shape["action_dim"] = self.action_dim
@@ -154,14 +154,14 @@ class UvmsBatchEnv:
         if self.task is not None and observations is None:
             obs_arg = self.task.reset(self)
         else:
-            obs_arg = None if observations is None else np.asarray(observations, dtype=np.float32)
+            obs_arg = None if observations is None else np.asarray(observations, dtype=np.float64)
             if self.task is not None:
                 self.task.reset(self)
 
         self._core.reset(bool(hold_commands), obs_arg)
         self._apply_dynamics_profile()
         if observations is not None and self.task is not None and hasattr(self.task, "sync_reset_observations"):
-            self.task.sync_reset_observations(self, np.asarray(obs_arg, dtype=np.float32))
+            self.task.sync_reset_observations(self, np.asarray(obs_arg, dtype=np.float64))
         self._tick_id = int(self._core.tick_id)
         if self.backend == "gpu":
             if self.episode_steps.is_inference():
@@ -195,9 +195,9 @@ class UvmsBatchEnv:
         if self.backend == "gpu":
             import torch
 
-            action_array = torch.as_tensor(actions, dtype=torch.float32, device=self.device).contiguous()
+            action_array = torch.as_tensor(actions, dtype=torch.float64, device=self.device).contiguous()
         else:
-            action_array = np.asarray(actions, dtype=np.float32)
+            action_array = np.asarray(actions, dtype=np.float64)
         if tuple(action_array.shape) != (self.robot_count, self.action_dim):
             raise ValueError(
                 f"actions must have shape {(self.robot_count, self.action_dim)}, got {action_array.shape}"
@@ -248,7 +248,7 @@ class UvmsBatchEnv:
                 self._core,
             )
             return torch.cat([vehicle, arm], dim=1)
-        return np.asarray(self._core.observations(), dtype=np.float32)
+        return np.asarray(self._core.observations(), dtype=np.float64)
 
     def observations(self) -> np.ndarray:
         return self._policy_observations(self.sim_observations(), self._previous_actions)
@@ -261,16 +261,16 @@ class UvmsBatchEnv:
         if indices.size == 0:
             return self.observations()
         if self.task is None:
-            reset_rows = np.zeros((indices.size, self.observation_dim), dtype=np.float32)
+            reset_rows = np.zeros((indices.size, self.observation_dim), dtype=np.float64)
         else:
-            reset_rows = np.asarray(self.task.reset_indices(self, indices), dtype=np.float32)
+            reset_rows = np.asarray(self.task.reset_indices(self, indices), dtype=np.float64)
         if reset_rows.shape != (indices.size, self.observation_dim):
             raise ValueError(
                 f"partial reset observations must have shape {(indices.size, self.observation_dim)}, "
                 f"got {reset_rows.shape}"
             )
 
-        state = as_numpy(self.sim_observations()).astype(np.float32, copy=True)
+        state = as_numpy(self.sim_observations()).astype(np.float64, copy=True)
         state[indices] = reset_rows
         self._core.set_observations(state)
         if self.backend == "gpu":
@@ -309,7 +309,7 @@ class UvmsBatchEnv:
                 (self.robot_count, self.action_dim),
                 self._core,
             )
-        return np.asarray(self._core.actions(), dtype=np.float32)
+        return np.asarray(self._core.actions(), dtype=np.float64)
 
     def info(self, task_info: dict[str, Any] | None = None) -> UvmsBatchInfo:
         return UvmsBatchInfo(
@@ -369,7 +369,7 @@ def pack_vehicle_params(profile: dict[str, Any]) -> np.ndarray | None:
         required_float(vehicle, "n_rr"),
         *required_vector(vehicle, "current_velocity", 6),
     ]
-    return np.asarray(values, dtype=np.float32)
+    return np.asarray(values, dtype=np.float64)
 
 
 def pack_arm_params(profile: dict[str, Any]) -> np.ndarray | None:
@@ -393,7 +393,7 @@ def pack_arm_params(profile: dict[str, Any]) -> np.ndarray | None:
     ]
     if len(values) != 81:
         raise ValueError(f"packed manipulator dynamics must contain 81 values, got {len(values)}")
-    return np.asarray(values, dtype=np.float32)
+    return np.asarray(values, dtype=np.float64)
 
 
 def arm_environment(profile: dict[str, Any]) -> tuple[float, float, float, float] | None:

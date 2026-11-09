@@ -184,6 +184,8 @@ def test_editor_registers_real_interactive_marker_without_robot(node):
     from interactive_markers.interactive_marker_server import InteractiveMarkerServer
     server = InteractiveMarkerServer(node, 'obstacle_editor_test')
     editor = ObstacleEditor(node, server, 'world')
+    assert server.get('obstacle_editor') is None  # Robot-menu marker option defaults off.
+    editor.set_visible(True)
     marker = server.get('obstacle_editor')
     assert marker is not None
     assert marker.header.frame_id == 'world'

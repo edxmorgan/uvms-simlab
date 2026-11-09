@@ -28,7 +28,7 @@ def test_actual_trajectory_visualization_uses_read_only_reference(phase):
         generator.close()
     robot = SimpleNamespace(vehicle_cart_traj=generator, planner=Mock(), node=Mock(),
                             world_frame='world', control_mode=ControlMode.PLANNER,
-                            sim_reset_hold=phase == 'reset')
+                            sim_reset_hold=phase == 'reset', task_based_controller=False)
     elapsed = None if generator.out is None else generator.out.time
     reference = generator.current_reference()
     ActualRobot.trajectory_viz_callback(robot)

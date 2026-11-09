@@ -35,6 +35,7 @@ class ObstacleEditor:
     def __init__(self, node, server, world_frame):
         self.node, self.server, self.frame = node, server, world_frame
         self.name = 'obstacle_editor'
+        self.visible = False
         default_catalog = str(Path(get_package_share_directory('simlab')) / 'obstacle_meshes' / 'catalog.json')
         for name, value in (('obstacle_mesh_resource', ''), ('obstacle_mesh_catalog', default_catalog),
                             ('obstacle_preview_size', 0.8)):
@@ -231,7 +232,16 @@ class ObstacleEditor:
         self.draft.pose.orientation = Quaternion(w=1.)
         self._render()
 
+    def set_visible(self, visible):
+        """Only toggle the authoring marker; preserve the draft and scene."""
+        self.visible = bool(visible)
+        self._render()
+
     def _render(self):
+        if not self.visible:
+            self.server.erase(self.name)
+            self.server.applyChanges()
+            return
         self._menus()
         marker = InteractiveMarker()
         marker.header.frame_id = self.frame

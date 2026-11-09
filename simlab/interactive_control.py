@@ -15,6 +15,7 @@
 
 #!/usr/bin/env python3
 import gc
+import copy
 
 import rclpy
 from rclpy.node import Node
@@ -72,6 +73,15 @@ class InteractiveControlsNode(Node):
         grasper_root = self.menu_handler.insert("Grasper", callback=self.noop_menu_callback)
         self.reset_manager_parent = self.menu_handler.insert("Reset Manager", callback=self.noop_menu_callback)
         robot_control_parent = self.menu_handler.insert("Robot Control", callback=self.noop_menu_callback)
+        sensor_noise_root = self.menu_handler.insert("Sensor noise (sim)", parent=robot_control_parent)
+        self.sensor_noise_menu_map = {
+            self.menu_handler.insert(label, parent=sensor_noise_root, callback=self.set_sensor_noise): enabled
+            for label, enabled in (("On", True), ("Off", False))
+        }
+        self._sensor_noise_menu_state = None
+        self.obstacle_marker_handle = self.menu_handler.insert(
+            "Obstacle marker", callback=self.toggle_obstacle_marker)
+        self.menu_handler.setCheckState(self.obstacle_marker_handle, MenuHandler.UNCHECKED)
 
         self.add_vehicle_waypoint_handle = self.menu_handler.insert(
             "Add",
@@ -306,10 +316,31 @@ class InteractiveControlsNode(Node):
             show_6dof=True,
             ignore_dof=[]
         )
+        self._arm_full_controls = copy.deepcopy(self.arm_base_task_marker.controls)
+        # Vehicle dragging changes translation; the separate yaw handle changes heading.
+        self.uv_marker.controls[0].interaction_mode = InteractiveMarkerControl.MOVE_3D
         # Initial application of menu and markers
         self._apply_joint_control_mode(robot = self.uvms_backend.robot_selected)
         self._refresh_robot_menu_state(self.uvms_backend.robot_selected.k_robot)
+        self._sensor_noise_menu_timer = self.create_timer(0.5, self._refresh_sensor_noise_menu)
         self._refresh_vehicle_waypoint_delete_menu()
+
+    def set_sensor_noise(self, feedback: InteractiveMarkerFeedback):
+        self.uvms_backend.robot_selected.set_sensor_noise(
+            self.sensor_noise_menu_map[feedback.menu_entry_id])
+
+    def _refresh_sensor_noise_menu(self):
+        robot = self.uvms_backend.robot_selected
+        enabled = getattr(robot, "sensor_noise_enabled", None)
+        state = (robot.k_robot, enabled)
+        if state == self._sensor_noise_menu_state:
+            return
+        self._sensor_noise_menu_state = state
+        for handle, choice in self.sensor_noise_menu_map.items():
+            self.menu_handler.setCheckState(handle, MenuHandler.CHECKED
+                                           if enabled is choice else MenuHandler.UNCHECKED)
+        self.menu_handler.reApply(self.server)
+        self.server.applyChanges()
 
     def reset_simulation(self, feedback: InteractiveMarkerFeedback):
         if self.uvms_backend.reset_selected_simulation():
@@ -319,7 +350,10 @@ class InteractiveControlsNode(Node):
         self.uvms_backend.release_selected_simulation()
 
     def plan_execute(self, feedback: InteractiveMarkerFeedback):
-        self.uvms_backend.plan_execute_selected()
+        if self.uvms_backend.plan_execute_selected() and not self.uvms_backend.robot_selected.task_based_controller:
+            self.uv_marker.pose = self.uvms_backend.target_vehicle_pose
+            self.server.setPose(self.uv_marker.name, self.uv_marker.pose)
+            self.server.applyChanges()
 
     def add_vehicle_waypoint(self, feedback: InteractiveMarkerFeedback):
         ok, message = self.uvms_backend.add_vehicle_waypoint_for_robot(self.uvms_backend.robot_selected)
@@ -388,6 +422,16 @@ class InteractiveControlsNode(Node):
                 MenuHandler.CHECKED if active_dynamics_profile == profile_name else MenuHandler.UNCHECKED,
             )
 
+        for mid, axis in self.axis_menu_map.items():
+            checked = (selected_robot.ik_base_align_w > 0 if axis is None
+                       else np.array_equal(selected_robot.ik_tool_axis, axis))
+            self.menu_handler.setCheckState(mid, MenuHandler.CHECKED if checked else MenuHandler.UNCHECKED)
+        for mid, action in self.grasp_menu_map.items():
+            endpoint = (selected_robot.arm.grasper_open_position if action == 'open'
+                        else selected_robot.arm.grasper_closed_position)
+            self.menu_handler.setCheckState(mid, MenuHandler.CHECKED
+                if np.isclose(selected_robot.arm.grasp_command, endpoint) else MenuHandler.UNCHECKED)
+
         del selected_k_robot
         self.menu_handler.reApply(self.server)
         self.server.applyChanges()
@@ -415,15 +459,24 @@ class InteractiveControlsNode(Node):
     def noop_menu_callback(self, feedback: InteractiveMarkerFeedback):
         return
 
+    def toggle_obstacle_marker(self, feedback: InteractiveMarkerFeedback):
+        self.obstacle_editor.set_visible(not self.obstacle_editor.visible)
+        self.menu_handler.setCheckState(
+            self.obstacle_marker_handle,
+            MenuHandler.CHECKED if self.obstacle_editor.visible else MenuHandler.UNCHECKED,
+        )
+        self.menu_handler.reApply(self.server)
+        self.server.applyChanges()
+
     def _set_mcap_recording_menu_state(self, active: bool) -> None:
         self.mcap_recording_active = active
         self.menu_handler.setCheckState(
             self.start_recording_handle,
-            MenuHandler.UNCHECKED if active else MenuHandler.CHECKED,
+            MenuHandler.CHECKED if active else MenuHandler.UNCHECKED,
         )
         self.menu_handler.setCheckState(
             self.stop_recording_handle,
-            MenuHandler.CHECKED if active else MenuHandler.UNCHECKED,
+            MenuHandler.UNCHECKED if active else MenuHandler.CHECKED,
         )
         self.menu_handler.reApply(self.server)
         self.server.applyChanges()
@@ -492,7 +545,16 @@ class InteractiveControlsNode(Node):
             return
         marker.controls.append(marker_util.make_menu_control())
 
-    def _apply_joint_control_mode(self, robot:Robot, abort_motion=True, keep_now_target=False) -> None:
+    def _configure_arm_marker_mode(self, task_mode):
+        controls = copy.deepcopy(self._arm_full_controls)
+        if not task_mode:
+            controls = [c for c in controls if c.interaction_mode != InteractiveMarkerControl.ROTATE_AXIS]
+            controls[0].interaction_mode = InteractiveMarkerControl.MOVE_3D
+        self.arm_base_task_marker.controls = controls
+        self.arm_base_task_marker.description = ('End-effector pose target' if task_mode
+            else 'Arm position target (orientation unconstrained)')
+
+    def _apply_joint_control_mode(self, robot:Robot, abort_motion=True) -> None:
         if robot != self.uvms_backend.robot_selected:
             return
         if abort_motion:
@@ -500,11 +562,12 @@ class InteractiveControlsNode(Node):
         self._clear_markers()
 
         # uv marker (vehicle)
-        self.uv_marker.pose = getattr(self.uvms_backend, "_vehicle_desired_pose_from_ik_", self.uvms_backend.target_vehicle_pose)
+        self.uv_marker.pose = self.uvms_backend.target_vehicle_pose
         self.server.insert(self.uv_marker)
         self.server.setCallback(self.uv_marker.name, self.vehicle_marker_processFeedback)
 
-        # endeffector marker (arm base frame)
+        # Joint mode uses position-only arm IK; do not offer ignored rotation controls.
+        self._configure_arm_marker_mode(False)
         self.arm_base_task_marker.pose = self.uvms_backend.target_arm_base_endeffector_pose
         self.server.insert(self.arm_base_task_marker)
         self.server.setCallback(self.arm_base_task_marker.name, self.arm_base_task_marker_processFeedback)
@@ -518,16 +581,6 @@ class InteractiveControlsNode(Node):
         
         self.server.applyChanges()
 
-        if keep_now_target:
-            self.uvms_backend.set_vehicle_target(robot, self.uv_marker.pose)
-            arm_pose_world_new = robot.try_transform_pose(
-                self.uvms_backend.target_world_endeffector_pose,
-                target_frame=self.uvms_backend.arm_base_target_frame,
-                source_frame=self.uvms_backend.world_frame,
-                warn_context="set_endeffector_base_marker_pose",
-            )
-            if arm_pose_world_new is not None:
-                self.uvms_backend.set_task_target_arm_base(robot, arm_pose_world_new)
         self.get_logger().info("Switched to JOINT space control.")
 
 
@@ -537,6 +590,7 @@ class InteractiveControlsNode(Node):
         if abort_motion:
             robot.planner.planned_result = None
         self._clear_markers()
+        self._configure_arm_marker_mode(True)
 
         self.server.insert(self.arm_base_task_marker)
         self.server.setCallback(self.arm_base_task_marker.name, self.world_task_marker_processFeedback)
@@ -667,7 +721,7 @@ class InteractiveControlsNode(Node):
         if control_space_name == ControlSpace.TASK_SPACE:
             self._apply_task_control_mode(robot = robot)
         elif control_space_name == ControlSpace.JOINT_SPACE:
-            self._apply_joint_control_mode(robot = robot, keep_now_target=True)
+            self._apply_joint_control_mode(robot = robot)
 
         self.get_logger().info(message)
 
@@ -694,19 +748,21 @@ class InteractiveControlsNode(Node):
     def toggle_align_with_base_weight(self, feedback: InteractiveMarkerFeedback):
         robot = self.uvms_backend.robot_selected
 
-        enabled = self.menu_handler.getCheckState(feedback.menu_entry_id) == MenuHandler.CHECKED
-        self.menu_handler.setCheckState(feedback.menu_entry_id, MenuHandler.UNCHECKED if enabled else MenuHandler.CHECKED)
-
-        weight = 1.0 if self.menu_handler.getCheckState(feedback.menu_entry_id) == MenuHandler.CHECKED else 0.0
+        # Selected robot owns the setting; a stale checkbox must not invert it.
+        weight = 0.0 if robot.ik_base_align_w > 0 else 1.0
         ok, message = self.uvms_backend.set_robot_ik_base_align_weight(robot, weight)
         if not ok:
             self.get_logger().warn(message)
             return
-        self.menu_handler.apply(self.server, feedback.marker_name)
+        self.menu_handler.setCheckState(feedback.menu_entry_id,
+            MenuHandler.CHECKED if weight > 0 else MenuHandler.UNCHECKED)
+        self.menu_handler.reApply(self.server)
         self.server.applyChanges()
         self.get_logger().info(message)
     
     def vehicle_marker_processFeedback(self, feedback: InteractiveMarkerFeedback):
+        if feedback.event_type != InteractiveMarkerFeedback.POSE_UPDATE:
+            return
         ok, message = self.uvms_backend.set_vehicle_target(self.uvms_backend.robot_selected, feedback.pose)
         if not ok:
             self.get_logger().warn(message)
@@ -718,6 +774,9 @@ class InteractiveControlsNode(Node):
         self.sync_endeffector_world_marker_pose(self.uvms_backend.target_arm_base_endeffector_pose, self.uvms_backend.arm_base_target_frame)
 
     def arm_base_task_marker_processFeedback(self, feedback: InteractiveMarkerFeedback):
+        # Keep-alives, clicks and menu events are not new arm motion requests.
+        if feedback.event_type != InteractiveMarkerFeedback.POSE_UPDATE:
+            return
         ok, message = self.uvms_backend.set_task_target_arm_base(self.uvms_backend.robot_selected, feedback.pose)
         if ok:
             self.sync_endeffector_world_marker_pose(self.uvms_backend.target_arm_base_endeffector_pose, self.uvms_backend.arm_base_target_frame)

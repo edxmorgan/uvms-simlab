@@ -1,0 +1,11 @@
+# Configure a controller's estimated model, independently of the simulated plant.
+# operation: get or set_model. set_model is allowed only while inactive or held.
+int32 robot_index
+string controller_name
+string operation
+string model_profile
+---
+bool success
+string message
+# Schema-versioned effective configuration; controller-specific named fields.
+string configuration_json

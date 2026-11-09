@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.10)
+cmake_minimum_required(VERSION 3.20)
 project(simlab)
 
 set(UVMS_ENABLE_CUDA_DYNAMICS "AUTO" CACHE STRING "Workspace-level UVMS GPU dynamics option accepted for clean colcon builds")
@@ -9,19 +9,23 @@ find_package(ament_cmake_python REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
-find_package(ros2_control_blue_reach_5 REQUIRED)
+find_package(ros2_control_blue_reach_5 0.1.0 REQUIRED)
 
 set(action_files
   "action/PlanVehicle.action"
+  "action/RunDisturbance.action"
 )
 
 set(msg_files
   "msg/ObstacleScene.msg"
+  "msg/DisturbanceRunStatus.msg"
+  "msg/TaskWrenchEstimate.msg"
   "msg/ControllerPerformance.msg"
   "msg/ReferenceTargets.msg"
 )
 
 set(srv_files
+  "srv/ControllerConfiguration.srv"
   "srv/EditDynamicObstacles.srv"
   "srv/BackendRobotCommand.srv"
   "srv/BackendWorldCommand.srv"
@@ -57,11 +61,22 @@ function(simlab_python_entrypoint script_name module_name)
   file(GENERATE
     OUTPUT "${script_path}"
     CONTENT "#!/usr/bin/env python3\nfrom ${module_name} import main\n\nif __name__ == '__main__':\n    main()\n"
+    FILE_PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
   )
+  # file(GENERATE) leaves an unchanged pre-existing output untouched, including
+  # its old non-executable mode. Upgrade such outputs on incremental builds.
+  if(EXISTS "${script_path}")
+    file(CHMOD "${script_path}" PERMISSIONS
+      OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
+  endif()
   install(PROGRAMS "${script_path}" DESTINATION lib/${PROJECT_NAME})
 endfunction()
 
 simlab_python_entrypoint(interactive_controller simlab.interactive_control)
+simlab_python_entrypoint(disturbance_injection_node simlab.disturbance_injection_node)
+simlab_python_entrypoint(disturbance_run simlab.disturbance_run)
+simlab_python_entrypoint(disturbance_plot simlab.disturbance_plot)
+simlab_python_entrypoint(effort_visualization simlab.effort_visualization)
 simlab_python_entrypoint(dynamic_obstacle_sim_node simlab.obstacle_node)
 simlab_python_entrypoint(joystick_controller simlab.joystick_control)
 simlab_python_entrypoint(direct_thruster_controller simlab.direct_thruster_control)
@@ -90,11 +105,15 @@ install(
 )
 
 install(FILES package.xml DESTINATION share/${PROJECT_NAME})
+install(FILES resource/effort_visualization.md DESTINATION share/${PROJECT_NAME})
 
 if(BUILD_TESTING)
   find_package(ament_cmake_pytest REQUIRED)
+  ament_add_pytest_test(test_disturbance_injection_node test/test_disturbance_injection_node.py)
+  ament_add_pytest_test(test_effort_visualization test/test_effort_visualization.py)
   ament_add_pytest_test(test_flake8 test/test_flake8.py)
   ament_add_pytest_test(test_vehicle_yaw_continuity test/test_vehicle_yaw_continuity.py)
+  ament_add_pytest_test(test_dr_disturbance_feedback test/test_dr_disturbance_feedback.py)
   ament_add_pytest_test(test_bag_recorder_topics test/test_bag_recorder_topics.py)
   ament_add_pytest_test(test_uvms_dynamics_contract test/test_uvms_dynamics_contract.py)
   ament_add_pytest_test(test_world_profiles test/test_world_profiles.py)

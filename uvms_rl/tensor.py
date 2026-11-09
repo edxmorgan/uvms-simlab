@@ -17,7 +17,7 @@ def torch_available() -> bool:
 
 
 def torch_cuda_tensor_from_ptr(ptr: int, shape: tuple[int, ...], owner: Any):
-    """Wrap a CUDA float32 pointer as a Torch tensor without copying."""
+    """Wrap a CUDA float64 pointer as a Torch tensor without copying."""
 
     import cupy as cp
     import torch
@@ -25,9 +25,9 @@ def torch_cuda_tensor_from_ptr(ptr: int, shape: tuple[int, ...], owner: Any):
     if ptr == 0:
         raise ValueError("cannot wrap a null CUDA pointer")
     size = int(np.prod(shape))
-    memory = cp.cuda.UnownedMemory(int(ptr), size * np.dtype(np.float32).itemsize, owner)
+    memory = cp.cuda.UnownedMemory(int(ptr), size * np.dtype(np.float64).itemsize, owner)
     pointer = cp.cuda.MemoryPointer(memory, 0)
-    cupy_array = cp.ndarray(shape, dtype=cp.float32, memptr=pointer)
+    cupy_array = cp.ndarray(shape, dtype=cp.float64, memptr=pointer)
     return torch.utils.dlpack.from_dlpack(cupy_array)
 
 
