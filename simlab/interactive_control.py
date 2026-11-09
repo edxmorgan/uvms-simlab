@@ -73,6 +73,15 @@ class InteractiveControlsNode(Node):
         grasper_root = self.menu_handler.insert("Grasper", callback=self.noop_menu_callback)
         self.reset_manager_parent = self.menu_handler.insert("Reset Manager", callback=self.noop_menu_callback)
         robot_control_parent = self.menu_handler.insert("Robot Control", callback=self.noop_menu_callback)
+        sensor_noise_root = self.menu_handler.insert("Sensor noise (sim)", parent=robot_control_parent)
+        self.sensor_noise_menu_map = {
+            self.menu_handler.insert(label, parent=sensor_noise_root, callback=self.set_sensor_noise): enabled
+            for label, enabled in (("On", True), ("Off", False))
+        }
+        self._sensor_noise_menu_state = None
+        self.obstacle_marker_handle = self.menu_handler.insert(
+            "Obstacle marker", callback=self.toggle_obstacle_marker)
+        self.menu_handler.setCheckState(self.obstacle_marker_handle, MenuHandler.UNCHECKED)
 
         self.add_vehicle_waypoint_handle = self.menu_handler.insert(
             "Add",
@@ -313,7 +322,25 @@ class InteractiveControlsNode(Node):
         # Initial application of menu and markers
         self._apply_joint_control_mode(robot = self.uvms_backend.robot_selected)
         self._refresh_robot_menu_state(self.uvms_backend.robot_selected.k_robot)
+        self._sensor_noise_menu_timer = self.create_timer(0.5, self._refresh_sensor_noise_menu)
         self._refresh_vehicle_waypoint_delete_menu()
+
+    def set_sensor_noise(self, feedback: InteractiveMarkerFeedback):
+        self.uvms_backend.robot_selected.set_sensor_noise(
+            self.sensor_noise_menu_map[feedback.menu_entry_id])
+
+    def _refresh_sensor_noise_menu(self):
+        robot = self.uvms_backend.robot_selected
+        enabled = getattr(robot, "sensor_noise_enabled", None)
+        state = (robot.k_robot, enabled)
+        if state == self._sensor_noise_menu_state:
+            return
+        self._sensor_noise_menu_state = state
+        for handle, choice in self.sensor_noise_menu_map.items():
+            self.menu_handler.setCheckState(handle, MenuHandler.CHECKED
+                                           if enabled is choice else MenuHandler.UNCHECKED)
+        self.menu_handler.reApply(self.server)
+        self.server.applyChanges()
 
     def reset_simulation(self, feedback: InteractiveMarkerFeedback):
         if self.uvms_backend.reset_selected_simulation():

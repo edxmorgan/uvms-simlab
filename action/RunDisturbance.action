@@ -1,0 +1,27 @@
+# Finite run. One active run per node/robot; parameters fixed for that run.
+# task: fx/fy/fz/tx/ty/tz wrench about the IK tool origin.
+# generalized: existing vehicle FRD loads + arm joint torques.
+string space "generalized"
+string wrench_frame "tool"
+string[] dofs
+float64[] amplitudes
+string[] waveforms
+float64[] phases_deg
+float64[] delays_s
+float64 frequency_hz
+float64 end_frequency_hz
+uint32 cycles
+# Gaussian: amplitude is standard deviation; independent 20 Hz sample-and-hold noise.
+uint32 seed
+# Correlated Gaussian e-folding time in seconds; amplitude is stationary std dev.
+float64 correlation_time_s 2.0
+---
+bool success
+string message
+string session_id
+float64 elapsed_s
+---
+string session_id
+string state
+float64 elapsed_s
+float64 duration_s

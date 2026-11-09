@@ -890,6 +890,14 @@ class UVMSBackendCore:
             if command == "plan_execute":
                 self.set_robot_selected(robot.k_robot)
                 return self._api_response(response, self.plan_execute_selected(), f"plan_execute requested for {robot.prefix}")
+            if command == "set_sensor_noise":
+                setting = request.name.strip().lower()
+                if setting not in ("on", "off", "true", "false"):
+                    return self._api_response(response, False, "name must be on or off")
+                queued = robot.set_sensor_noise(setting in ("on", "true"))
+                return self._api_response(response, queued,
+                    "sensor-noise request queued; applied state is in dynamic_joint_states"
+                    if queued else "simulated vehicle sensor-noise service unavailable")
             if command == "reset_simulation":
                 self.set_robot_selected(robot.k_robot)
                 return self._api_response(response, self.reset_selected_simulation(), f"reset requested for {robot.prefix}")

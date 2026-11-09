@@ -34,7 +34,7 @@ from rclpy.qos import QoSProfile, QoSHistoryPolicy
 import copy
 from std_msgs.msg import Float32
 from ros2_control_blue_reach_5.srv import ResetSimUvms, SetSimCameraDynamics, SetSimDynamics
-from std_srvs.srv import Trigger
+from std_srvs.srv import Trigger, SetBool
 from pyPS4Controller.controller import Controller
 import threading
 import glob
@@ -671,6 +671,8 @@ class Robot(Base):
             Trigger,
             f"/{self.prefix}release_sim_uvms",
         )
+        self.sensor_noise_client = self.node.create_client(SetBool, f"/{self.prefix}set_sensor_noise")
+        self.sensor_noise_enabled = None  # Only confirmed simulator telemetry sets this.
         self.active_dynamics_profile = ""
 
         self.control_mode = ControlMode.TELEOP
@@ -2911,6 +2913,23 @@ class Robot(Base):
             except Exception:
                 pass
         self.ps4_controller = None
+
+    def set_sensor_noise(self, enabled: bool) -> bool:
+        if not self.sensor_noise_client.service_is_ready():
+            self.node.get_logger().warning(f"[{self.prefix}] Sensor-noise control requires a simulated vehicle with the updated plugin.")
+            return False
+        request = SetBool.Request()
+        request.data = bool(enabled)
+        future = self.sensor_noise_client.call_async(request)
+        def finished(result):
+            try:
+                response = result.result()
+                log = self.node.get_logger().info if response.success else self.node.get_logger().warning
+                log(f"[{self.prefix}] {response.message}")
+            except Exception as error:
+                self.node.get_logger().warning(f"[{self.prefix}] Sensor-noise request failed: {error}")
+        future.add_done_callback(finished)
+        return True
 
     def reset_simulation(self) -> None:
         request = ResetSimUvms.Request()
