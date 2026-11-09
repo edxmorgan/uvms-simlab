@@ -36,7 +36,8 @@ class ReachParams:
     grasper_u_min = np.array([-10.0])
     grasper_u_max = np.array([10.0])
 
-    gravity = 0.0
+    # Match the standard simulated arm plant (gravity vector in model frame).
+    gravity = 9.81
 
     # Transformation of UV body frame to manipulator base.
     base_T0_new = [0.190, 0.000, -0.120, 3.141592653589793, 0.000, 0.000]
@@ -71,10 +72,10 @@ class VehicleControllerParams:
             3.72028553e+01,
             2.21828075e+01,
             6.61734807e+01,
-            3.38909801e+00,
-            6.41362046e-01,
-            6.41362034e-01,
-            3.38909800e+00,
+            3.389098005e+00,
+            6.41362040e-01,
+            6.41362040e-01,
+            3.389098005e+00,
             1.39646394e+00,
             4.98032205e-01,
             2.53118738e+00,

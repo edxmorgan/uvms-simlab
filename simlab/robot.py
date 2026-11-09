@@ -828,6 +828,8 @@ class Robot(Base):
         if not activate:
             self.node.get_logger().info(f"Controller set to {name} for {self.prefix} (idle)")
             return True
+        if previous_controller is not next_controller and hasattr(next_controller, 'reset_controller_state'):
+            next_controller.reset_controller_state()
         if self._active_controller_is_replay():
             self.set_control_mode(ControlMode.REPLAY)
         else:
