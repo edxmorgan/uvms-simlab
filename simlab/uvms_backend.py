@@ -1602,6 +1602,7 @@ class UVMSBackendCore:
         )
         if sent:
             mission.mark_planning()
+            assert mission.active_index is not None
             self.node.get_logger().info(
                 f"Dispatched vehicle waypoint {mission.active_index + 1}/{len(mission.waypoints)} for {robot.prefix}."
             )
@@ -1618,8 +1619,23 @@ class UVMSBackendCore:
 
         distance_m = pose_position_distance(pose_now, goal_pose)
         state = robot.get_state()
-        ned_vel = np.asarray(state.get("ned_vel", [0.0] * 6), dtype=float).reshape(-1)
-        linear_speed_mps = float(np.linalg.norm(ned_vel[:3])) if ned_vel.size >= 3 else 0.0
+        ned_vel = np.asarray(state.get("ned_vel", []), dtype=float).reshape(-1)
+        # Missing/nonfinite feedback is not evidence that a waypoint was reached.
+        if ned_vel.size < 3 or not np.all(np.isfinite(ned_vel)) or not np.isfinite(distance_m):
+            return None
+        linear_speed_mps = float(np.linalg.norm(ned_vel[:3]))
+        def yaw(pose):
+            q = pose.orientation
+            return Rotation.from_quat([q.x, q.y, q.z, q.w]).as_euler('xyz')[2]
+        try:
+            yaw_error = yaw(goal_pose) - yaw(pose_now)
+            if str(getattr(robot, 'vehicle_path_yaw_mode', 'path_heading')).strip().lower() == 'hold':
+                yaw_error = float(robot.pose_command[5]) - float(state['pose'][5])
+        except (ValueError, IndexError, KeyError):
+            return None
+        if not np.isfinite(yaw_error):
+            return None
+        yaw_error = abs(float(np.arctan2(np.sin(yaw_error), np.cos(yaw_error))))
         yaw_blend = float(getattr(robot, "yaw_blend_factor", 0.0))
         yaw_blend_threshold = float(
             getattr(robot.vehicle_cart_traj, "yaw_finish_threshold", 0.98)
@@ -1628,6 +1644,7 @@ class UVMSBackendCore:
         return {
             "distance_m": distance_m,
             "linear_speed_mps": linear_speed_mps,
+            "yaw_error_rad": yaw_error,
             "yaw_blend": yaw_blend,
             "yaw_blend_threshold": yaw_blend_threshold,
         }
@@ -1638,6 +1655,8 @@ class UVMSBackendCore:
         goal_pose: Pose,
         *,
         position_tolerance_m: float,
+        yaw_tolerance_rad: float,
+        speed_tolerance_mps: float,
     ) -> tuple[bool, dict | None]:
         metrics = self._robot_waypoint_tracking_metrics(robot, goal_pose)
         if metrics is None:
@@ -1645,7 +1664,8 @@ class UVMSBackendCore:
 
         reached = (
             metrics["distance_m"] <= float(position_tolerance_m)
-            and metrics["yaw_blend"] >= metrics["yaw_blend_threshold"]
+            and metrics["yaw_error_rad"] <= float(yaw_tolerance_rad)
+            and metrics["linear_speed_mps"] <= float(speed_tolerance_mps)
         )
         return reached, metrics
 
@@ -1682,16 +1702,31 @@ class UVMSBackendCore:
                 robot,
                 goal_pose,
                 position_tolerance_m=mission.position_tolerance_m,
+                yaw_tolerance_rad=mission.yaw_tolerance_rad,
+                speed_tolerance_mps=mission.speed_tolerance_mps,
             )
 
             if robot.planner_action_client.busy:
                 continue
 
-            if robot.vehicle_cart_traj is not None and robot.vehicle_cart_traj.active and not goal_reached_by_state:
+            trajectory = robot.vehicle_cart_traj
+            owns_reference = (robot.final_goal_map_ned_6 is not None
+                              and robot._accept_planner_results
+                              and robot.planner is not None
+                              and robot.planner.planned_result is not None
+                              and robot.planner.planned_result.get('is_success', False))
+            translation_finished = (owns_reference and trajectory is not None
+                                    and trajectory.last_result == TrajectoryResult.Finished)
+            if owns_reference and trajectory is not None and not translation_finished and trajectory.active:
+                # Being within the position tolerance at launch must not cancel
+                # a short trajectory before it reaches its requested endpoint.
+                mission.mark_tracking()
+                continue
+            if translation_finished and not goal_reached_by_state:
                 mission.mark_tracking()
                 continue
 
-            if goal_reached_by_state:
+            if translation_finished and goal_reached_by_state:
                 if robot.vehicle_cart_traj is not None:
                     robot.vehicle_cart_traj.active = False
                 reached_index = mission.active_index

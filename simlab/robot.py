@@ -26,6 +26,7 @@ import ament_index_python
 import os
 import rclpy
 import casadi as ca
+from ruckig import Result as TrajectoryResult
 from nav_msgs.msg import Path
 from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped, Pose
@@ -2132,6 +2133,15 @@ class Robot(Base):
 
             pos_nwu, vel_nwu, acc_nwu, res = self.vehicle_cart_traj.update(self.yaw_blend_factor)
             if pos_nwu is None:
+                # Translation can finish before the rate-limited heading reaches
+                # its goal. Continue settling yaw, but never resume a failed path.
+                if (self.vehicle_cart_traj.last_result == TrajectoryResult.Finished
+                        and str(getattr(self, 'vehicle_path_yaw_mode', 'path_heading')).strip().lower() != 'hold'):
+                    self.pose_command[5] = self.continuous_vehicle_command_yaw(
+                        float(self.final_goal_map_ned_6[5]), fallback_yaw=self.ned_pose[5],
+                        max_step=float(self.max_yaw_command_rate)*float(self.trajectory_sample_period))
+                    self.body_vel_command = [0.0]*6
+                    self.body_acc_command = [0.0]*6
                 return
             
             target_pose_nwu = np.asarray(pos_nwu, dtype=float)
