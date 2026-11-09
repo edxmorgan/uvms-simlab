@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.10)
+cmake_minimum_required(VERSION 3.20)
 project(simlab)
 
 set(UVMS_ENABLE_CUDA_DYNAMICS "AUTO" CACHE STRING "Workspace-level UVMS GPU dynamics option accepted for clean colcon builds")
@@ -9,7 +9,7 @@ find_package(ament_cmake_python REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
-find_package(ros2_control_blue_reach_5 REQUIRED)
+find_package(ros2_control_blue_reach_5 0.1.0 REQUIRED)
 
 set(action_files
   "action/PlanVehicle.action"
@@ -57,7 +57,14 @@ function(simlab_python_entrypoint script_name module_name)
   file(GENERATE
     OUTPUT "${script_path}"
     CONTENT "#!/usr/bin/env python3\nfrom ${module_name} import main\n\nif __name__ == '__main__':\n    main()\n"
+    FILE_PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
   )
+  # file(GENERATE) leaves an unchanged pre-existing output untouched, including
+  # its old non-executable mode. Upgrade such outputs on incremental builds.
+  if(EXISTS "${script_path}")
+    file(CHMOD "${script_path}" PERMISSIONS
+      OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
+  endif()
   install(PROGRAMS "${script_path}" DESTINATION lib/${PROJECT_NAME})
 endfunction()
 
