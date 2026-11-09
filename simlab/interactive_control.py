@@ -459,6 +459,15 @@ class InteractiveControlsNode(Node):
     def noop_menu_callback(self, feedback: InteractiveMarkerFeedback):
         return
 
+    def toggle_obstacle_marker(self, feedback: InteractiveMarkerFeedback):
+        self.obstacle_editor.set_visible(not self.obstacle_editor.visible)
+        self.menu_handler.setCheckState(
+            self.obstacle_marker_handle,
+            MenuHandler.CHECKED if self.obstacle_editor.visible else MenuHandler.UNCHECKED,
+        )
+        self.menu_handler.reApply(self.server)
+        self.server.applyChanges()
+
     def _set_mcap_recording_menu_state(self, active: bool) -> None:
         self.mcap_recording_active = active
         self.menu_handler.setCheckState(
