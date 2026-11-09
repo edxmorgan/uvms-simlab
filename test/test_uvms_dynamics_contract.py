@@ -102,7 +102,7 @@ def test_rl_dynamics_pack_order_matches_profile_message_helpers():
             vehicle.n_rr,
             *vehicle.current_velocity,
         ],
-        dtype=np.float32,
+        dtype=np.float64,
     )
     expected_arm = np.asarray(
         [
@@ -120,7 +120,7 @@ def test_rl_dynamics_pack_order_matches_profile_message_helpers():
             *manipulator.world_pose,
             *manipulator.tip_offset_pose,
         ],
-        dtype=np.float32,
+        dtype=np.float64,
     )
 
     vehicle_params = pack_vehicle_params(profile)
