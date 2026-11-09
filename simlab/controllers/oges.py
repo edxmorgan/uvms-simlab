@@ -2,6 +2,7 @@ import numpy as np
 from rclpy.node import Node
 
 from simlab.controllers.base import ControllerTemplate
+from scipy.spatial.transform import Rotation
 from simlab.uvms_parameters import select_robot_params
 
 try:
@@ -25,6 +26,36 @@ except ImportError as exc:
 class OgesModelbasedController(ControllerTemplate):
     name = "OGES"
     registry_name = "Ours"
+    attitude_error = 'so3_log_body'
+    configuration_fields = ('attitude_error', 'vehicle_weights', 'arm_weights', 'vehicle_w_scale',
+                            'arm_w_scale', 'vehicle_lowpass_tau', 'arm_lowpass_tau',
+                            'use_vehicle_control_filter', 'use_arm_control_filter',
+                            'arm_u_min', 'arm_u_max', 'grasper_kp', 'grasper_kd')
+
+    def set_model_profile(self, model) -> None:
+        # Loaders may return parameter classes. Instantiate before assigning to
+        # avoid modifying defaults shared by other robots/controllers.
+        import copy
+        blue = self.blue() if isinstance(self.blue, type) else copy.copy(self.blue)
+        alpha = self.alpha_params() if isinstance(self.alpha_params, type) else copy.copy(self.alpha_params)
+        blue.sim_p = model.vehicle_oges
+        alpha.step_model_params = model.arm_oges
+        self.blue, self.alpha_params = blue, alpha
+        self.model_profile_sha256 = model.sha256
+
+    def configuration_snapshot(self) -> dict:
+        result = super().configuration_snapshot()
+        result['parameters'].update(
+            vehicle_model=np.asarray(self.blue.sim_p, dtype=float).reshape(-1).tolist(),
+            arm_model=np.asarray(self.alpha_params.step_model_params, dtype=float).reshape(-1).tolist(),
+            vehicle_u_min=np.asarray(self.blue.u_min, dtype=float).tolist(),
+            vehicle_u_max=np.asarray(self.blue.u_max, dtype=float).tolist())
+        return result
+
+    def reset_controller_state(self) -> None:
+        """Start an independent segment without previous-command filter memory."""
+        self.vehicle_u_prev = np.zeros(6, dtype=float)
+        self.arm_u_prev = np.zeros(self.arm_dof, dtype=float)
 
     def __init__(self, node: Node, arm_dof: int = 4, robot_prefix: str = ""):
         super().__init__(node, arm_dof, robot_prefix)
@@ -75,7 +106,7 @@ class OgesModelbasedController(ControllerTemplate):
 
         self.M_uv_matrix = load_uv_model_function("M_id.casadi")
         self.C_uv_mat = load_uv_model_function("C_id.casadi")
-        self.g_uv_vec = load_uv_model_function("g_id.casadi")
+        self.g_uv_vec = load_uv_model_function("g_depth_id.casadi")
         self.Dp_uv_vec = load_uv_model_function("body_damping_matrix_id.casadi")
         self.J_uv = load_uv_model_function("J_uv.casadi")
 
@@ -119,17 +150,21 @@ class OgesModelbasedController(ControllerTemplate):
         dt = float(dt)
 
         vr_i = state[6:12].reshape(-1, 1)
-        eul = state[3:6].reshape(-1, 1)
 
         H_i = self.M_uv_matrix(self.blue.sim_p)
         C_i = self.C_uv_mat(vr_i, self.blue.sim_p)
-        g_i = self.g_uv_vec(eul, self.blue.sim_p)
+        g_i = self.g_uv_vec(state[:6], self.blue.sim_p)
         Dp_i = self.Dp_uv_vec(vr_i, self.blue.sim_p)
 
         F_i = g_i + C_i @ vr_i + Dp_i @ vr_i
         N_i = np.linalg.inv(H_i)
-        Jk = self.J_uv(eul)
-        Jk_ref = self.J_uv(target_pos[3:6])
+        # Physical twists in world axes, not Euler-coordinate rates.
+        R = Rotation.from_euler('xyz', state[3:6]).as_matrix()
+        Rd = Rotation.from_euler('xyz', target_pos[3:6]).as_matrix()
+        Jk = np.zeros((6, 6))
+        Jk_ref = np.zeros((6, 6))
+        Jk[:3, :3] = Jk[3:, 3:] = R
+        Jk_ref[:3, :3] = Jk_ref[3:, 3:] = Rd
 
         target_body_vel_ref = target_vel.copy()
         target_body_acc_ref = target_acc.copy()

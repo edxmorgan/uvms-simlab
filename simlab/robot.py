@@ -42,6 +42,7 @@ from typing import Sequence, Dict, Callable, Any, Optional
 from control_msgs.msg import DynamicInterfaceGroupValues
 from std_msgs.msg import Float64MultiArray
 from simlab.controller_msg import FullRobotMsg
+from simlab.controllers.dr_oges.feedback import forward_dynamics_observations, reset_dynamics_observer
 from simlab.controllers import DEFAULT_CONTROLLER_CLASSES
 from simlab.dynamics_profiles import (
     camera_dynamics_from_profile,
@@ -844,6 +845,8 @@ class Robot(Base):
             self.control_mode = ControlMode.PLANNER
         spec = self._controllers[name].resolve()
         next_controller = getattr(spec.arm_fn, "__self__", None)
+        if previous_controller is not next_controller:
+            reset_dynamics_observer(self)
         if activate and self._controller_is_replay(next_controller):
             self.controller_name = name
             self.node.get_logger().info(
@@ -1784,6 +1787,7 @@ class Robot(Base):
                 # subsequently published state, never a queued pre-reset sample.
                 self._reset_feedback_pending = None
                 pending['success']()
+        forward_dynamics_observations(self, msg)
 
     def world_robot_task_pose_callback(self):
         pose_world = self.get_frame_pose_in_frame(self.joint4_frame, self.world_frame)
@@ -2435,6 +2439,7 @@ class Robot(Base):
         if mode == ControlMode.REPLAY and self.control_mode != ControlMode.REPLAY:
             self._mode_before_replay = self.control_mode
 
+        reset_dynamics_observer(self)
         self.control_mode = mode
         if mode == ControlMode.PLANNER and not self.sim_reset_hold:
             self._path_recording_enabled = True
