@@ -2,9 +2,91 @@ from __future__ import annotations
 
 import numpy as np
 from rclpy.node import Node
-from ruckig import InputParameter, OutputParameter, Result, Ruckig, RuckigError
+from ruckig import InputParameter, OutputParameter, Result, Ruckig, RuckigError, Trajectory
+from bisect import bisect_right
 
 from simlab.motion_planning.trajectory_generators.base import VehicleTrajectoryGeneratorTemplate
+
+
+def encode_trajectory(trajectory):
+    """Transfer Ruckig's exact constant-jerk coefficients, without resampling."""
+    profiles = []
+    for section in trajectory.profiles:
+        encoded = []
+        for profile in section:
+            item = {name: list(getattr(profile, name)) for name in ('t', 'p', 'v', 'a', 'j')}
+            item['ends'] = np.cumsum(item['t']).tolist()
+            item['brake'] = {name: list(getattr(profile.brake, name))
+                             for name in ('t', 'p', 'v', 'a', 'j')}
+            item['brake']['duration'] = profile.brake.duration
+            encoded.append(item)
+        profiles.append(encoded)
+    return dict(duration=trajectory.duration, ends=list(trajectory.intermediate_durations), profiles=profiles)
+
+
+def sample_trajectory(data, elapsed):
+    """Evaluate the exported profiles using Ruckig's at_time convention."""
+    section = bisect_right(data['ends'], elapsed)
+    finished = elapsed >= data['duration']
+    if finished:
+        section = len(data['profiles']) - 1
+    local = elapsed - (data['ends'][section - 1] if section else 0.)
+    result = []
+    for profile in data['profiles'][section]:
+        t = local
+        brake = profile['brake']
+        if section == 0:
+            t -= brake['duration']
+        if not finished and section == 0 and t < 0.:
+            t = local
+            index = int(t >= brake['t'][0])
+            if index:
+                t -= brake['t'][0]
+            source = brake
+            jerk = source['j'][index]
+        elif finished or t >= profile['ends'][-1]:
+            t -= profile['ends'][-1]
+            source, index, jerk = profile, -1, 0.
+        else:
+            index = bisect_right(profile['ends'], t)
+            if index:
+                t -= profile['ends'][index - 1]
+            source, jerk = profile, profile['j'][index]
+        position, velocity, acceleration = (source[name][index] for name in ('p', 'v', 'a'))
+        result.append((position + t*(velocity + t*(acceleration/2. + t*jerk/6.)),
+                       velocity + t*(acceleration + t*jerk/2.), acceleration + t*jerk))
+    return tuple(map(list, zip(*result)))
+
+
+def calculate_trajectory(settings):
+    """Run only in the calculation process: waypoint solves may use the cloud."""
+    inp = InputParameter(3)
+    for name, value in settings.items():
+        setattr(inp, name, value)
+    trajectory = Trajectory(3, len(inp.intermediate_positions))
+    otg = Ruckig(3, .01, len(inp.intermediate_positions))
+    result = otg.calculate(inp, trajectory)
+    if result not in (Result.Working, Result.Finished):
+        raise RuntimeError(f'Ruckig calculation failed: {result}')
+    return encode_trajectory(trajectory)
+
+
+def trajectory_speed_bound(data):
+    """Bound Euclidean speed using extrema of each constant-jerk phase."""
+    maxima = np.zeros(3)
+    for section in data['profiles']:
+        for axis, profile in enumerate(section):
+            for phase in (profile, profile['brake']):
+                for duration, velocity, acceleration, jerk in zip(
+                        phase['t'], phase['v'], phase['a'], phase['j']):
+                    times = [0., duration]
+                    if jerk and 0. < -acceleration / jerk < duration:
+                        times.append(-acceleration / jerk)
+                    maxima[axis] = max(maxima[axis], *(abs(velocity + acceleration*t + .5*jerk*t*t)
+                                                       for t in times))
+    if not np.isfinite(maxima).all():
+        raise ValueError('trajectory speed bound is nonfinite')
+    return float(np.linalg.norm(maxima))
 
 
 class RuckigVehicleTrajectoryGenerator(VehicleTrajectoryGeneratorTemplate):
@@ -13,6 +95,10 @@ class RuckigVehicleTrajectoryGenerator(VehicleTrajectoryGeneratorTemplate):
     def __init__(self, rclpy_node: Node, dofs: int, control_dt: float, max_waypoints: int):
         if dofs != 3:
             raise ValueError("RuckigVehicleTrajectoryGenerator is intended for 3 DoF position (x, y, z)")
+        self.max_waypoints = max_waypoints
+        self.control_dt = float(control_dt)
+        self.prepared = None
+        self.elapsed = 0.
         self.rclpy_node = rclpy_node
         self.otg = Ruckig(dofs, control_dt, max_waypoints)
         self.inp = InputParameter(dofs)
@@ -49,19 +135,9 @@ class RuckigVehicleTrajectoryGenerator(VehicleTrajectoryGeneratorTemplate):
             current_velocity = np.asarray(current_velocity, dtype=float)
             if current_velocity.shape != (3,) or not np.all(np.isfinite(current_velocity)):
                 raise ValueError("current_velocity must be length 3 with finite values")
-            path_aligned_velocity = self._path_aligned_initial_velocity(
-                current_position,
-                path_xyz,
-                current_velocity,
-            )
-            if float(np.linalg.norm(path_aligned_velocity - current_velocity)) > 1e-4:
-                self.rclpy_node.get_logger().info(
-                    "Ruckig projected replan velocity from "
-                    f"{current_velocity.round(3).tolist()} to "
-                    f"{path_aligned_velocity.round(3).tolist()} m/s"
-                )
-            current_velocity = path_aligned_velocity
 
+        self.prepared = None
+        self.elapsed = 0.
         self.inp.current_position = current_position.tolist()
         self.inp.current_velocity = current_velocity.tolist()
         self.inp.current_acceleration = [0.0, 0.0, 0.0]
@@ -89,35 +165,37 @@ class RuckigVehicleTrajectoryGenerator(VehicleTrajectoryGeneratorTemplate):
             )
 
 
-    @staticmethod
-    def _path_aligned_initial_velocity(current_position, path_xyz, current_velocity):
-        current_position = np.asarray(current_position, dtype=float).reshape(3)
-        path_xyz = np.asarray(path_xyz, dtype=float).reshape(-1, 3)
-        current_velocity = np.asarray(current_velocity, dtype=float).reshape(3)
+    def calculation_request(self):
+        return {name: list(getattr(self.inp, name)) for name in (
+            'current_position', 'current_velocity', 'current_acceleration',
+            'target_position', 'target_velocity', 'target_acceleration',
+            'intermediate_positions', 'max_velocity', 'max_acceleration', 'max_jerk')}
 
-        speed = float(np.linalg.norm(current_velocity))
-        if speed <= 1e-6 or path_xyz.shape[0] < 2:
-            return np.zeros(3, dtype=float)
+    def install_calculation(self, prepared):
+        self.prepared = prepared
+        self.elapsed = 0.
+        self.active = True
 
-        tangent = None
-        for point in path_xyz:
-            delta = point - current_position
-            distance = float(np.linalg.norm(delta))
-            if distance > 0.10:
-                tangent = delta / distance
-                break
-        if tangent is None:
-            return np.zeros(3, dtype=float)
-
-        forward_speed = float(np.dot(current_velocity, tangent))
-        if forward_speed <= 1e-4:
-            return np.zeros(3, dtype=float)
-        return tangent * forward_speed
+    def speed_bound(self):
+        if self.prepared is not None:
+            return trajectory_speed_bound(self.prepared)
+        if self.last_result is None:
+            raise ValueError('speed bound requires a calculated trajectory')
+        return trajectory_speed_bound(encode_trajectory(self.out.trajectory))
 
     def update(self, yaw_blend_factor):
         """Advance one control step along the current trajectory."""
         if not self.active:
             return None, None, None, Result.Error
+
+        if self.prepared is not None:
+            self.elapsed += self.control_dt
+            pos, vel, acc = sample_trajectory(self.prepared, self.elapsed)
+            self.last_result = (Result.Finished if self.elapsed >= self.prepared['duration'] else Result.Working)
+            self.last_yaw_blend_factor = float(yaw_blend_factor)
+            if self.last_result == Result.Finished and yaw_blend_factor >= self.yaw_finish_threshold:
+                self.active = False
+            return pos, vel, acc, self.last_result
 
         try:
             res = self.otg.update(self.inp, self.out)
@@ -150,10 +228,24 @@ class RuckigVehicleTrajectoryGenerator(VehicleTrajectoryGeneratorTemplate):
     def current_reference(self):
         if not self.active:
             return None
+        if self.prepared is not None:
+            return tuple(np.asarray(v) for v in sample_trajectory(self.prepared, self.elapsed))
         source = self.inp if self.last_result is None else self.out
         prefix = 'current_' if self.last_result is None else 'new_'
         return tuple(np.array(getattr(source, prefix + field), dtype=float)
                      for field in ('position', 'velocity', 'acceleration'))
+
+    def preview_position(self, t_offset):
+        """Evaluate a future reference position without advancing execution."""
+        if not np.isfinite(t_offset) or t_offset < 0:
+            raise ValueError('preview offset must be finite and nonnegative')
+        if self.prepared is not None:
+            elapsed = min(self.prepared['duration'], self.elapsed + t_offset)
+            return np.asarray(sample_trajectory(self.prepared, elapsed)[0])
+        if self.last_result is None:
+            raise ValueError('preview requires a calculated trajectory')
+        elapsed = min(float(self.out.trajectory.duration), float(self.out.time) + t_offset)
+        return np.asarray(self.out.trajectory.at_time(elapsed)[0])
 
     def preview_samples(self, *, horizon=None, sample_dt=0.05):
         """Read the active Ruckig output; never calculate or advance execution."""
@@ -161,16 +253,22 @@ class RuckigVehicleTrajectoryGenerator(VehicleTrajectoryGeneratorTemplate):
             return []
         if not np.isfinite(sample_dt) or sample_dt <= 0:
             raise ValueError('sample period must be positive and finite')
+        if self.prepared is not None:
+            remaining = max(0., self.prepared['duration'] - self.elapsed)
+            duration = remaining if horizon is None else min(remaining, max(0., float(horizon)))
+            count = 1 if duration == 0 else int(np.ceil(duration / sample_dt)) + 1
+            if count > 20000:
+                raise ValueError('trajectory exceeds preview sample budget')
+            return [(float(t), self.preview_position(float(t))) for t in np.linspace(0., duration, count)]
         if self.last_result is None:
             return []  # The original update loop has not calculated a trajectory yet.
         elapsed = float(self.out.time)
         remaining = max(0.0, float(self.out.trajectory.duration) - elapsed)
         duration = remaining if horizon is None else min(remaining, max(0.0, float(horizon)))
-        count = max(2, int(np.ceil(duration / sample_dt)) + 1)
+        count = 1 if duration == 0 else int(np.ceil(duration / sample_dt)) + 1
         if count > 20000:
             raise ValueError('trajectory exceeds preview sample budget')
-        return [(float(t), np.array(self.out.trajectory.at_time(elapsed + t)[0], dtype=float))
-                for t in np.linspace(0., duration, count)]
+        return [(float(t), self.preview_position(float(t))) for t in np.linspace(0., duration, count)]
 
     def close(self):
         self.active = False

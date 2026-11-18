@@ -1,3 +1,5 @@
+from bringup.scene_runtime import robot_link_owners
+from functools import lru_cache
 import numpy as np
 import trimesh, fcl
 from visualization_msgs.msg import Marker
@@ -8,7 +10,6 @@ from urdf_parser_py.urdf import URDF, Mesh as URDFMesh
 from sensor_msgs.msg import PointCloud2, PointField
 from std_msgs.msg import Header
 
-import struct
 
 def color(r, g, b, a):
     c = ColorRGBA()
@@ -26,14 +27,19 @@ def se3_from_rpy_xyz(rpy, xyz):
     return T
 
 def fcl_bvh_from_mesh(path, scale=[1.0, 1.0, 1.0], rpy=(0.0, 0.0, 0.0), xyz=(0.0, 0.0, 0.0)):
-    from bringup.collision_geometry import collision_surface_mesh
     scale = (float(scale),) * 3 if np.isscalar(scale) else tuple(scale)
-    mesh = collision_surface_mesh(4, (), path, scale).copy()
-    if any(abs(v) > 1e-12 for v in rpy) or any(abs(v) > 1e-12 for v in xyz):
-        T = se3_from_rpy_xyz(rpy, xyz)  # 4x4
-        mesh.apply_transform(T)
+    return _cached_fcl_bvh(str(path), scale, tuple(rpy), tuple(xyz))
 
+
+@lru_cache(maxsize=64)
+def _cached_fcl_bvh(path, scale, rpy, xyz):
+    # Immutable geometry is shared; each world owns its CollisionObjects/transforms.
+    from bringup.collision_geometry import collision_surface_mesh
+    mesh = collision_surface_mesh(4, (), path, scale)
     V = np.asarray(mesh.vertices, dtype=np.float64)
+    if any(abs(v) > 1e-12 for v in rpy) or any(abs(v) > 1e-12 for v in xyz):
+        transform = se3_from_rpy_xyz(rpy, xyz)
+        V = V @ transform[:3, :3].T + transform[:3, 3]
     F = np.asarray(mesh.faces, dtype=np.int32)
     if V.size == 0 or F.size == 0:
         raise RuntimeError(f'Empty mesh after transforms, check file, {path}')
@@ -86,6 +92,7 @@ def collect_env_meshes(urdf_string: str):
       joint_name
     """
 
+    owners = robot_link_owners(urdf_string)
     model = _parse_urdf_no_ros2_control(urdf_string)
 
     robot_out = []
@@ -123,7 +130,7 @@ def collect_env_meshes(urdf_string: str):
         link_name = link.name
 
         # Select robot meshes, bathymetry meshes, and the floor reference frame.
-        is_robot_link = link_name.startswith("robot_")
+        is_robot_link = link_name in owners
         is_env_link   = link_name.startswith("bathymetry_")
         is_floor_link = link_name.startswith("world_bottom")
 
@@ -137,11 +144,20 @@ def collect_env_meshes(urdf_string: str):
             # assume only one floor link, take the z from its first visual
             floor_depth = joint_info["parent_to_link_xyz"][2]
 
-        # walk visuals
-        for vis in getattr(link, "visuals", []) or []:
+        # Environment collision and its voxel display share the declared
+        # collision surface. Robot proxies use their visual meshes.
+        if is_env_link:
+            surfaces = getattr(link, 'collisions', []) or []
+            if not surfaces:
+                raise ValueError(f'Environment link requires explicit collision geometry: {link_name}')
+        else:
+            surfaces = getattr(link, 'visuals', []) or []
+        for vis in surfaces:
             geom = getattr(vis, "geometry", None)
             if not isinstance(geom, URDFMesh):
-                continue  # skip non-mesh visuals
+                if is_env_link:
+                    raise ValueError(f'Environment collision geometry must be a mesh: {link_name}')
+                continue  # Robot collision proxy follows the existing visual mesh.
 
             origin = getattr(vis, "origin", None)
 
@@ -160,6 +176,7 @@ def collect_env_meshes(urdf_string: str):
 
             entry = {
                 "link":  link_name,
+                "owner": owners.get(link_name),
                 "uri":   uri,
                 "scale": scale,
                 "xyz":   xyz_local,   # mesh pose in link frame
@@ -185,23 +202,24 @@ def collect_env_meshes(urdf_string: str):
             if is_robot_link:
                 robot_out.append(entry)
             if is_env_link:
+                transform = np.eye(4)
+                current = link_name
+                visited = set()
+                while current in child_to_parent:
+                    if current in visited:
+                        raise ValueError(f'Environment transform cycle: {link_name}')
+                    visited.add(current)
+                    joint = child_to_parent[current]
+                    if joint['joint_type'] != 'fixed':
+                        raise ValueError(f'Environment link must be static: {link_name}')
+                    transform = rpy_xyz_to_mat(joint['parent_to_link_rpy'],
+                                               joint['parent_to_link_xyz']) @ transform
+                    current = joint['parent_link']
+                entry['link_to_world'] = transform
                 env_out.append(entry)
 
     return robot_out, env_out, floor_depth
 
-
-def getAABB_OBB(mesh):
-    # Get the axis-aligned bounding box (AABB)
-    min_coords = mesh.bounds[0]
-    max_coords = mesh.bounds[1]
-
-    # get the oriented bounding box (OBB)
-    obb = mesh.bounding_box_oriented
-    obb_corners = trimesh.bounds.corners(obb.bounds)
-
-    AABB = min_coords, max_coords
-    OBB = obb_corners
-    return AABB, OBB
 
 def rpy_xyz_to_mat(rpy, xyz):
     T = trimesh.transformations.euler_matrix(
@@ -210,46 +228,23 @@ def rpy_xyz_to_mat(rpy, xyz):
     T[0:3, 3] = xyz
     return T
 
-def conc_env_trimesh(env_mesh_infos):
-    meshes = []
-
+def environment_mesh_bounds(env_mesh_infos):
+    """Accumulate bounds without allocating temporary mesh object graphs."""
+    from bringup.collision_geometry import collision_surface_mesh
+    lower = np.full(3, np.inf)
+    upper = np.full(3, -np.inf)
     for info in env_mesh_infos:
-        path_abs = info["uri"]
-        scale_xyz = np.array(info["scale"], dtype=float)
-
-        # mesh pose in its own link frame
-        xyz_local = np.array(info["xyz"], dtype=float)
-        rpy_local = np.array(info["rpy"], dtype=float)
-
-        # link pose in its parent frame
-        xyz_parent = np.array(info["parent_to_link_xyz"], dtype=float)
-        rpy_parent = np.array(info["parent_to_link_rpy"], dtype=float)
-
-        scene_or_mesh = trimesh.load(path_abs, force='scene')
-        mesh = (
-            scene_or_mesh.to_geometry()
-            if isinstance(scene_or_mesh, trimesh.Scene)
-            else scene_or_mesh
-        )
-
-        # 1. scale
-        mesh.apply_scale(scale_xyz)
-
-        # 2. place mesh inside the link frame
-        T_local = rpy_xyz_to_mat(rpy_local, xyz_local)
-        mesh.apply_transform(T_local)
-
-        # 3. place that link frame into the parent frame
-        T_parent = rpy_xyz_to_mat(rpy_parent, xyz_parent)
-        mesh.apply_transform(T_parent)
-
-        meshes.append(mesh)
-
-    if len(meshes) == 0:
-        return None
-    if len(meshes) == 1:
-        return meshes[0]
-    return trimesh.util.concatenate(meshes)
+        mesh = collision_surface_mesh(4, (), info['uri'], tuple(info['scale']))
+        link_transform = info.get('link_to_world')
+        if link_transform is None:
+            link_transform = rpy_xyz_to_mat(info['parent_to_link_rpy'], info['parent_to_link_xyz'])
+        transform = link_transform @ rpy_xyz_to_mat(info['rpy'], info['xyz'])
+        vertices = np.asarray(mesh.vertices) @ transform[:3, :3].T + transform[:3, 3]
+        lower = np.minimum(lower, vertices.min(axis=0))
+        upper = np.maximum(upper, vertices.max(axis=0))
+    if not np.all(np.isfinite(np.r_[lower, upper])):
+        raise ValueError('Environment has no finite mesh bounds')
+    return lower, upper
 
 
 def points_to_cloud2(points_xyz: np.ndarray,
@@ -275,14 +270,8 @@ def points_to_cloud2(points_xyz: np.ndarray,
         PointField(name='z', offset=8,  datatype=PointField.FLOAT32, count=1),
     ]
 
-    # Pack the data into bytes
-    # points_xyz.astype(np.float32).tobytes() would be fastest,
-    # but ROS PointCloud2 layout requires little-endian float32 triplets,
-    # which matches struct.pack("<fff") repeated.
-    # We will build a bytearray for clarity.
-    buff = bytearray()
-    for x, y, z in points_xyz.astype(np.float32):
-        buff += struct.pack('<fff', x, y, z)
+    # Contiguous little-endian float32 XYZ matches the PointCloud2 layout.
+    payload = np.asarray(points_xyz, dtype='<f4').tobytes(order='C')
 
     cloud = PointCloud2()
     cloud.header = header
@@ -293,6 +282,6 @@ def points_to_cloud2(points_xyz: np.ndarray,
     cloud.point_step = 12          # 3 floats * 4 bytes
     cloud.row_step = cloud.point_step * cloud.width
     cloud.is_dense = True          # no invalid points
-    cloud.data = bytes(buff)
+    cloud.data = payload
 
     return cloud

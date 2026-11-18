@@ -36,6 +36,7 @@
   <exec_depend version_gte="0.1.0">ros2_control_blue_reach_5</exec_depend>
   <exec_depend>python3-yaml</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-scipy</exec_depend>
   <exec_depend>python3-matplotlib</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
   <exec_depend>tf2_geometry_msgs</exec_depend>
@@ -46,4 +47,5 @@
   <export>
     <build_type>ament_cmake</build_type>
   </export>
+  <exec_depend>controller_manager_msgs</exec_depend>
 </package>

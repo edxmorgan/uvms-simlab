@@ -11,7 +11,7 @@ from rclpy.node import Node
 from scipy.spatial.transform import Rotation as R
 
 from simlab.fcl_checker import FCLWorld
-from simlab.planner_world import PlannerWorld
+from simlab.planner_world import PlannerWorld, DEFAULT_BOUNDARY_TRACKING_TOLERANCE_M
 from simlab.motion_planning.planners.base import PlannerTemplate
 from simlab.motion_planning.result import MotionPlanResult, MotionPlanKind
 
@@ -31,9 +31,13 @@ class OmplPlanner:
                  env_bounds=None,
                  max_abs_roll=np.deg2rad(11.0),   # 11 degrees
                  max_abs_pitch=np.deg2rad(11.0),  # 11 degrees
+                 start_bounds_tolerance=DEFAULT_BOUNDARY_TRACKING_TOLERANCE_M,
                  ):
         self.rclpy_node = rclpy_node
         self.safety_margin = float(safety_margin)
+        self.start_bounds_tolerance = float(start_bounds_tolerance)
+        if not np.isfinite(self.start_bounds_tolerance) or self.start_bounds_tolerance < 0:
+            raise ValueError('start_bounds_tolerance must be finite and nonnegative')
         self.max_abs_roll = float(max_abs_roll)
         self.max_abs_pitch = float(max_abs_pitch)
         self.env_bounds = tuple(float(v) for v in env_bounds)
@@ -77,6 +81,25 @@ class OmplPlanner:
         self.start = ob.State(self.space)
         self.goal = ob.State(self.space)
 
+
+    def _set_search_bounds(self, limits):
+        bounds = ob.RealVectorBounds(3)
+        for axis, (low, high) in enumerate(np.asarray(limits).reshape(3, 2)):
+            bounds.setLow(axis, float(low))
+            bounds.setHigh(axis, float(high))
+        self.space.setBounds(bounds)
+        # Physical collision resolution must survive both local and global search.
+        resolution = min(0.01, 0.05 / self.space.getMaximumExtent())
+        self.ss.getSpaceInformation().setStateValidityCheckingResolution(resolution)
+
+    def _local_search_bounds(self, start, goal):
+        start, goal = np.asarray(start), np.asarray(goal)
+        # One start-to-goal distance of detour room on every side; the full
+        # workspace remains available if this first search cannot connect them.
+        padding = max(1.0, float(np.linalg.norm(goal - start)))
+        full = np.asarray(self.env_bounds).reshape(3, 2)
+        return np.column_stack((np.maximum(full[:, 0], np.minimum(start, goal) - padding),
+                                np.minimum(full[:, 1], np.maximum(start, goal) + padding)))
 
     def _resample_by_distance(self, xyz_np, quat_wxyz_np, spacing_m=0.20, max_points=2000):
         if xyz_np.shape[0] <= 2 or spacing_m <= 0:
@@ -232,7 +255,20 @@ class OmplPlanner:
     ):
         # Reset planning data for a clean solve invocation.
         self.ss.clear()
+        self._set_search_bounds(self.env_bounds)
 
+        measured_start = np.asarray(start_xyz, dtype=float).reshape(3)
+        world = self._resolve_planner_world(self.rclpy_node)
+        try:
+            start_xyz = world.planning_start(measured_start, self.env_bounds, self.start_bounds_tolerance)
+        except ValueError as exc:
+            return MotionPlanResult(is_success=False, kind=MotionPlanKind.PATH,
+                                    message=f'Start rejected: {exc}. Recover to a clear pose before replanning.')
+        connector_length = float(np.linalg.norm(start_xyz-measured_start))
+        if connector_length:
+            self.rclpy_node.get_logger().info(
+                f'Planning boundary connector: measured={measured_start.tolist()}, '
+                f'in_bounds={start_xyz.tolist()}, length={connector_length:g} m')
         prediction_start_xyz = np.asarray(start_xyz, dtype=float).reshape(3)
         dynamic_obstacle_prediction_speed = max(0.0, float(dynamic_obstacle_prediction_speed))
         x_min, x_max, y_min, y_max, z_min, z_max = self.env_bounds
@@ -268,17 +304,22 @@ class OmplPlanner:
         gr.w = float(goal_quat_wxyz[0]); gr.x = float(goal_quat_wxyz[1])
         gr.y = float(goal_quat_wxyz[2]); gr.z = float(goal_quat_wxyz[3])
 
-        # Enforce bounds to normalize SO3 and clamp R3
-        self.space.enforceBounds(s)
+        # The measured start's checked connector is retained below; goals stay strict.
+        world = self._resolve_planner_world(self.rclpy_node)
+        for label, state in (('Start', s), ('Goal', g)):
+            xyz = [state.getX(), state.getY(), state.getZ()]
+            reason = world.invalid_position_reason(xyz, safety_margin=0. if label == 'Start' else self.safety_margin, bounds=self.env_bounds)
+            if not reason and not self.ss.getSpaceInformation().isValid(state):
+                reason = 'orientation violates planner roll/pitch limits'
+            if reason:
+                recovery = (' Reset the simulation to a clear pose before replanning.'
+                            if label == 'Start' else ' Select a clear target.')
+                return MotionPlanResult(is_success=False, kind=MotionPlanKind.PATH,
+                                        message=f'{label} rejected: {reason}.{recovery}')
+        self.space.enforceBounds(s)  # quaternion normalization only; XYZ checked above
         self.space.enforceBounds(g)
-
         si = self.ss.getSpaceInformation()
         self.ss.setStartAndGoalStates(self.start, self.goal)
-
-        if not si.satisfiesBounds(s):
-            raise RuntimeError("Start violates bounds after enforceBounds")
-        if not si.satisfiesBounds(g):
-            raise RuntimeError("Goal violates bounds after enforceBounds")
 
         # Optimality objective, minimize path length, optional threshold
         objective = self._get_path_length_objective(si, path_length_threshold)
@@ -303,10 +344,18 @@ class OmplPlanner:
         # planner and resolution
         self.ss.setPlanner(planner)
 
-        self.space.setLongestValidSegmentFraction(0.01)
-        si.setStateValidityCheckingResolution(0.01)
-
-        if not self.ss.solve(float(time_limit)):
+        local_bounds = self._local_search_bounds(start_xyz, goal_xyz)
+        full_bounds = np.asarray(self.env_bounds).reshape(3, 2)
+        local_search = not np.array_equal(local_bounds, full_bounds)
+        self._set_search_bounds(local_bounds)
+        solved = self.ss.solve(float(time_limit) * (0.5 if local_search else 1.0))
+        if local_search and not self.ss.haveExactSolutionPath():
+            # Rebuild planner search data after changing the sampling domain.
+            # Preserve start, goal, objective and the shared collision checker.
+            self.ss.clear()
+            self._set_search_bounds(full_bounds)
+            solved = self.ss.solve(float(time_limit) * 0.5)
+        if not solved:
             return MotionPlanResult(
                 is_success=False,
                 kind=MotionPlanKind.PATH,
@@ -348,16 +397,19 @@ class OmplPlanner:
             spacing_m=float(spacing_m),
             max_points=int(max_points)
         )
+        if connector_length:
+            xyz_rs = np.vstack((measured_start, xyz_rs))
+            quat_rs = np.vstack((quat_rs[0], quat_rs))
 
         # Compute final cost and raw geometric length of the solution path
         try:
             cost_obj = path.cost(objective)          # OMPL computes path cost here
-            cost_val = float(cost_obj.value())      # unwrap Cost to a float
+            cost_val = float(cost_obj.value()) + connector_length
         except Exception:
             cost_val = None
 
         try:
-            geom_length = float(path.length())      # Euclidean length in state space
+            geom_length = float(path.length()) + connector_length
         except Exception:
             geom_length = None
 
@@ -373,6 +425,7 @@ class OmplPlanner:
                 f"Planner found solution with {xyz_rs.shape[0]} waypoints at ~{spacing_m} m spacing"
                 + (f", cost {cost_val:.3f}" if cost_val is not None else "")
                 + (f", geom length {geom_length:.3f}" if geom_length is not None else "")
+                + (f", checked boundary connector {connector_length:.6f} m" if connector_length else "")
             ),
         )
 
@@ -386,6 +439,7 @@ class Se3OmplPlannerBase(PlannerTemplate):
             node,
             safety_margin=float(node.safety_margin),
             env_bounds=tuple(float(v) for v in node.env_bounds),
+            start_bounds_tolerance=getattr(node, 'start_bounds_tolerance', DEFAULT_BOUNDARY_TRACKING_TOLERANCE_M),
         )
 
     def plan_vehicle(

@@ -14,6 +14,11 @@ def spin_until_shutdown(node, executor=None):
         # wait-set construction. Do not hide middleware errors while running.
         if node.context.ok():
             raise
+    except RuntimeError as error:
+        # Jazzy can invalidate a subscription during take_message after SIGINT.
+        # Its pybind conversion error is distinct from an RCLError.
+        if node.context.ok() or not str(error).startswith('Unable to convert call argument'):
+            raise
 
 
 def shutdown_node(node=None, executor=None):

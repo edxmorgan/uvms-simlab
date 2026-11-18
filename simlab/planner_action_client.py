@@ -38,6 +38,7 @@ class PlannerActionClient:
     def send_goal(
         self,
         *,
+        robot_prefix: str,
         start_xyz: Sequence[float],
         start_quat_wxyz: Sequence[float],
         goal_xyz: Sequence[float],
@@ -55,6 +56,7 @@ class PlannerActionClient:
             return False
 
         goal_msg = PlanVehicle.Goal()
+        goal_msg.robot_prefix = robot_prefix
         goal_msg.start_xyz = [float(v) for v in start_xyz]
         goal_msg.start_quat_wxyz = [float(v) for v in start_quat_wxyz]
         goal_msg.goal_xyz = [float(v) for v in goal_xyz]

@@ -32,6 +32,16 @@ class VehicleTrajectoryGeneratorTemplate(ABC):
         raise NotImplementedError('trajectory generator does not implement timed preview')
 
     @abstractmethod
+    def preview_position(self, t_offset):
+        """Evaluate the reference at an offset without advancing execution."""
+        pass
+
+    @abstractmethod
+    def speed_bound(self):
+        """Return a conservative speed bound for the remaining reference."""
+        pass
+
+    @abstractmethod
     def start_from_path(
         self,
         current_position: Sequence[float],

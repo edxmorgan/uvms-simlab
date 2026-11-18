@@ -93,3 +93,17 @@ server.main(args=['--ros-args', '-p', 'robot_description:=test'])
         if process.poll() is None:
             process.kill()
         process.communicate()
+
+
+@pytest.mark.parametrize('running', [False, True])
+@pytest.mark.parametrize('message', ['Unable to convert call argument \'0\' to Python object', 'controller calculation failed'])
+def test_subscription_shutdown_conversion_race_is_narrowly_handled(monkeypatch, running, message):
+    def fail(*args, **kwargs):
+        raise RuntimeError(message)
+    monkeypatch.setattr(shutdown.rclpy, 'spin', fail)
+    node = SimpleNamespace(context=SimpleNamespace(ok=lambda: running))
+    if running or not message.startswith('Unable to convert call argument'):
+        with pytest.raises(RuntimeError):
+            shutdown.spin_until_shutdown(node)
+    else:
+        shutdown.spin_until_shutdown(node)

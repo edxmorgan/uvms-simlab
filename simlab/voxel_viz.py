@@ -16,7 +16,7 @@ from tf2_ros import Buffer, TransformListener
 from simlab.dynamic_world import DynamicWorldModel
 from simlab.shutdown import shutdown_node, spin_until_shutdown
 from simlab.utils.meshes import collect_env_meshes, points_to_cloud2, se3_from_rpy_xyz
-from simlab.voxel_geometry import LocalVoxelCache, transform_centers
+from simlab.voxel_geometry import LocalVoxelCache, transform_centers, display_point_subsets
 
 
 class VoxelVizNode(Node):
@@ -34,6 +34,10 @@ class VoxelVizNode(Node):
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.dynamic_world = DynamicWorldModel(
             self, world_frame=self.world_frame, robot_radius_provider=lambda: 0.0)
+        self.declare_parameter('max_display_points', 250000)
+        self.max_display_points = int(self.get_parameter('max_display_points').value)
+        if self.max_display_points < 0:
+            raise ValueError('max_display_points must be nonnegative')
         self.voxel_size = 0.1
         cache_dir = Path(os.environ.get('ROS_HOME', str(Path.home() / '.ros'))) / 'collision_voxels'
         # A large bathymetry build must not starve dynamic obstacle voxelization.
@@ -44,6 +48,8 @@ class VoxelVizNode(Node):
         self.dynamic_pub = self.create_publisher(PointCloud2, '/dynamic_voxels_cloud', qos)
         self._signatures = {}
         self._errors = {}
+        from simlab.environment_scene import attach_voxels
+        attach_voxels(self)
         self.timer = self.create_timer(0.1, self.tick)
         self.get_logger().info('Shared collision voxels build in background at 0.1 m')
 
@@ -69,10 +75,12 @@ class VoxelVizNode(Node):
         return sources
 
     def _dynamic_sources(self):
-        if self.dynamic_world.error:
-            raise RuntimeError(self.dynamic_world.error)
-        return [(self._dynamic_spec(state), state.obstacle_to_world_rotation, state.center_world)
-                for state in self.dynamic_world.obstacles.values()]
+        error = self.dynamic_world.availability_error()
+        if error:
+            raise RuntimeError(error)
+        sources = [(self._dynamic_spec(state), state.obstacle_to_world_rotation, state.center_world)
+                   for state in self.dynamic_world.obstacles.values()]
+        return sources
 
     def _publish_sources(self, name, publisher, sources):
         ready = []
@@ -89,12 +97,16 @@ class VoxelVizNode(Node):
                           for spec, rotation, translation in sources)
         if self._signatures.get(name) == signature:
             return
-        points = np.concatenate([transform_centers(*item) for item in ready]) if ready else np.empty((0, 3))
+        subsets = display_point_subsets([item[0] for item in ready], self.max_display_points)
+        points = np.concatenate([transform_centers(subset, rotation, translation)
+                                 for subset, (_, rotation, translation) in zip(subsets, ready)]) if ready else np.empty((0, 3))
         # Zero stamp: retained world-frame data remains valid for late subscribers.
         publisher.publish(points_to_cloud2(points, frame_id=self.world_frame))
         self._signatures[name] = signature
 
     def tick(self):
+        if self.scene_participant.held:
+            return
         if not rclpy.ok():
             return
         active_specs = {

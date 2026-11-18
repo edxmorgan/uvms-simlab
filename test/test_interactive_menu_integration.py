@@ -199,3 +199,98 @@ def test_robot_refresh_restores_ik_checks(ui):
     robot=ui.uvms_backend.robot_selected;robot.ik_tool_axis=np.array([1.,0.,0.]);robot.ik_base_align_w=0
     ui._refresh_robot_menu_state(0)
     assert [ui.menu_handler.getCheckState(h) for h in ui.axis_menu_map]==[MH.CHECKED,MH.UNCHECKED,MH.UNCHECKED,MH.UNCHECKED]
+
+
+def test_scene_reset_syncs_marker_poses_and_cloud_frames(ui):
+    from geometry_msgs.msg import Pose
+    ui.uvms_backend.robot_selected.task_based_controller = False
+    vehicle, arm = Pose(), Pose()
+    vehicle.position.x = -2.45
+    arm.position.z = .31
+    ui.uvms_backend.target_vehicle_pose = vehicle
+    ui.uvms_backend.target_arm_base_endeffector_pose = arm
+    ui.uv_marker = NS(name='uv_marker', pose=Pose())
+    ui.arm_base_task_marker = NS(name='arm_base_task_marker', pose=Pose())
+    UI._sync_reset_target_markers(ui)
+    assert ui.uv_marker.pose == vehicle
+    assert ui.arm_base_task_marker.pose == arm
+    assert ui.uv_marker.pose is not vehicle
+    ui.server.setPose.assert_any_call('uv_marker', vehicle)
+    ui.server.setPose.assert_any_call('arm_base_task_marker', arm)
+    ui.uvms_backend.target_vehicle_in_world_tf_timer_callback.assert_called_once()
+    ui.uvms_backend.target_arm_base_tf_timer_callback.assert_called_once()
+    ui.server.applyChanges.assert_called_once()
+
+
+@pytest.mark.parametrize('event', [0, 2, 3, 4, 5])
+def test_task_marker_non_pose_events_do_not_restore_stale_goals(ui, event):
+    from visualization_msgs.msg import InteractiveMarkerFeedback
+    assert event != InteractiveMarkerFeedback.POSE_UPDATE
+    UI.world_task_marker_processFeedback(ui, NS(event_type=event))
+    ui.uvms_backend.robot_selected.try_transform_pose.assert_not_called()
+    ui.uvms_backend.set_task_target_world.assert_not_called()
+
+
+@pytest.mark.parametrize('setter', ['set_vehicle_target', 'set_task_target_world', 'set_task_target_arm_base'])
+def test_scene_transition_rejects_target_edits(setter):
+    backend = NS(scene_transition=True)
+    assert not getattr(Backend, setter)(backend, None, None)[0]
+
+
+def test_robot_selection_restores_independent_targets_and_task_marker():
+    from geometry_msgs.msg import Pose
+    from visualization_msgs.msg import InteractiveMarker
+    backend = Backend.__new__(Backend)
+    backend.node = Mock()
+    backend._set_camera_frame_for_robot = Mock()
+    backend._robot_targets = {}
+    backend.robot_selected = None
+    backend.world_frame = 'world'
+    backend.arm_base_target_frame = 'arm_target'
+    first = NS(k_robot=0, prefix='robot_1_', control_space=ControlSpace.TASK_SPACE)
+    second = NS(k_robot=1, prefix='robot_2_', control_space=ControlSpace.JOINT_SPACE)
+    backend.robots = [first, second]
+    backend.initialise_target_Poses()
+    backend.set_robot_selected(0)
+    backend.target_vehicle_pose.position.x = 1.
+    backend.target_world_endeffector_pose.position.x = 3.
+    backend.target_arm_base_endeffector_pose.position.x = .3
+    original = backend.target_world_endeffector_pose
+    backend.set_robot_selected(1)
+    backend.target_vehicle_pose.position.x = 10.
+    backend.target_world_endeffector_pose.position.x = 13.
+    backend.target_arm_base_endeffector_pose.position.x = .7
+    backend.set_robot_selected(0)
+    assert backend.target_world_endeffector_pose.position.x == 3.
+    assert backend.target_vehicle_pose.position.x == 1.
+    assert backend.target_arm_base_endeffector_pose.position.x == .3
+    assert backend.target_world_endeffector_pose is not original
+    node = NS(uvms_backend=backend, server=Mock(), menu_handler=Mock(),
+        arm_base_task_marker=InteractiveMarker(), _clear_markers=Mock(),
+        _configure_arm_marker_mode=Mock(), _ensure_menu_control=Mock(),
+        world_task_marker_processFeedback=Mock())
+    node.arm_base_task_marker.pose.position.x = 13. # robot 2's previous marker
+    UI._apply_task_control_mode(node, first, abort_motion=False)
+    assert node.arm_base_task_marker.header.frame_id == 'world'
+    assert node.arm_base_task_marker.pose.position.x == 3.
+    backend.set_robot_selected(1)
+    assert backend.target_world_endeffector_pose.position.x == 13.
+    assert backend.target_vehicle_pose.position.x == 10.
+
+
+def test_task_feedback_uses_world_pose_without_other_robot_transform(ui):
+    from visualization_msgs.msg import InteractiveMarkerFeedback
+    from geometry_msgs.msg import Pose
+    backend = ui.uvms_backend
+    backend.scene_transition = False
+    backend.world_frame = 'world'
+    backend.target_world_endeffector_pose = Pose()
+    backend.target_world_endeffector_pose.position.x = 3.
+    backend.set_task_target_world.return_value = (True, 'ok')
+    msg = InteractiveMarkerFeedback()
+    msg.event_type = msg.POSE_UPDATE
+    msg.header.frame_id = 'world'
+    msg.pose = backend.target_world_endeffector_pose
+    UI.world_task_marker_processFeedback(ui, msg)
+    backend.set_task_target_world.assert_called_once_with(backend.robot_selected, msg.pose)
+    backend.robot_selected.try_transform_pose.assert_not_called()

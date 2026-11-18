@@ -98,7 +98,7 @@ def test_static_transform_matches_fcl_link_and_mesh_origins():
 def test_cloud_pose_updates_and_deletion_without_revoxelization():
     points = np.array([[1., 0., 0.]])
     cache = SimpleNamespace(request=lambda _: points)
-    node = SimpleNamespace(caches={'dynamic': cache}, _signatures={}, world_frame='base_link')
+    node = SimpleNamespace(max_display_points=250000, caches={'dynamic': cache}, _signatures={}, world_frame='base_link')
     messages = []
     publisher = SimpleNamespace(publish=messages.append)
     spec = (1, (1.,), '', ())
@@ -117,9 +117,110 @@ def test_cloud_pose_updates_and_deletion_without_revoxelization():
 
 def test_pending_jobs_do_not_publish_incomplete_cloud():
     cache = SimpleNamespace(request=lambda _: None)
-    node = SimpleNamespace(caches={'dynamic': cache}, _signatures={}, world_frame='world')
+    node = SimpleNamespace(max_display_points=250000, caches={'dynamic': cache}, _signatures={}, world_frame='world')
     messages = []
     with pytest.raises(RuntimeError, match='building'):
         VoxelVizNode._publish_sources(node, 'dynamic', SimpleNamespace(publish=messages.append),
                                      [((1, (1.,), '', ()), np.eye(3), np.zeros(3))])
     assert messages == []
+
+
+def _slow_voxel_worker(*args):
+    time.sleep(30)
+
+
+def test_shutdown_cancels_running_native_voxel_job(tmp_path, monkeypatch):
+    import simlab.voxel_geometry as module
+    monkeypatch.setattr(module, '_voxel_worker', _slow_voxel_worker)
+    cache = LocalVoxelCache(tmp_path, 0.1)
+    spec = (1, (1.,), '', ())
+    cache.request(spec)
+    time.sleep(.2)
+    start = time.monotonic()
+    cache.close()
+    assert time.monotonic() - start < 3.
+    assert cache.jobs[spec].done()
+    with pytest.raises(RuntimeError, match='cancelled'):
+        cache.jobs[spec].result()
+
+
+def test_surface_rasterization_matches_triangle_box_collision():
+    import fcl
+    from simlab.voxel_geometry import surface_voxel_centers
+    rng = np.random.default_rng(8)
+    pitch = .2
+    for triangle in [np.array([[0., 0., 0.], [1., 0., 0.], [0., 1., 0.]]),
+                     *rng.uniform(-.5, .5, (12, 3, 3))]:
+        mesh = trimesh.Trimesh(vertices=triangle, faces=[[0, 1, 2]], process=False)
+        actual = {tuple(x) for x in np.rint(surface_voxel_centers(mesh, pitch) / pitch).astype(int)}
+        bvh = fcl.BVHModel(); bvh.beginModel(3, 1)
+        bvh.addSubModel(triangle, np.array([[0, 1, 2]], dtype=np.int32)); bvh.endModel()
+        obj = fcl.CollisionObject(bvh)
+        lo = np.ceil(triangle.min(axis=0) / pitch - .5).astype(int)
+        hi = np.floor(triangle.max(axis=0) / pitch + .5).astype(int)
+        expected = set()
+        from itertools import product
+        for cell in product(*(range(a, b + 1) for a, b in zip(lo, hi))):
+            cube = fcl.CollisionObject(# Include boundary contact despite FCL floating-point roundoff.
+            fcl.Box(pitch + 1e-10, pitch + 1e-10, pitch + 1e-10),
+                fcl.Transform(np.array(cell, dtype=float) * pitch))
+            if fcl.collide(obj, cube, fcl.CollisionRequest(), fcl.CollisionResult()):
+                expected.add(cell)
+        assert actual == expected
+
+
+def test_cloud_packing_preserves_xyz_for_noncontiguous_big_endian_arrays():
+    import struct
+    from simlab.utils.meshes import points_to_cloud2
+    source = np.arange(30, dtype='>f8').reshape(10, 3)[::2]
+    cloud = points_to_cloud2(source)
+    expected = b''.join(struct.pack('<fff', *row) for row in source)
+    assert bytes(cloud.data) == expected
+    assert cloud.row_step == len(expected)
+    assert not cloud.is_bigendian
+
+
+def test_display_budget_preserves_small_objects_and_bounds_large_clouds():
+    from simlab.voxel_geometry import display_point_subsets
+    arrays = [np.arange(n * 3).reshape(n, 3) for n in (1000000, 5, 1000)]
+    saved = [a.copy() for a in arrays]
+    result = display_point_subsets(arrays, 205)
+    assert [len(a) for a in result] == [100, 5, 100]
+    assert result[1] is arrays[1]
+    for source, subset in zip(arrays, result):
+        np.testing.assert_array_equal(subset[0], source[0])
+        np.testing.assert_array_equal(subset[-1], source[-1])
+    for original, after in zip(saved, arrays):
+        np.testing.assert_array_equal(original, after)
+    assert display_point_subsets(arrays, 0) is arrays
+    assert display_point_subsets(arrays, 2000000) is arrays
+    assert sum(map(len, display_point_subsets(arrays, 2))) == 2
+    assert display_point_subsets([], 100) == []
+    with pytest.raises(ValueError):
+        display_point_subsets(arrays, -1)
+
+
+def test_voxels_use_one_shared_snapshot_for_robots_and_scripted_obstacles():
+    from types import SimpleNamespace as NS
+    from simlab.voxel_viz import VoxelVizNode
+    robot = NS(source='robot', owner_robot='robot_1_', collision_type=1,
+        collision_dimensions=(.35,), collision_mesh_resource='', collision_mesh_scale=(),
+        obstacle_to_world_rotation=np.eye(3), center_world=np.array([1.,2.,3.]))
+    scripted = NS(source='scripted', owner_robot='', collision_type=2,
+        collision_dimensions=(1.,2.,3.), collision_mesh_resource='', collision_mesh_scale=(),
+        obstacle_to_world_rotation=np.eye(3), center_world=np.array([4.,5.,6.]))
+    # No robot description, TF or separate sphere generator is needed here.
+    node = NS(dynamic_world=NS(availability_error=lambda:None, obstacles={'robot':robot,'box':scripted}),
+              _dynamic_spec=VoxelVizNode._dynamic_spec)
+    sources = VoxelVizNode._dynamic_sources(node)
+    assert len(sources) == 2
+    assert sources[0][0] == (1, (.35,), '', ())
+    assert sources[1][0] == (2, (1.,2.,3.), '', ())
+    np.testing.assert_array_equal(sources[0][2], robot.center_world)
+    robot.center_world = np.array([7.,8.,9.])
+    np.testing.assert_array_equal(VoxelVizNode._dynamic_sources(node)[0][2], [7.,8.,9.])
+    node.dynamic_world.obstacles.pop('robot')
+    assert len(VoxelVizNode._dynamic_sources(node)) == 1
+    node.dynamic_world.availability_error = lambda:'missing robot obstacle poses: robot_1_'
+    with pytest.raises(RuntimeError, match='missing robot obstacle poses'):
+        VoxelVizNode._dynamic_sources(node)

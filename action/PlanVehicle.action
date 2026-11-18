@@ -1,3 +1,4 @@
+string robot_prefix
 float64[] start_xyz
 float64[] start_quat_wxyz
 float64[] goal_xyz

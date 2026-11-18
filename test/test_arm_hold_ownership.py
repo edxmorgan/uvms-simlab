@@ -78,6 +78,7 @@ def test_starting_vehicle_plan_does_not_replace_new_arm_goal():
     robot._get_vehicle_goal_from_marker=lambda pose:([1.,0.,0.],[1.,0.,0.,0.])
     robot._log_plan_context=Mock();robot._save_vehicle_goal_from_target=Mock()
     robot.planner_action_client=Mock();robot.planner_action_client.send_goal.return_value=True
+    robot._send_vehicle_plan_from_current_state=lambda *args:Robot._send_vehicle_plan_from_current_state(robot,*args)
     robot.arm.q_command=[2.,1.,1.2,3.];robot.arm.dq_command=[0.]*4;robot.arm.ddq_command=[0.]*4
     robot._arm_feedback_hold=False
     assert Robot.plan_vehicle_trajectory_action(robot,Pose())

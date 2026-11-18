@@ -13,6 +13,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
+import multiprocessing
 import csv
 import json
 import time
@@ -29,6 +30,7 @@ import casadi as ca
 from ruckig import Result as TrajectoryResult
 from nav_msgs.msg import Path
 from rclpy.node import Node
+from rclpy.clock import Clock, ClockType
 from geometry_msgs.msg import PoseStamped, Pose
 from rclpy.qos import QoSProfile, QoSHistoryPolicy
 import copy
@@ -42,7 +44,8 @@ from typing import Sequence, Dict, Callable, Any, Optional
 from control_msgs.msg import DynamicInterfaceGroupValues
 from std_msgs.msg import Float64MultiArray
 from simlab.controller_msg import FullRobotMsg
-from simlab.controllers.dr_oges.feedback import forward_dynamics_observations, reset_dynamics_observer
+from simlab.controller_configuration import ControllerTrace
+from simlab.controllers.dr_oges import forward_dynamics_observations, reset_dynamics_observer
 from simlab.controllers import DEFAULT_CONTROLLER_CLASSES
 from simlab.dynamics_profiles import (
     camera_dynamics_from_profile,
@@ -55,7 +58,7 @@ from simlab.planner_markers import PathPlanner
 from simlab.motion_planning.trajectory_generators import VehicleTrajectoryGeneratorTemplate
 from simlab.motion_planning.kinematics.inverse.whole_body import aligned_target_rotation
 from simlab.motion_planning.kinematics.inverse import ik_class
-from simlab.motion_planning.kinematics.forward import load_forward_kinematics
+from simlab.motion_planning.kinematics.forward import load_forward_kinematics, tool_pose_from_sample
 from simlab.motion_planning.kinematics.inverse.base import (
     IKCapability, ManipulatorIKRequest, WholeBodyIKRequest, validate_pose_endpoint,
 )
@@ -90,6 +93,38 @@ def yaw_only_quat_wxyz(quat_wxyz: Sequence[float]) -> np.ndarray:
     quat_xyzw = R.from_euler("z", yaw).as_quat()
     return np.array([quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2]], dtype=float)
 
+
+def _run_motion_calculation(connection):
+    try:
+        while True:
+            function, args = connection.recv()
+            try:
+                connection.send((True, function(*args)))
+            except Exception as error:
+                connection.send((False, str(error)))
+    except (EOFError, BrokenPipeError, KeyboardInterrupt):
+        pass
+    finally:
+        connection.close()
+
+
+def _reap_motion_process(process):
+    process.join(timeout=1.)
+    if process.is_alive():
+        process.kill()
+        process.join()
+    process.close()
+
+
+def _solve_ik_request(solver_class, directory, request):
+    # The isolated worker owns these native solver instances, never the ROS executor.
+    key = (solver_class, str(directory))
+    if getattr(_solve_ik_request, '_key', None) != key:
+        _solve_ik_request._solver = solver_class(directory)
+        _solve_ik_request._key = key
+    return _solve_ik_request._solver.solve_request(request)
+
+
 class ControlSpace(str, Enum):
     JOINT_SPACE = "joint_space"
     TASK_SPACE  = "task_space"
@@ -100,6 +135,7 @@ class ControlMode(str, Enum):
     PLANNER = "planner"
     REPLAY = "replay"
     REPLAY_SETTLE = "replay_settle"
+    ARM_HOLD = "arm_hold"
 
 @dataclass
 class ControllerSpec:
@@ -145,9 +181,9 @@ class PS4Controller(Controller):
         self.yaw_max_torque = self.gain * 0.4 # for yaw
 
     def on_share_press(self):
-        # toggle teleop vs planner
-        new_mode = ControlMode.PLANNER if self.ros_node.control_mode == ControlMode.TELEOP else ControlMode.TELEOP
-        self.ros_node.set_control_mode(new_mode)
+        # Apply mode changes on the ROS executor, not the joystick reader thread.
+        with self.ros_node.controller_lock:
+            self.ros_node._pending_mode_toggle = not self.ros_node._pending_mode_toggle
 
    # —— Options toggles between modes ——    
     def on_options_press(self):
@@ -347,12 +383,15 @@ class PS4Controller(Controller):
 class Base:
     def get_interface_value(self, msg: DynamicJointState, dof_names: list, interface_names: list):
         names = msg.joint_names
-        return [
+        result = [
             msg.interface_values[names.index(joint_name)].values[
                 msg.interface_values[names.index(joint_name)].interface_names.index(interface_name)
             ]
             for joint_name, interface_name in zip(dof_names, interface_names)
         ]
+        if not np.all(np.isfinite(result)):
+            raise ValueError(f"Nonfinite feedback for {list(zip(dof_names, interface_names))}")
+        return result
 
 class Axis_Interface_names:
     manipulator_position = 'position'
@@ -362,29 +401,29 @@ class Axis_Interface_names:
     manipulator_estimation_acceleration = "estimated_acceleration"
     manipulator_effort = 'effort'
     
-    floating_base_x = 'position.x'
-    floating_base_y = 'position.y'
-    floating_base_z = 'position.z'
+    floating_base_x = 'position_estimate.x'
+    floating_base_y = 'position_estimate.y'
+    floating_base_z = 'position_estimate.z'
 
-    floating_base_roll = 'roll'
-    floating_base_pitch = 'pitch'
-    floating_base_yaw = 'yaw'
+    floating_base_roll = 'roll_estimate'
+    floating_base_pitch = 'pitch_estimate'
+    floating_base_yaw = 'yaw_estimate'
 
-    floating_dx = 'velocity.x'
-    floating_dy = 'velocity.y'
-    floating_dz = 'velocity.z'
+    floating_dx = 'velocity_estimate.x'
+    floating_dy = 'velocity_estimate.y'
+    floating_dz = 'velocity_estimate.z'
 
-    floating_roll_vel = 'angular_velocity.x'
-    floating_pitch_vel = 'angular_velocity.y'
-    floating_yaw_vel = 'angular_velocity.z'
+    floating_roll_vel = 'angular_velocity_estimate.x'
+    floating_pitch_vel = 'angular_velocity_estimate.y'
+    floating_yaw_vel = 'angular_velocity_estimate.z'
 
-    floating_du = 'linear_acceleration.x'
-    floating_dv = 'linear_acceleration.y'
-    floating_dw = 'linear_acceleration.z'
+    floating_du = 'linear_acceleration_estimate.x'
+    floating_dv = 'linear_acceleration_estimate.y'
+    floating_dw = 'linear_acceleration_estimate.z'
 
-    floating_dp = 'angular_acceleration.x'
-    floating_dq = 'angular_acceleration.y'
-    floating_dr = 'angular_acceleration.z'
+    floating_dp = 'angular_acceleration_estimate.x'
+    floating_dq = 'angular_acceleration_estimate.y'
+    floating_dr = 'angular_acceleration_estimate.z'
 
     floating_force_x = 'force.x'
     floating_force_y = 'force.y'
@@ -441,51 +480,63 @@ class Manipulator(Base):
         self.grasp_command = self.grasper_closed_position
 
     def update_state(self, msg: DynamicJointState):
-        self.q = self.get_interface_value(
+        q = self.get_interface_value(
             msg,
             self.joints,
-            [Axis_Interface_names.manipulator_position] * 4
+            [Axis_Interface_names.manipulator_filtered_position] * 4
         )
-        self.dq = self.get_interface_value(
+        dq = self.get_interface_value(
             msg,
             self.joints,
-            [Axis_Interface_names.manipulator_velocity] * 4
+            [Axis_Interface_names.manipulator_filtered_velocity] * 4
         )
-        self.ddq = self.get_interface_value(
+        ddq = self.get_interface_value(
             msg,
             self.joints,
             [Axis_Interface_names.manipulator_estimation_acceleration] * 4
         )
-        self.effort = self.get_interface_value(
+        effort = self.get_interface_value(
             msg,
             self.joints,
             [Axis_Interface_names.manipulator_effort] * 4
         )
-        self.sim_period = self.get_interface_value(
+        sim_period = self.get_interface_value(
             msg,
             [self.alpha_axis_e],
             [Axis_Interface_names.sim_period]
         )
-        self.grasper_q = self.get_interface_value(
+        grasper_q = self.get_interface_value(
             msg,
             self.grasper,
-            [Axis_Interface_names.manipulator_position]
+            [Axis_Interface_names.manipulator_filtered_position]
         )
-        self.grasper_q_dot = self.get_interface_value(
+        grasper_q_dot = self.get_interface_value(
             msg,
             self.grasper,
-            [Axis_Interface_names.manipulator_velocity]
+            [Axis_Interface_names.manipulator_filtered_velocity]
         )
-        self.grasper_q_ddot = self.get_interface_value(
+        grasper_q_ddot = self.get_interface_value(
             msg,
             self.grasper,
             [Axis_Interface_names.manipulator_estimation_acceleration]
         )
-        self.grasper_effort = self.get_interface_value(
+        grasper_effort = self.get_interface_value(
             msg,
             self.grasper,
             [Axis_Interface_names.manipulator_effort]
         )
+        self.__dict__.update(
+            q=q,
+            dq=dq,
+            ddq=ddq,
+            effort=effort,
+            sim_period=sim_period,
+            grasper_q=grasper_q,
+            grasper_q_dot=grasper_q_dot,
+            grasper_q_ddot=grasper_q_ddot,
+            grasper_effort=grasper_effort,
+        )
+
     def get_state(self) -> Dict[str, np.ndarray]:
         return {
             'arm_effort': list(self.effort) + list(self.grasper_effort),
@@ -559,6 +610,7 @@ class Robot(Base):
         vehicle_J_path = os.path.join(package_share_directory, 'model_functions/vehicle/J_uv.casadi')
         vehicle_ned2body_acc_path = os.path.join(package_share_directory, 'model_functions/vehicle/ned2body_acc.casadi')
         vehicle_ned2body_vel_path = os.path.join(package_share_directory, 'model_functions/vehicle/ned2body_vel.casadi')
+        self._ik_resource_directory = package_share_directory
         self.endpoint_ik = ik_class(whole_body_ik_name, capability=IKCapability.WHOLE_BODY_POSE)(package_share_directory)
         self.manipulator_ik = ik_class(manipulator_ik_name, capability=IKCapability.MANIPULATOR_POSITION)(package_share_directory)
 
@@ -599,6 +651,9 @@ class Robot(Base):
         self.arm_gravity = 0.0
         self.prefix = prefix
         self.status = 'inactive'
+        self._feedback_fault = False
+        self._last_state_received = None
+        self._feedback_stop_applied = False
         self.sim_time = 0.0
         self.start_time = 0.0
         self.joint4_frame = f"{self.prefix}joint_4"
@@ -606,16 +661,25 @@ class Robot(Base):
         self.body_vel_command = [0.0]*6
         self.body_acc_command = [0.0]*6
         self.performance_metrics = ControllerPerformanceMetrics()
+        self.controller_trace = ControllerTrace(self.node, self.prefix)
         self.performance_publisher = self.node.create_publisher(
             ControllerPerformance,
             f"/{self.prefix}/performance/controller",
             10,
         )
-        self.controller_instances = [
-            controller_class(self.node, self.n_joint, self.prefix)
-            for controller_class in DEFAULT_CONTROLLER_CLASSES
-            if not getattr(controller_class, 'lazy_initialization', False)
-        ]
+        self.controller_instances = []
+        for controller_class in DEFAULT_CONTROLLER_CLASSES:
+            if getattr(controller_class, 'lazy_initialization', False):
+                continue
+            try:
+                self.controller_instances.append(controller_class(self.node, self.n_joint, self.prefix))
+            except Exception as error:
+                # PID is the required startup controller. Optional controller
+                # initialization must not take the working controller down.
+                if controller_class.registry_name == 'PID':
+                    raise
+                self.node.get_logger().error(
+                    f"Controller {controller_class.registry_name} unavailable: {error}")
         self.planner_action_client = PlannerActionClient(
             self.node,
             action_name="planner",
@@ -673,6 +737,12 @@ class Robot(Base):
             Trigger,
             f"/{self.prefix}release_sim_uvms",
         )
+        self.release_sim_component_clients = {
+            part: self.node.create_client(Trigger, f"/{self.prefix}release_sim_{part}")
+            for part in ('vehicle', 'manipulator')}
+        self.pause_sim_component_clients = {
+            part: self.node.create_client(Trigger, f"/{self.prefix}pause_sim_{part}")
+            for part in ('vehicle', 'manipulator')}
         self.sensor_noise_client = self.node.create_client(SetBool, f"/{self.prefix}set_sensor_noise")
         self.sensor_noise_enabled = None  # Only confirmed simulator telemetry sets this.
         self.active_dynamics_profile = ""
@@ -776,7 +846,13 @@ class Robot(Base):
             self.trajectory_viz_timer = self.node.create_timer(1.0 / 20.0, self.trajectory_viz_callback)
 
         # one loop publishes
-        self.control_loop_timer = self.node.create_timer(1.0 / 150.0, self.control_loop_callback)
+        # Match ros2_control: steady execution normally, ROS time with /clock.
+        self._control_uses_ros_time = bool(parameter_or_default(self.node, 'use_sim_time', False))
+        self._control_timer_clock = (self.node.get_clock() if self._control_uses_ros_time
+                                     else Clock(clock_type=ClockType.STEADY_TIME))
+        self._control_tick = None
+        self.control_loop_timer = self.node.create_timer(
+            1.0 / 150.0, self.control_loop_callback, clock=self._control_timer_clock)
 
         # joystick updates memory only (no publish inside)
         self.joystick_read_timer = self.node.create_timer(1.0 / 30.0, self.joystick_read_callback)
@@ -825,6 +901,16 @@ class Robot(Base):
             self.register_planner(name=planner_name)
 
         self.set_planner("Bitstar")
+        capabilities = json.loads(parameter_or_default(self.node, "simulated_components", "{}"))
+        self.simulated_components = frozenset(capabilities.get(self.prefix, ()))
+        self.execution_gate = None
+        if parameter_or_default(self.node, "interactive_action_gate", False):
+            from .execution_gate import ExecutionGate
+            paused_prefixes = parameter_or_default(self.node, "startup_paused_robot_prefixes", None)
+            startup_paused = (self.prefix in paused_prefixes.split(",") if paused_prefixes is not None
+                else parameter_or_default(self.node, "sim_startup_pause", False))
+            self.execution_gate = ExecutionGate(self, startup_paused,
+                self.simulated_components)
 
     def register_controller(
                 self,
@@ -839,27 +925,46 @@ class Robot(Base):
         )
 
     def set_controller(self, name: str, activate: bool = True) -> bool:
+        # Resolve before touching the active controller, replay, or command
+        # state. Unsupported configurations and missing exports are rejection
+        # outcomes, not exceptions that should escape a ROS menu callback.
+        try:
+            if name not in self._controllers:
+                raise ValueError(f"unknown controller '{name}'")
+            spec = self._controllers[name].resolve()
+        except Exception as error:
+            self.controller_selection_error = f"Cannot select {name}: {error}"
+            self.node.get_logger().warn(self.controller_selection_error)
+            return False
+        self.controller_selection_error = ''
+        self._hold_after_arm_replay = False
         previous_controller = self.active_controller_instance()
         self.reset_vehicle_command_yaw_memory()
         if activate and self.control_mode == ControlMode.REPLAY_SETTLE and name != "CmdReplay":
             self.cancel_replay_settle(mark_failed=True)
             self.control_mode = ControlMode.PLANNER
-        spec = self._controllers[name].resolve()
         next_controller = getattr(spec.arm_fn, "__self__", None)
         if previous_controller is not next_controller:
             reset_dynamics_observer(self)
+            metrics = getattr(self, 'performance_metrics', None)
+            if metrics is not None:
+                metrics.reset()
         if activate and self._controller_is_replay(next_controller):
             self.controller_name = name
             self.node.get_logger().info(
                 f"Controller set to {name} for {self.prefix} (armed; start replay to publish commands)"
             )
+            self._record_controller_context()
             return True
         self.vehicle_controller_fn = spec.vehicle_fn
         self.arm_controller_fn = spec.arm_fn
         self.controller_name = name
         if not activate:
             self.node.get_logger().info(f"Controller set to {name} for {self.prefix} (idle)")
+            self._record_controller_context()
             return True
+        if previous_controller is not next_controller and hasattr(next_controller, 'reset_controller_state'):
+            next_controller.reset_controller_state()
         if self._active_controller_is_replay():
             self.set_control_mode(ControlMode.REPLAY)
         else:
@@ -867,6 +972,7 @@ class Robot(Base):
                 previous_controller.stop_playback()
             self.set_control_mode(ControlMode.PLANNER)
         self.node.get_logger().info(f"Controller set to {name} for {self.prefix}")
+        self._record_controller_context()
         return True
 
     def activate_cmd_replay_controller(self) -> bool:
@@ -879,6 +985,11 @@ class Robot(Base):
         self.controller_name = "CmdReplay"
         self.set_control_mode(ControlMode.REPLAY)
         return True
+
+    def _record_controller_context(self):
+        trace = getattr(self, 'controller_trace', None)
+        if trace is not None:
+            trace.context(self, self.node.get_clock().now().to_msg(), force=True)
 
     def active_controller_instance(self):
         return getattr(self.arm_controller_fn, "__self__", None)
@@ -929,6 +1040,10 @@ class Robot(Base):
         self._replay_settle_vehicle_target = np.asarray(replay_controller.initial_vehicle_pose(), dtype=float)
 
         self.set_control_mode(ControlMode.REPLAY_SETTLE)
+        if not self.authorize_motion(components=self.replay_components(replay_controller)):
+            replay_controller.mark_reset_failed()
+            self._clear_replay_settle()
+            return
         self.arm.q_command = self._replay_settle_arm_target[:4].tolist()
         self.arm.dq_command = np.zeros((4,), dtype=float).tolist()
         self.arm.ddq_command = np.zeros((4,), dtype=float).tolist()
@@ -965,6 +1080,13 @@ class Robot(Base):
         if replay_controller is not None and hasattr(replay_controller, "mark_reset_failed"):
             replay_controller.mark_reset_failed()
 
+    @staticmethod
+    def replay_components(controller):
+        return tuple(part for part, mode in (
+            ('vehicle', controller.vehicle_subsystem_mode()),
+            ('manipulator', controller.manipulator_subsystem_mode()))
+            if mode != 'zero_command')
+
     def _replay_settle_is_done(self, state: Dict) -> tuple[bool, str]:
         cfg = self._replay_settle_config
         arm_target = self._replay_settle_arm_target
@@ -984,11 +1106,14 @@ class Robot(Base):
         vehicle_position_error = float(np.linalg.norm(pose[:3] - vehicle_target[:3]))
         vehicle_velocity = float(np.linalg.norm(body_vel[:3]))
 
+        components = self.replay_components(self._replay_settle_controller)
         settled = (
-            arm_position_error <= cfg["position_tolerance"]
-            and arm_velocity <= cfg["velocity_tolerance"]
-            and vehicle_position_error <= cfg["vehicle_position_tolerance"]
-            and vehicle_velocity <= cfg["vehicle_velocity_tolerance"]
+            ('manipulator' not in components or (
+                arm_position_error <= cfg["position_tolerance"]
+                and arm_velocity <= cfg["velocity_tolerance"]))
+            and ('vehicle' not in components or (
+                vehicle_position_error <= cfg["vehicle_position_tolerance"]
+                and vehicle_velocity <= cfg["vehicle_velocity_tolerance"]))
         )
         detail = (
             f"arm_err={arm_position_error:.4f} at joint {arm_error_index}, "
@@ -1038,10 +1163,21 @@ class Robot(Base):
         return cls.fk_eval_cls(joint_qx, base_T0, world_pose, tipOffset)
 
     def manipulator_inverse_kinematics(self, target_position):
-        result = self.manipulator_ik.solve_request(ManipulatorIKRequest(target_position))
+        gate = getattr(self, 'execution_gate', None)
+        if gate is not None and not gate.ready():
+            raise ValueError('Arm IK requires fresh feedback and active controllers')
+        result = self.manipulator_ik.solve_request(ManipulatorIKRequest(
+            target_position, np.asarray(self.get_state()['q'], dtype=float)[:4],
+            self.ik_joint_lower, self.ik_joint_upper, ReachParams.tipOffset))
         if not result.success:
             raise ValueError(result.message)
-        return list(result.joints)
+        joints = np.asarray(result.joints, dtype=float)
+        if (joints.shape != self.ik_joint_lower.shape or
+                not np.all(np.isfinite(joints)) or
+                np.any(joints < self.ik_joint_lower) or
+                np.any(joints > self.ik_joint_upper)):
+            raise ValueError('Arm IK solution outside actuator limits; previous target retained')
+        return joints.tolist()
     
     def _mocap_pose_cb(self, msg: PoseStamped):
         p = msg.pose.position
@@ -1081,6 +1217,8 @@ class Robot(Base):
     def start_joystick(self, device_interface):
         # Shared variables updated by the PS4 controller callbacks.
         self.controller_lock = threading.Lock()
+        self._pending_mode_toggle = False
+        self._joystick_disconnected = False
         self.rov_surge = 0.0      # Left stick horizontal (sway)
         self.rov_sway = 0.0      # Left stick vertical (surge)
         self.rov_z = 0.0      # Heave from triggers
@@ -1107,7 +1245,15 @@ class Robot(Base):
         self.ps4_controller.debug = False
 
         # Start the PS4 controller listener in a separate (daemon) thread.
-        self.controller_thread = threading.Thread(target=self.ps4_controller.listen, daemon=True)
+        def listen():
+            try:
+                self.ps4_controller.listen()
+            finally:
+                self._zero_teleop_commands()
+                with self.controller_lock:
+                    self._joystick_disconnected = True
+                    self._pending_mode_toggle = False
+        self.controller_thread = threading.Thread(target=listen, daemon=True)
         self.controller_thread.start()
 
         self.node.get_logger().info(f"PS4 Teleop node initialized for robot {self.k_robot} to be control with js{self.k_robot}.")
@@ -1118,10 +1264,9 @@ class Robot(Base):
             if name == self.floating_base_IOs:
                 fields = dict(zip(values.interface_names, values.values))
                 value = fields.get("sensor_noise_enabled")
-                self.sensor_noise_enabled = bool(value) if value in (0.0, 1.0) else None
+                sensor_noise_enabled = bool(value) if value in (0.0, 1.0) else None
                 break
-        self.arm.update_state(msg)
-        self.ned_pose = self.get_interface_value(
+        ned_pose = self.get_interface_value(
             msg,
             [self.floating_base_IOs] * 6,
             [
@@ -1135,7 +1280,7 @@ class Robot(Base):
         )
 
 
-        self.body_vel = self.get_interface_value(
+        body_vel = self.get_interface_value(
             msg,
             [self.floating_base_IOs] * 6,
             [
@@ -1148,7 +1293,7 @@ class Robot(Base):
             ]
         )
 
-        self.body_acc = self.get_interface_value(
+        body_acc = self.get_interface_value(
             msg,
             [self.floating_base_IOs] * 6,
             [
@@ -1161,11 +1306,11 @@ class Robot(Base):
             ]
         )
 
-        self.J_UV = self.vehicle_J(self.ned_pose[3:6]).full()
+        J_UV = self.vehicle_J(ned_pose[3:6]).full()
 
-        self.ned_vel = self.to_ned_velocity(self.J_UV, self.body_vel)
+        ned_vel = self.to_ned_velocity(J_UV, body_vel)
 
-        self.body_forces = self.get_interface_value(
+        body_forces = self.get_interface_value(
             msg,
             [self.floating_base_IOs] * 6,
             [
@@ -1178,38 +1323,56 @@ class Robot(Base):
             ]
         )
 
-        self.vehicle_control_power = self.get_interface_value(
+        vehicle_control_power = self.get_interface_value(
             msg,
             [self.floating_base_IOs],
             [Axis_Interface_names.floating_control_power_abs]
         )[0]
-        self.vehicle_control_energy = self.get_interface_value(
+        vehicle_control_energy = self.get_interface_value(
             msg,
             [self.floating_base_IOs],
             [Axis_Interface_names.floating_control_energy_abs]
         )[0]
-        self.arm_control_power = self.get_interface_value(
+        arm_control_power = self.get_interface_value(
             msg,
             [self.arm_IOs],
             [Axis_Interface_names.arm_control_power_abs]
         )[0]
-        self.arm_control_energy = self.get_interface_value(
+        arm_control_energy = self.get_interface_value(
             msg,
             [self.arm_IOs],
             [Axis_Interface_names.arm_control_energy_abs]
         )[0]
-        self.arm_payload_mass = self.get_interface_value(
+        arm_payload_mass = self.get_interface_value(
             msg,
             [self.arm_IOs],
             [Axis_Interface_names.arm_payload_mass]
         )[0]
-        self.arm_gravity = self.get_interface_value(
+        arm_gravity = self.get_interface_value(
             msg,
             [self.arm_IOs],
             [Axis_Interface_names.arm_gravity]
         )[0]
    
         dynamics_sim_time = self.get_interface_value(msg,[self.floating_base_IOs],[Axis_Interface_names.sim_time])[0]
+        if not np.all(np.isfinite(J_UV)) or not np.all(np.isfinite(ned_vel)):
+            raise ValueError("Nonfinite vehicle velocity transform")
+        self.arm.update_state(msg)
+        self.__dict__.update(
+            sensor_noise_enabled=sensor_noise_enabled,
+            ned_pose=ned_pose,
+            body_vel=body_vel,
+            body_acc=body_acc,
+            J_UV=J_UV,
+            ned_vel=ned_vel,
+            body_forces=body_forces,
+            vehicle_control_power=vehicle_control_power,
+            vehicle_control_energy=vehicle_control_energy,
+            arm_control_power=arm_control_power,
+            arm_control_energy=arm_control_energy,
+            arm_payload_mass=arm_payload_mass,
+            arm_gravity=arm_gravity,
+        )
         if self.status == 'inactive':
             self.start_time = copy.copy(dynamics_sim_time)
             self.status = 'active'
@@ -1262,6 +1425,10 @@ class Robot(Base):
 
     def _update_controller_performance_metrics(self) -> Dict:
         state = self.get_state()
+        received = getattr(self, '_last_state_received', None)
+        state['feedback_age_sec'] = (max(0., time.monotonic() - received)
+                                     if received is not None else float('nan'))
+        state['feedback_valid'] = not getattr(self, '_feedback_fault', False) and received is not None
         active = (
             state.get("status") == "active"
             and not self.sim_reset_hold
@@ -1282,6 +1449,22 @@ class Robot(Base):
             reference = getattr(self, '_replay_tracking_reference', None)
             active = active and reference is not None
             reference = reference or {}
+        # Evaluate commanded-reference tracking, not distance to the final
+        # marker endpoint. FK uses coherent state samples rather than stale TF.
+        if active and callable(getattr(self, 'fk_eval', None)):
+            reference = dict(reference)
+            try:
+                actual_tool = tool_pose_from_sample(state, self.fk_eval, ReachParams.base_T0_new, ReachParams.tipOffset)
+                reference_tool = tool_pose_from_sample(reference, self.fk_eval, ReachParams.base_T0_new, ReachParams.tipOffset)
+                state['tool_geometry'] = {'mounting': np.asarray(ReachParams.base_T0_new).reshape(-1).tolist(),
+                                          'tip': np.asarray(ReachParams.tipOffset).reshape(-1).tolist()}
+                state['tool_pose'] = actual_tool
+                reference['tool_pose'] = reference_tool
+            except (KeyError, ValueError, RuntimeError, TypeError):
+                # Optional geometry failure must not fabricate a zero error or
+                # disrupt control; the accumulator marks tool metrics unavailable.
+                pass
+        self._metric_recording_inputs = (state, reference)
         return self.performance_metrics.update(
             current=state,
             reference=reference,
@@ -1289,7 +1472,22 @@ class Robot(Base):
         )
 
     def get_controller_performance_metrics(self) -> Dict:
-        return self.performance_metrics.snapshot()
+        snapshot = self.performance_metrics.snapshot()
+        received = getattr(self, '_last_state_received', None)
+        age = max(0., time.monotonic() - received) if received is not None else float('nan')
+        snapshot['feedback_age_sec'] = age
+        snapshot['feedback_valid'] = bool(not getattr(self, '_feedback_fault', False)
+                                         and np.isfinite(age) and age <= self.performance_metrics.max_sample_gap_sec)
+        # RViz runs independently of command publication. Never show a cached
+        # valid score indefinitely after commands or feedback have stopped.
+        if self.sim_reset_hold or self.control_mode not in (
+                ControlMode.PLANNER, ControlMode.REPLAY, ControlMode.REPLAY_SETTLE):
+            snapshot.update(active=False, valid=False, status='inactive')
+        elif (getattr(self, '_feedback_fault', False) or not np.isfinite(age)
+              or age > self.performance_metrics.max_sample_gap_sec):
+            snapshot.update(valid=False, status='feedback unavailable or stale',
+                            effort_valid=False, energy_valid=False, tool_valid=False, settled=False)
+        return snapshot
 
     def _publish_controller_performance_metrics(self) -> None:
         metrics = self._update_controller_performance_metrics()
@@ -1297,29 +1495,25 @@ class Robot(Base):
         msg.header.stamp = self.node.get_clock().now().to_msg()
         msg.header.frame_id = self.map_frame
         msg.robot_prefix = self.prefix
-        msg.active = bool(metrics.get("active", 0.0))
-        msg.vehicle_cross_track_m = float(metrics.get("vehicle_cross_track_m", 0.0))
-        msg.vehicle_along_track_m = float(metrics.get("vehicle_along_track_m", 0.0))
-        msg.vehicle_n_cross_track = float(metrics.get("vehicle_n_cross_track", 0.0))
-        msg.vehicle_n_along_track = float(metrics.get("vehicle_n_along_track", 0.0))
-        msg.vehicle_n_position = float(metrics.get("vehicle_n_position", 0.0))
-        msg.vehicle_n_attitude = float(metrics.get("vehicle_n_attitude", 0.0))
-        msg.vehicle_n_linear_velocity = float(metrics.get("vehicle_n_linear_velocity", 0.0))
-        msg.vehicle_n_angular_velocity = float(metrics.get("vehicle_n_angular_velocity", 0.0))
-        msg.vehicle_n_linear_acceleration = float(metrics.get("vehicle_n_linear_acceleration", 0.0))
-        msg.vehicle_n_angular_acceleration = float(metrics.get("vehicle_n_angular_acceleration", 0.0))
-        msg.arm_n_position = float(metrics.get("arm_n_position", 0.0))
-        msg.arm_n_velocity = float(metrics.get("arm_n_velocity", 0.0))
-        msg.arm_n_acceleration = float(metrics.get("arm_n_acceleration", 0.0))
-        msg.tracking_score = float(metrics.get("tracking_score", 0.0))
-        msg.tracking_score_rms = float(metrics.get("tracking_score_rms", 0.0))
-        msg.normalized_control_effort = float(metrics.get("normalized_control_effort", 0.0))
-        msg.effort_per_tracking_score = float(metrics.get("effort_per_tracking_score", 0.0))
-        msg.energy_per_meter = float(metrics.get("energy_per_meter", 0.0))
-        msg.energy_per_second = float(metrics.get("energy_per_second", 0.0))
-        msg.time_to_tolerance_sec = float(metrics.get("time_to_tolerance_sec", 0.0))
-        msg.peak_tracking_score = float(metrics.get("peak_tracking_score", 0.0))
-        msg.sample_count = float(metrics.get("sample_count", 0.0))
+        # Map the versioned metric schema without substituting zero for absent
+        # numeric data. Flags explicitly distinguish inactive/invalid samples.
+        for name, field_type in msg.get_fields_and_field_types().items():
+            if name in ('header', 'robot_prefix'):
+                continue
+            if field_type == 'double':
+                setattr(msg, name, float(metrics.get(name, float('nan'))))
+            elif field_type == 'double[4]':
+                setattr(msg, name, np.asarray(metrics.get(name, [float('nan')] * 4), dtype=float).tolist())
+            elif field_type == 'boolean':
+                setattr(msg, name, bool(metrics.get(name, False)))
+            elif field_type == 'uint32':
+                setattr(msg, name, int(metrics.get(name, 2)))
+            elif field_type == 'string':
+                setattr(msg, name, str(metrics.get(name, 'unavailable')))
+        trace = getattr(self, 'controller_trace', None)
+        if trace is not None:
+            state, reference = self._metric_recording_inputs
+            trace.kinematics(self, msg.header.stamp, state, reference, metrics)
         self.performance_publisher.publish(msg)
 
     def try_transform_pose(
@@ -1694,11 +1888,142 @@ class Robot(Base):
         )
         return target
 
+    def authorize_motion(self, *, reset_controller=True, components=('vehicle', 'manipulator')) -> bool:
+        """Called only for an accepted execution action, never marker edits."""
+        gate = getattr(self, 'execution_gate', None)
+        if gate is None:
+            return True
+        if not gate.ready():
+            return gate.authorize(components)
+        if reset_controller and not gate.authorized:
+            controller = self.active_controller_instance()
+            if controller is not None and hasattr(controller, 'reset_controller_state'):
+                controller.reset_controller_state()
+        return gate.authorize(components)
+
+    def start_arm_hold(self, controller_name='PID', target=None):
+        """Explicit arm-only action; preserve controller memory on normal handoff."""
+        gate = self.execution_gate
+        if gate is None or not gate.ready():
+            raise ValueError('Arm hold requires fresh feedback and active controllers')
+        state = self.get_state()
+        measured = np.asarray(list(state['q']) + list(state['grasper_q']), dtype=float)
+        reference = measured.copy() if target is None else np.asarray(target, dtype=float).copy()
+        if measured.shape != (5,) or reference.shape != (5,) or not np.isfinite(np.r_[measured, reference]).all():
+            raise ValueError('Arm hold requires five finite joint positions')
+        if np.any(reference[:4] < self.ik_joint_lower) or np.any(reference[:4] > self.ik_joint_upper):
+            raise ValueError('Arm hold target outside actuator limits')
+        controller = self.controller_instance(controller_name)
+        if controller is None or self._controller_is_replay(controller):
+            raise ValueError('Arm hold requires a feedback controller')
+        previous = self.active_controller_instance()
+        continuing_feedback = (previous is controller or
+            (self._controller_is_replay(previous) and
+             getattr(self, '_arm_hold_controller', None) is controller))
+        self.abrupt_planner_stop(publish_zero=False)
+        self.cancel_replay_settle(mark_failed=False)
+        self._zero_teleop_commands()
+        self._clear_menu_grasper_effort()
+        self._arm_hold_target = reference
+        self._arm_hold_controller = controller
+        self._hold_after_arm_replay = False
+        # set_control_mode intentionally zeros on arbitrary mode changes. This
+        # validated handoff instead retains the current feedback controller.
+        self.control_mode = ControlMode.ARM_HOLD
+        self.controller_name = controller_name
+        self.arm_controller_fn = controller.arm_controller
+        self.vehicle_controller_fn = controller.vehicle_controller
+        if not continuing_feedback:
+            controller.reset_controller_state()
+        if not self.authorize_motion(reset_controller=False, components=('manipulator',)):
+            self.stop_execution()
+            raise ValueError('Arm hold authorization failed')
+
+    def publish_arm_hold(self, state):
+        if not self.execution_gate.allows_output('manipulator'):
+            self.publish_commands([0.] * 6, [0.] * 5)
+            return
+        effort = np.asarray(self._arm_hold_controller.arm_controller(
+            q=list(state['q']) + list(state['grasper_q']),
+            q_dot=list(state['dq']) + list(state['grasper_qdot']),
+            q_ref=self._arm_hold_target.tolist(), dq_ref=[0.] * 5,
+            ddq_ref=[0.] * 5, dt=state['dt']), dtype=float).reshape(-1)
+        if effort.shape != (5,) or not np.isfinite(effort).all():
+            raise ValueError('Arm hold controller returned invalid effort')
+        self.publish_commands([0.] * 6, effort.tolist())
+
+    def start_arm_replay_from_hold(self, replay):
+        """One reference pass using the held controller/model, without a reset."""
+        if replay is None:
+            raise ValueError('CmdReplay is unavailable')
+        if self.control_mode != ControlMode.ARM_HOLD or not self.execution_gate.ready():
+            raise ValueError('Reference playback requires an active arm hold')
+        if not self.execution_gate.allows_output('manipulator'):
+            raise ValueError('Arm hold is not authorized')
+        if (replay.manipulator_subsystem_mode() != 'track_reference'
+                or replay.vehicle_subsystem_mode() != 'zero_command'
+                or replay.repeats != 1 or not replay.has_valid_playback()):
+            raise ValueError('Hold handoff requires one arm-reference pass and zero vehicle command')
+        feedback = self.controller_instance(replay.feedback_controller_name())
+        if feedback is not self._arm_hold_controller:
+            raise ValueError('Reference playback must use the held feedback controller')
+        first, velocity, acceleration = replay.arm_reference_at(0)
+        last, last_velocity, last_acceleration = replay.arm_reference_at(len(replay.times_sec)-1)
+        positions = np.asarray(replay.arm_reference_position)
+        velocities = np.asarray(replay.arm_reference_velocity)
+        accelerations = np.asarray(replay.arm_reference_acceleration)
+        intervals = np.diff(np.asarray(replay.times_sec, dtype=float))
+        if not np.isfinite(intervals).all() or np.any(intervals <= 0):
+            raise ValueError('Reference times must increase strictly')
+        if (positions.ndim != 2 or positions.shape[1] != 5 or not np.isfinite(positions).all()
+                or velocities.shape != positions.shape or accelerations.shape != positions.shape
+                or not np.isfinite(velocities).all() or not np.isfinite(accelerations).all()
+                or np.any(np.abs(velocities[:, :4]) > self.ik_joint_velocity)
+                or np.any(np.abs(np.diff(positions[:, :4], axis=0))
+                          > intervals[:, None] * self.ik_joint_velocity + 1e-9)
+                or not np.allclose(positions[:, 4], self._arm_hold_target[4], atol=1e-9, rtol=0)
+                or np.any(np.abs(velocities[:, 4]) > 1e-9)
+                or np.any(np.abs(accelerations[:, 4]) > 1e-9)
+                or np.any(positions[:, :4] < self.ik_joint_lower)
+                or np.any(positions[:, :4] > self.ik_joint_upper)
+                or not np.allclose(first, self._arm_hold_target, atol=1e-6, rtol=0)
+                or not np.isfinite(np.r_[velocity, acceleration, last_velocity, last_acceleration]).all()
+                or np.any(np.abs(np.r_[velocity, acceleration, last_velocity, last_acceleration]) > 1e-6)):
+            raise ValueError('Reference must join the hold continuously and finish at rest inside limits')
+        if not replay.begin_sequence(False):
+            raise ValueError('Reference playback could not begin')
+        replay.mark_reset_succeeded()
+        self._hold_after_arm_replay = True
+        self._arm_replay_final_target = np.asarray(last).copy()
+        self.controller_name = 'CmdReplay'
+        self.arm_controller_fn = replay.arm_controller
+        self.vehicle_controller_fn = replay.vehicle_controller
+        self.control_mode = ControlMode.REPLAY
+
+    def stop_execution(self):
+        self._hold_after_arm_replay = False
+        self.cancel_replay_settle(mark_failed=True)
+        self.abrupt_planner_stop()
+        self._zero_teleop_commands()
+        self.teleop_wrench_body_6 = [0.0] * 6
+        self.teleop_arm_effort_5 = [0.0] * 5
+        self._clear_menu_grasper_effort()
+        controller = self.active_controller_instance()
+        if controller is not None and hasattr(controller, 'mark_reset_failed'):
+            controller.mark_reset_failed()
+        self.publish_vehicle_and_arm([0.0] * 6, [0.0] * 5)
+
     def publish_vehicle_and_arm(
         self,
         wrench_body_6: Sequence[float],
         arm_effort_5: Sequence[float],
     ) -> None:
+        gate = getattr(self, 'execution_gate', None)
+        if gate is not None:
+            if not gate.allows_output('vehicle'):
+                wrench_body_6 = [0.0] * 6
+            if not gate.allows_output('manipulator'):
+                arm_effort_5 = [0.0] * 5
         container = FullRobotMsg(prefix=self.prefix)
         container.set_vehicle_wrench(wrench_body_6)
         container.set_arm_effort(arm_effort_5)
@@ -1708,6 +2033,9 @@ class Robot(Base):
 
         self.vehicle_effort_command_publisher.publish(veh_msg)
         self.manipulator_effort_command_publisher.publish(arm_msg)
+        self._metric_recorded_command = {
+            'vehicle_wrench_body': list(wrench_body_6), 'arm_effort': list(arm_effort_5),
+            'semantics': 'published command after execution gate; not measured applied effort'}
         self._publish_controller_performance_metrics()
     
     def _now_sec(self) -> float:
@@ -1731,6 +2059,14 @@ class Robot(Base):
             )
             return False
 
+        gate = getattr(self, 'execution_gate', None)
+        if gate is not None and not gate.allows_output('manipulator'):
+            if action not in ('open', 'close') or not gate.ready():
+                return False
+            if not gate.authorized:
+                self.hold_current_state_with_feedback()
+            if not self.authorize_motion(components=('manipulator',)):
+                return False
         if action == "open":
             self.arm.open_grasper()
             effort = self.grasper_menu_open_effort
@@ -1784,8 +2120,11 @@ class Robot(Base):
 
     # ForwardCommandController
     def publish_commands(self, wrench_body_6: Sequence[float], arm_effort_5: Sequence[float]):
-        # Vehicle, DynamicInterfaceGroupValues payload
-        self.publish_vehicle_and_arm(wrench_body_6, self._apply_menu_grasper_effort(arm_effort_5))
+        wrench = np.asarray(wrench_body_6, dtype=float)
+        effort = np.asarray(self._apply_menu_grasper_effort(arm_effort_5), dtype=float)
+        if wrench.shape != (6,) or effort.shape != (5,) or not np.isfinite(np.r_[wrench, effort]).all():
+            raise ValueError('Controller commands must be finite vehicle[6] and arm[5] vectors')
+        self.publish_vehicle_and_arm(wrench.tolist(), effort.tolist())
 
     def publish_vehicle_pwms(self,
                              pwm_thruster_8: Sequence[float]):
@@ -1796,13 +2135,31 @@ class Robot(Base):
 
     def listener_callback(self, msg: DynamicJointState):
         for name, values in zip(msg.joint_names, msg.interface_values):
-            if name == self.prefix + 'IOs' and 'identification.valid' in values.interface_names:
-                # Hardware-only sample interfaces distinguish real vehicle feedback.
+            if (name == self.prefix + 'IOs'
+                    and 'estimator_valid' in values.interface_names
+                    and 'sim_step' not in values.interface_names):
+                # Hardware validity must not depend on optional identification exports.
                 fields = dict(zip(values.interface_names, values.values))
                 self._hardware_estimator_valid = fields.get('estimator_valid') == 1.0
                 self._hardware_estimator_received = self.node.get_clock().now().nanoseconds
-        self.update_state(msg)
+        try:
+            self.update_state(msg)
+        except (ValueError, IndexError) as error:
+            if not getattr(self, '_feedback_fault', False):
+                self.node.get_logger().error(f"[{self.prefix}] Invalid feedback: {error}")
+            self._feedback_fault = True
+            return
+        self._feedback_fault = False
         self._last_state_received = time.monotonic()
+        pending = getattr(self, '_reset_feedback_pending', None)
+        if pending is not None and pending['after_stamp_ns'] is not None:
+            stamp_ns = msg.header.stamp.sec * 1_000_000_000 + msg.header.stamp.nanosec
+            if stamp_ns > pending['after_stamp_ns']:
+                # Service completion acknowledges the physics reset, not delivery
+                # of its state to this subscriber. Only start feedback from a
+                # subsequently published state, never a queued pre-reset sample.
+                self._reset_feedback_pending = None
+                pending['success']()
         forward_dynamics_observations(self, msg)
 
     def world_robot_task_pose_callback(self):
@@ -1855,7 +2212,7 @@ class Robot(Base):
         )
 
     def _on_planner_action_result(self, plan_result: Dict[str, Any]) -> None:
-        if self.sim_reset_hold or self._replay_is_active() or not self._accept_planner_results:
+        if getattr(self, "scene_switch_hold", False) or self.sim_reset_hold or self._replay_is_active() or not self._accept_planner_results:
             if self.planner is not None:
                 self.planner.planned_result = None
             if self.vehicle_cart_traj is not None:
@@ -1866,6 +2223,36 @@ class Robot(Base):
             return
 
         if plan_result.get("is_success", False):
+            gate = getattr(self, 'execution_gate', None)
+            if gate is not None:
+                pose_now = self._pose_from_state_in_frame(self.world_frame)
+                moved = (pose_now is None or np.linalg.norm(np.asarray(
+                    [pose_now.position.x, pose_now.position.y, pose_now.position.z])
+                    - np.asarray(self.start_xyz)) > 0.05)
+                if not gate.ready():
+                    self.abrupt_planner_stop()
+                    self.node.get_logger().warning('Plan rejected: feedback/controllers unavailable')
+                    return
+                if moved and not self._preserve_active_plan_on_failure:
+                    # Reject the stale path, not the already-authorized feedback
+                    # hold. Zeroing effort here creates drift and endless rejects.
+                    keep_hold = gate.authorized
+                    distance = np.linalg.norm(np.asarray(
+                        [pose_now.position.x, pose_now.position.y, pose_now.position.z])
+                        - np.asarray(self.start_xyz)) if pose_now is not None else float('nan')
+                    if keep_hold:
+                        # The planning request already installed a hold target.
+                        # Keep that target and its controller integrators intact.
+                        self._accept_planner_results = False
+                        self.final_goal_map_ned_6 = None
+                        if self.planner is not None:
+                            self.planner.planned_result = None
+                    else:
+                        self.abrupt_planner_stop()
+                    self.node.get_logger().warning(
+                        f'Plan rejected: start moved {distance:.3f} m; '
+                        + ('feedback hold retained; replan when settled' if keep_hold else 'replan from current state'))
+                    return
             preserve_yaw_memory = bool(self._preserve_active_plan_on_failure)
             stored_plan_result = dict(plan_result)
             trajectory_start_xyz = np.asarray(self.start_xyz, dtype=float).reshape(3)
@@ -1880,22 +2267,20 @@ class Robot(Base):
                         trajectory_start_xyz,
                         trajectory_start_quat,
                     )
-            if self.planner is not None:
-                self.planner.planned_result = stored_plan_result
             self._preserve_active_plan_on_failure = False
             self.node.get_logger().info(
                 f"Planner action produced {int(stored_plan_result.get('count', 0))} waypoints for {self.prefix}"
             )
     
-            path_xyz = np.asarray(self.planner.planned_result["xyz"], dtype=float)
+            path_xyz = np.asarray(stored_plan_result["xyz"], dtype=float)
             self._start_vehicle_trajectory(
                 trajectory_start_xyz,
                 trajectory_start_quat,
                 path_xyz,
                 preserve_yaw_memory=preserve_yaw_memory,
-                preserve_current_velocity=preserve_yaw_memory,
+                plan_result=stored_plan_result,
             )
-            self.enable_planner_output()
+
         else:
             if not self._preserve_active_plan_on_failure and self.planner is not None:
                 self.planner.planned_result = dict(plan_result)
@@ -1973,6 +2358,87 @@ class Robot(Base):
         result["count"] = int(trimmed_xyz.shape[0])
         return result
 
+    def _ensure_motion_worker(self):
+        worker = getattr(self, '_motion_worker', None)
+        if worker is not None and worker[0].is_alive():
+            return worker
+        self._cancel_motion_calculation()
+        context = multiprocessing.get_context('spawn')
+        receiver, sender = context.Pipe()
+        process = context.Process(target=_run_motion_calculation, args=(sender,), daemon=True)
+        process.start()
+        sender.close()
+        self._motion_worker = (process, receiver)
+        return self._motion_worker
+
+    def _cancel_motion_calculation(self, *, keep_worker=False):
+        timer = getattr(self, '_motion_calculation', None)
+        self._motion_calculation = None
+        if timer is not None:
+            timer.cancel()
+            self.node.destroy_timer(timer)
+        if keep_worker:
+            return
+        worker = getattr(self, '_motion_worker', None)
+        self._motion_worker = None
+        if worker is None:
+            return
+        process, receiver = worker
+        receiver.close()
+        if process.is_alive():
+            process.terminate()
+        # Process teardown must not add another blocking wait to control callbacks.
+        threading.Thread(target=_reap_motion_process, args=(process,), daemon=True).start()
+
+    def _submit_motion_calculation(self, function, args, apply, *, timeout=30.):
+        """One cancellable calculation per robot; only the executor applies results."""
+        if getattr(self, '_motion_calculation', None) is not None:
+            self._cancel_motion_calculation()
+        epoch = getattr(self, '_navigation_epoch', 0)
+        mode, task_space = self.control_mode, self.task_based_controller
+        axis = np.array(self.ik_tool_axis, copy=True)
+        process, receiver = self._ensure_motion_worker()
+        try:
+            receiver.send((function, args))
+        except (OSError, TypeError, ValueError) as error:
+            self._cancel_motion_calculation()
+            self.node.get_logger().warning(f'Motion calculation could not start: {error}')
+            return
+        deadline = time.monotonic() + timeout
+
+        def poll():
+            if getattr(self, '_motion_calculation', None) is not timer:
+                return
+            if (epoch != getattr(self, '_navigation_epoch', 0)
+                    or mode != self.control_mode or task_space != self.task_based_controller
+                    or not np.array_equal(axis, self.ik_tool_axis)
+                    or self.sim_reset_hold or getattr(self, 'scene_switch_hold', False)
+                    or self._replay_is_active()):
+                self._cancel_motion_calculation()
+                return
+            if time.monotonic() >= deadline:
+                self._cancel_motion_calculation()
+                self.node.get_logger().warning('Motion calculation timed out; previous reference retained')
+                return
+            if not receiver.poll():
+                if process.is_alive():
+                    return
+                self._cancel_motion_calculation()
+                self.node.get_logger().warning('Motion calculation failed or timed out; previous reference retained')
+                return
+            try:
+                success, result = receiver.recv()
+            except (EOFError, OSError) as error:
+                success, result = False, str(error)
+            self._cancel_motion_calculation(keep_worker=True)
+            if not success:
+                self.node.get_logger().warning(f'Motion calculation rejected; previous reference retained: {result}')
+                return
+            apply(result)
+
+        timer = self.node.create_timer(.01, poll)
+        self._motion_calculation = timer
+
     def _start_vehicle_trajectory(
         self,
         start_xyz,
@@ -1980,16 +2446,20 @@ class Robot(Base):
         path_xyz: np.ndarray,
         *,
         preserve_yaw_memory: bool = False,
-        preserve_current_velocity: bool = False,
+        plan_result=None,
     ) -> None:
         if not preserve_yaw_memory:
             self.reset_vehicle_command_yaw_memory()
-        current_velocity_world = (
-            self._current_vehicle_velocity_world_nwu()
-            if preserve_current_velocity
-            else np.zeros(3, dtype=float)
-        )
-        self.vehicle_cart_traj.start_from_path(
+        try:
+            current_velocity_world = self._current_vehicle_velocity_world_nwu()
+        except ValueError as error:
+            self.node.get_logger().warning(f'Trajectory rejected; measured velocity unavailable: {error}')
+            return
+        previous_generator = self.vehicle_cart_traj
+        generator = previous_generator
+        if hasattr(generator, 'calculation_request'):
+            generator = type(generator)(self.node, 3, generator.control_dt, generator.max_waypoints)
+        generator.start_from_path(
             current_position=list(start_xyz),
             path_xyz=path_xyz,
             max_vel=self.max_traj_vel,
@@ -1997,11 +2467,52 @@ class Robot(Base):
             max_jerk=self.max_traj_jerk,
             current_velocity=current_velocity_world,
         )
+        if hasattr(generator, 'calculation_request'):
+            from simlab.motion_planning.trajectory_generators.ruckig import calculate_trajectory
+            settings = generator.calculation_request()
+            generator.active = False
+            def rejected(error):
+                generator.close()
+                self.node.get_logger().warning(f'Trajectory rejected; previous reference retained: {error}')
+
+            def accepted():
+                pose = self._pose_from_state_in_frame(self.world_frame)
+                current = None if pose is None else np.array([pose.position.x, pose.position.y, pose.position.z])
+                if (current is None or np.linalg.norm(current-start_xyz) > .05
+                        or self.vehicle_cart_traj is not previous_generator):
+                    rejected(ValueError('start moved during trajectory validation'))
+                    return
+                if self.authorize_motion():
+                    self.node.get_logger().info(
+                        f'Trajectory accepted; speed limits {settings["max_velocity"]}')
+                    self.vehicle_cart_traj = generator
+                    if self.planner is not None:
+                        self.planner.planned_result = plan_result
+                    previous_generator.close()
+                    self.enable_planner_output()
+
+            def accept(prepared):
+                pose = self._pose_from_state_in_frame(self.world_frame)
+                current = None if pose is None else np.array([pose.position.x, pose.position.y, pose.position.z])
+                if (current is None or np.linalg.norm(current - start_xyz) > .05
+                        or (self.execution_gate is not None and not self.execution_gate.ready())
+                        or self.vehicle_cart_traj is not previous_generator):
+                    self.node.get_logger().warning('Trajectory rejected: feedback unavailable or start moved during calculation; hold retained')
+                    return
+                generator.install_calculation(prepared)
+                accepted()
+
+            self._submit_motion_calculation(calculate_trajectory, (settings,), accept)
+        elif self.authorize_motion():
+            if self.planner is not None:
+                self.planner.planned_result = plan_result
+            self.enable_planner_output()
+
 
     def _current_vehicle_velocity_world_nwu(self) -> np.ndarray:
         ned_velocity = np.asarray(self.ned_vel[:3], dtype=float)
         if ned_velocity.shape != (3,) or not np.all(np.isfinite(ned_velocity)):
-            return np.zeros(3, dtype=float)
+            raise ValueError('measured vehicle velocity is invalid')
 
         map_velocity_nwu = np.array(
             [ned_velocity[0], -ned_velocity[1], -ned_velocity[2]],
@@ -2021,17 +2532,15 @@ class Robot(Base):
             )
             velocity_world = do_transform_vector3(velocity_msg, transform)
         except TransformException as exc:
-            self.node.get_logger().warn(
-                f"Cannot preserve replan velocity for {self.prefix}: "
-                f"TF {self.world_frame} <- {self.map_frame} unavailable: {exc}"
-            )
-            return np.zeros(3, dtype=float)
+            raise ValueError(f'velocity transform {self.world_frame} <- {self.map_frame} unavailable') from exc
 
         result = np.array(
             [velocity_world.vector.x, velocity_world.vector.y, velocity_world.vector.z],
             dtype=float,
         )
-        return result if np.all(np.isfinite(result)) else np.zeros(3, dtype=float)
+        if not np.all(np.isfinite(result)):
+            raise ValueError('transformed vehicle velocity is invalid')
+        return result
 
     def plan_vehicle_trajectory_action(
         self,
@@ -2042,6 +2551,11 @@ class Robot(Base):
         preempt_current: bool = True,
         dynamic_obstacle_prediction_speed: float = 0.0,
     ) -> bool:
+        if not preempt_current and (getattr(self, "_planning_settle_timer", None) is not None
+                                    or getattr(self, '_motion_calculation', None) is not None):
+            return False
+        if getattr(self, "scene_switch_hold", False):
+            return False
         if self._replay_is_active():
             self.abrupt_planner_stop()
             self.node.get_logger().warn(
@@ -2053,7 +2567,6 @@ class Robot(Base):
                 f"Planner request ignored for {self.prefix}; simulation is held after reset."
             )
             return False
-        self.navigation_blocked_goal = None
         self._navigation_epoch = getattr(self, "_navigation_epoch", 0) + 1
         self.node.get_logger().info(
             f"Planning motion with {self.planner_name} for {self.prefix} to target pose..."
@@ -2062,13 +2575,101 @@ class Robot(Base):
         if pose_now is None:
             self.node.get_logger().warn("Planner action request was not sent, current pose unavailable.")
             return False
+        gate = getattr(self, 'execution_gate', None)
+        was_authorized = gate is not None and gate.authorized
         if preempt_current:
             self.abrupt_planner_stop(publish_zero=False)
         self._accept_planner_results = True
         self._preserve_active_plan_on_failure = not preempt_current
         if preempt_current:
             self.hold_current_state_with_feedback(hold_arm=False)
+            # Replanning an already controlled robot keeps its current hold.
+            # A first plan from idle must still wait for a valid result.
+            if was_authorized or (gate is not None and not gate.startup_paused and gate.ready()):
+                # An explicit request on a live, idle plant first stabilizes its
+                # current pose. Startup/reset physics stays paused until success.
+                self.authorize_motion(reset_controller=not was_authorized)
 
+        if preempt_current and gate is not None and not gate.startup_paused:
+            return self._wait_for_planning_settle(
+                copy.deepcopy(goal_pose), time_limit, robot_collision_radius,
+                dynamic_obstacle_prediction_speed,
+            )
+        return self._send_vehicle_plan_from_current_state(
+            goal_pose, time_limit, robot_collision_radius, dynamic_obstacle_prediction_speed,
+        )
+
+    def _cancel_planning_settle(self):
+        timer = getattr(self, "_planning_settle_timer", None)
+        self._planning_settle_timer = None
+        if timer is not None:
+            timer.cancel()
+            self.node.destroy_timer(timer)
+
+    def _wait_for_planning_settle(self, goal_pose, time_limit, radius, prediction_speed):
+        """Brake under feedback before sampling a static planner's start state."""
+        gate = self.execution_gate
+        if not gate.authorized:
+            self.node.get_logger().warn("Planning deferred request rejected: feedback hold unavailable.")
+            return False
+        self._accept_planner_results = False
+        epoch = self._navigation_epoch
+        started = time.monotonic()
+        stable_since = None
+        # Reserve half the 5 cm start tolerance for motion during planning.
+        speed_limit = min(0.02, 0.025 / max(1.0, float(time_limit) + 0.5))
+        planner_name = self.planner_name
+
+        def check_settled():
+            nonlocal stable_since
+            if getattr(self, "_planning_settle_timer", None) is not timer:
+                return  # A cancelled callback cannot submit an old request.
+            if (epoch != self._navigation_epoch or not gate.authorized or self.sim_reset_hold
+                    or getattr(self, "scene_switch_hold", False)
+                    or self._replay_is_active() or self.task_based_controller
+                    or self.control_mode != ControlMode.PLANNER
+                    or self.planner_name != planner_name):
+                self._cancel_planning_settle()
+                return
+            now = time.monotonic()
+            if now - started >= 10.0:
+                self._cancel_planning_settle()
+                self.node.get_logger().warn(
+                    "Plan not sent: feedback did not settle within 10 s; feedback hold retained."
+                )
+                return
+            velocity = np.asarray(self.get_state().get("body_vel", []), dtype=float)
+            settled = (gate.ready() and velocity.shape == (6,)
+                       and np.all(np.isfinite(velocity))
+                       and np.linalg.norm(velocity[:3]) <= speed_limit
+                       and np.linalg.norm(velocity[3:]) <= 0.05)
+            if not settled:
+                stable_since = None
+                return
+            if stable_since is None:
+                stable_since = now
+            if now - stable_since < 0.4:
+                return
+            self._cancel_planning_settle()
+            self.node.get_logger().info("Feedback settled; capturing current planning start.")
+            self._send_vehicle_plan_from_current_state(
+                goal_pose, time_limit, radius, prediction_speed,
+            )
+
+        self._cancel_planning_settle()
+        timer = self.node.create_timer(0.05, check_settled)
+        self._planning_settle_timer = timer
+        self.node.get_logger().info("Holding current pose; waiting to settle before planning.")
+        return True
+
+    def _send_vehicle_plan_from_current_state(self, goal_pose, time_limit, robot_collision_radius,
+                                              dynamic_obstacle_prediction_speed):
+        pose_now = self._pose_from_state_in_frame(self.world_frame)
+        if pose_now is None:
+            self._accept_planner_results = False
+            self.node.get_logger().warn("Planner action request was not sent, current pose unavailable.")
+            return False
+        self._accept_planner_results = True
         self.start_xyz, start_quat_wxyz_raw = self._pose_to_xyz_quat_wxyz(pose_now)
 
         goal_xyz, goal_quat_wxyz_raw = self._get_vehicle_goal_from_marker(goal_pose)
@@ -2080,6 +2681,7 @@ class Robot(Base):
         self._save_vehicle_goal_from_target(goal_xyz, goal_quat_wxyz)
 
         sent = self.planner_action_client.send_goal(
+            robot_prefix=self.prefix,
             start_xyz=self.start_xyz,
             start_quat_wxyz=self.start_quat_wxyz,
             goal_xyz=goal_xyz,
@@ -2156,6 +2758,9 @@ class Robot(Base):
             k_planner.clear_target(stamp_now, self.world_frame)
 
     def com_trajectory_sampler_callback(self):
+        gate = getattr(self, 'execution_gate', None)
+        if gate is not None and not gate.allows_output():
+            return
         if self.planner is None or self.vehicle_cart_traj is None:
             return
         state = self.get_state()
@@ -2204,22 +2809,11 @@ class Robot(Base):
             
             target_pose_nwu = np.asarray(pos_nwu, dtype=float)
             target_vel_nwu = np.asarray(vel_nwu, dtype=float)
-            target_acc_nwu = np.asarray(acc_nwu, dtype=float)
 
             # Pick orientation from nearest OMPL waypoint
             dists = np.linalg.norm(path_xyz - target_pose_nwu, axis=1)
             idx = int(np.argmin(dists))
             target_quat = path_quat[idx]
-
-            stamp_now = self.node.get_clock().now().to_msg()
-            self.reference_pub.publish_world_targets(
-                stamp_msg=stamp_now,
-                xyz_world_nwu=target_pose_nwu,
-                quat_world_wxyz=target_quat,
-                vel_world_nwu=target_vel_nwu,
-                acc_world_nwu=target_acc_nwu,
-            )
-
 
             target_pose_map_ned = self.world_nwu_to_map_ned(
                 xyz_world_nwu=target_pose_nwu,
@@ -2307,6 +2901,10 @@ class Robot(Base):
                 ]
         
     def solve_inverse_kinematics_wrt_world_frame(self, target_world_endeffector_pose: Pose):
+        gate = getattr(self, 'execution_gate', None)
+        if gate is not None and not gate.ready():
+            self.node.get_logger().error('Task IK requires fresh feedback and active controllers')
+            return
         world_pose_now = self._pose_from_state_in_frame(self.world_frame)
         if world_pose_now is None:
             self.node.get_logger().warn(f"IK aborted, current world-frame vehicle pose is unavailable.")
@@ -2318,10 +2916,8 @@ class Robot(Base):
             self.node.get_logger().warn(f"IK aborted, manipulator joint state vector is empty.")
             return
 
-        if (not np.all(np.isfinite(q)) or
-                np.any(q < self.ik_joint_lower - 1e-9) or
-                np.any(q > self.ik_joint_upper + 1e-9)):
-            self.node.get_logger().error('Task IK rejected: measured joints outside enforced limits')
+        if q.shape != self.ik_joint_lower.shape or not np.all(np.isfinite(q)):
+            self.node.get_logger().error('Task IK rejected: invalid measured joint vector')
             return
 
         p_now, rpy_now = PoseX.from_pose(
@@ -2379,19 +2975,38 @@ class Robot(Base):
             frame="NWU",
         ).get_rot(frame="NWU", rot_rep="matrix")
         try:
+            if not callable(getattr(self, "task_vehicle_bounds_provider", None)):
+                raise ValueError("task vehicle bounds unavailable")
             target_rot = aligned_target_rotation(target_rot, self.ik_tool_axis)
             request = WholeBodyIKRequest(
                 q, world_pose, p_des, target_rot, ReachParams.base_T0_new,
                 ReachParams.tipOffset, self.ik_joint_lower, self.ik_joint_upper,
                 self.ik_position_tolerance, self.ik_orientation_tolerance,
-                base_align_weight=self.ik_base_align_w)
-            result = self.endpoint_ik.solve_request(request)
+                base_align_weight=self.ik_base_align_w,
+                vehicle_bounds=self.task_vehicle_bounds_provider())
+        except (RuntimeError, ValueError) as error:
+            self.node.get_logger().warn(f'Task IK rejected; previous targets retained: {error}')
+            return
+        self._submit_motion_calculation(
+            _solve_ik_request, (type(self.endpoint_ik), self._ik_resource_directory, copy.deepcopy(request)),
+            lambda result: self._accept_task_ik(request, result), timeout=10.)
+
+    def _accept_task_ik(self, request, result):
+        try:
             if not result.success:
                 raise ValueError(result.message)
+            if self.execution_gate is not None and not self.execution_gate.ready():
+                raise ValueError('feedback/controllers unavailable')
             x_world_next = np.asarray(result.vehicle_pose, dtype=float)
             q_next = np.asarray(result.joints, dtype=float)
-            # Command acceptance uses the robot model, independent of solver claims.
             validate_pose_endpoint(request, x_world_next, q_next, self.fk_eval)
+            validator = getattr(self, 'task_motion_validator', None)
+            if validator is None:
+                raise ValueError('task collision validator unavailable')
+            current = self._pose_from_state_in_frame(self.world_frame)
+            if current is None:
+                raise ValueError('current world pose unavailable')
+            validator([current.position.x, current.position.y, current.position.z], x_world_next[:3])
         except (RuntimeError, ValueError) as error:
             self.node.get_logger().warn(f'Task IK rejected; previous targets retained: {error}')
             return
@@ -2427,6 +3042,9 @@ class Robot(Base):
             return
         rpy_cmd_ned = np.asarray(rpy_cmd_ned, dtype=float).copy()
         rpy_cmd_ned[2] = self.normalize_angle(float(rpy_cmd_ned[2]), measured_yaw)
+        if not self.authorize_motion():
+            return
+        self.enable_planner_output()
         self._vehicle_desired_pose_from_ik_ = pose_next.get_pose_as_Pose_msg()
         self.arm.q_command = q_next.tolist()
         self._clear_task_reference_derivatives()
@@ -2455,12 +3073,32 @@ class Robot(Base):
         if mode == ControlMode.REPLAY and self.control_mode != ControlMode.REPLAY:
             self._mode_before_replay = self.control_mode
 
+        previous_mode = self.control_mode
+        self._control_mode_epoch = getattr(self, '_control_mode_epoch', 0) + 1
+        self._replay_reset_pending = False
+        if (previous_mode in (ControlMode.REPLAY, ControlMode.REPLAY_SETTLE)
+                and mode not in (ControlMode.REPLAY, ControlMode.REPLAY_SETTLE)):
+            replay = self.controller_instance('CmdReplay')
+            if replay is not None:
+                replay.stop_playback()
+            self._clear_replay_settle()
         reset_dynamics_observer(self)
         self.control_mode = mode
         if mode == ControlMode.PLANNER and not self.sim_reset_hold:
             self._path_recording_enabled = True
         self._zero_teleop_commands()
         self.abrupt_planner_stop()
+        if previous_mode == ControlMode.TELEOP and mode == ControlMode.PLANNER:
+            state = self.get_state()
+            if state['status'] == 'active':
+                self.arm.q_command = np.asarray(state['q'], dtype=float)[:4].tolist()
+                self._clear_task_reference_derivatives()
+                if 'grasper_q' in state:
+                    self.arm.grasp_command = float(np.asarray(state['grasper_q']).reshape(-1)[0])
+                self._arm_feedback_hold = True
+        notify = getattr(self, 'on_control_mode_changed', None)
+        if notify is not None:
+            notify()
 
     def enable_planner_output(self) -> None:
         self._planner_output_enabled = True
@@ -2538,6 +3176,10 @@ class Robot(Base):
             obstacles.append(
                 {
                     "id": str(getattr(obstacle, "id", "")).strip() or f"obstacle_{index}",
+                    "source": obstacle.source,
+                    "owner_robot": obstacle.owner_robot,
+                    "stamp": self._msg_time_to_recording_dict(obstacle.stamp),
+                    "velocity_valid": obstacle.velocity_valid,
                     "collision_type": int(getattr(obstacle, "collision_type", 0)),
                     "collision_dimensions": [float(v) for v in list(getattr(obstacle, "collision_dimensions", []) or [])],
                     "visual_type": int(getattr(obstacle, "visual_type", 0)),
@@ -2557,6 +3199,7 @@ class Robot(Base):
                 }
             )
         return {
+            "unavailable_robot_owners": list(msg.unavailable_robot_owners),
             "frame_id": str(getattr(header, "frame_id", "")),
             "stamp": self._msg_time_to_recording_dict(getattr(header, "stamp", None)),
             "obstacles": obstacles,
@@ -2903,8 +3546,12 @@ class Robot(Base):
         self.node.get_logger().info(message)
     
     def abrupt_planner_stop(self, *, publish_zero: bool = True):
+        Robot._cancel_planning_settle(self)
+        Robot._cancel_motion_calculation(self)
+        gate = getattr(self, 'execution_gate', None)
+        if gate is not None:
+            gate.stop()
         self._navigation_epoch = getattr(self, '_navigation_epoch', 0) + 1
-        self.navigation_blocked_goal = None
         self.disable_planner_output()
         self._accept_planner_results = False
         self.planner_action_client.cancel_active_goal()
@@ -2923,6 +3570,8 @@ class Robot(Base):
             self.publish_commands([0.0]*6, [0.0]*5)
 
     def close(self) -> None:
+        self._cancel_motion_calculation()
+        self._cancel_planning_settle()
         self._stop_replay_session_recording("shutdown")
         self._accept_planner_results = False
         if self.vehicle_cart_traj is not None:
@@ -2930,7 +3579,7 @@ class Robot(Base):
             self.vehicle_cart_traj = None
         if getattr(self, "ps4_controller", None) is not None:
             try:
-                self.ps4_controller.running = False
+                self.ps4_controller.stop = True
             except Exception:
                 pass
         self.ps4_controller = None
@@ -2959,7 +3608,19 @@ class Robot(Base):
         request.hold_commands = True
         request.use_manipulator_state = False
         request.use_vehicle_state = False
-        self.reset_simulation_with_state(request)
+        gate = getattr(self, 'execution_gate', None)
+        if gate is None:
+            self.reset_simulation_with_state(request)
+            return
+        request.pause_dynamics = True
+        def ready_after_reset():
+            # Same idle state as initial startup, only after reset feedback has
+            # arrived. Native command hold/physics pause remain until execution.
+            gate.stop()
+            gate.startup_paused = True
+            gate.releasing = False
+            self.sim_reset_hold = False
+        self.reset_simulation_with_state(request, on_success=ready_after_reset)
 
     def reset_simulation_with_state(self, request: ResetSimUvms.Request, on_success=None, on_failure=None) -> None:
         previous_hold = self.sim_reset_hold
@@ -2977,12 +3638,25 @@ class Robot(Base):
             if on_failure is not None:
                 on_failure()
 
+        pending = dict(after_stamp_ns=None, deadline=time.monotonic() + 10.0,
+                       success=_on_reset_success, failure=_on_reset_failure)
+        self._reset_feedback_pending = pending
+
+        def _await_reset_feedback():
+            if self._reset_feedback_pending is pending:
+                pending['after_stamp_ns'] = self.node.get_clock().now().nanoseconds
+
+        def _service_failed():
+            if self._reset_feedback_pending is pending:
+                self._reset_feedback_pending = None
+                _on_reset_failure()
+
         self._call_reset_state_service(
             request=request,
             service_name=f"/{self.prefix}reset_sim_uvms",
             log_label=f"[{self.prefix}] state reset",
-            on_success=_on_reset_success,
-            on_failure=_on_reset_failure,
+            on_success=_await_reset_feedback,
+            on_failure=_service_failed,
         )
 
     def apply_sim_dynamics_from_reset_request(
@@ -3175,27 +3849,64 @@ class Robot(Base):
 
         future.add_done_callback(_done_callback)
 
-    def release_simulation(self, on_success=None, on_failure=None) -> None:
-        previous_hold = self.sim_reset_hold
+    def cancel_simulation_release(self):
+        """Cancel pending release and compensate even an unacknowledged request."""
+        transaction = getattr(self, '_release_transaction', None)
+        if transaction is None:
+            return
+        self._release_transaction = None
+        Robot.pause_simulation_on_fault(self)
 
-        def _on_release_success():
-            self.sim_reset_hold = False
-            self._path_recording_enabled = True
-            if on_success is not None:
-                on_success()
-
-        def _on_release_failure():
-            self.sim_reset_hold = previous_hold
+    def release_simulation(self, on_success=None, on_failure=None, components=None) -> None:
+        gate = getattr(self, 'execution_gate', None)
+        simulated = (gate.simulated_components if gate is not None
+                     else getattr(self, 'simulated_components', ()))
+        parts = set(simulated if components is None else components) & set(simulated)
+        if (getattr(self, '_release_transaction', None) is not None
+                or getattr(self, '_simulation_pause_pending', False)
+                or getattr(self, '_reset_feedback_pending', None) is not None):
+            self.node.get_logger().warning('Simulation release rejected: another transition is pending')
             if on_failure is not None:
                 on_failure()
+            return
+        transaction = object()
+        self._release_transaction = transaction
 
-        self._call_uvms_service(
-            client=self.release_sim_uvms_client,
-            service_name=f"/{self.prefix}release_sim_uvms",
-            log_label=f"[{self.prefix}] release",
-            on_success=_on_release_success,
-            on_failure=_on_release_failure,
-        )
+        def late_release():
+            # A timed-out/cancelled RPC may still execute at the server. Its
+            # acknowledgement must trigger compensation, never authorization.
+            Robot.pause_simulation_on_fault(self, force=True)
+
+        def failed():
+            if self._release_transaction is not transaction:
+                return
+            self._release_transaction = None
+            if on_failure is not None:
+                on_failure()
+            Robot.pause_simulation_on_fault(self)
+
+        remaining = iter(sorted(parts))
+        def release_next():
+            if self._release_transaction is not transaction:
+                late_release()
+                return
+            part = next(remaining, None)
+            if part is None:
+                self._release_transaction = None
+                self.sim_reset_hold = False
+                if gate is not None:
+                    gate.paused_components.difference_update(parts)
+                self._path_recording_enabled = True
+                if on_success is not None:
+                    on_success()
+                return
+            self._call_uvms_service(
+                client=self.release_sim_component_clients[part],
+                service_name=f"/{self.prefix}release_sim_{part}",
+                log_label=f"[{self.prefix}] release {part}",
+                on_success=release_next, on_failure=failed,
+                on_late_success=late_release)
+        release_next()
 
     def _reset_local_command_state(self) -> None:
         self.abrupt_planner_stop()
@@ -3223,40 +3934,65 @@ class Robot(Base):
         clear_msg.header.frame_id = self.map_frame
         self.trajectory_path_publisher.publish(clear_msg)
 
-    def _call_uvms_service(self, client, service_name: str, log_label: str, on_success=None, on_failure=None) -> None:
-        if not client.wait_for_service(timeout_sec=0.5):
-            self.node.get_logger().warn(f"{log_label} skipped, service {service_name} is not ready.")
+    def _call_uvms_service(self, client, service_name: str, log_label: str,
+                           on_success=None, on_failure=None, on_late_success=None) -> None:
+        # Never wait inside the control executor for discovery or a response.
+        if not client.service_is_ready():
+            self.node.get_logger().error(f"{log_label} failed: service {service_name} is not ready")
             if on_failure is not None:
                 on_failure()
             return
-
-        future = client.call_async(Trigger.Request())
-
-        def _done_callback(done_future) -> None:
+        from rclpy.clock import Clock, ClockType
+        done = False
+        deadline = time.monotonic() + 2.0
+        def finish_timer():
+            # Callbacks are registered only after the deadline timer exists.
+            timer.cancel()
+            self.node.destroy_timer(timer)
+        def expired():
+            nonlocal done
+            if done or time.monotonic() < deadline:
+                return
+            done = True
+            finish_timer()
+            self.node.get_logger().error(f"{log_label} failed: response timeout from {service_name}")
+            if on_failure is not None:
+                on_failure()
+        try:
+            future = client.call_async(Trigger.Request())
+        except Exception as error:
+            self.node.get_logger().error(f"{log_label} failed: {error}")
+            if on_failure is not None:
+                on_failure()
+            return
+        timer = self.node.create_timer(.1, expired, clock=Clock(clock_type=ClockType.STEADY_TIME))
+        def response_ready(result):
+            nonlocal done
+            if not done and time.monotonic() >= deadline:
+                expired()
+            # Retain the response callback after timeout: cancelling a ROS
+            # future does not cancel execution of the service on the server.
             try:
-                response = done_future.result()
-            except Exception as exc:
-                self.node.get_logger().error(f"{log_label} failed: {exc}")
-                if on_failure is not None:
-                    on_failure()
+                response = result.result()
+                success = response is not None and response.success
+                message = response.message if response is not None else 'empty response'
+            except Exception as error:
+                success, message = False, str(error)
+            if done:
+                if success and on_late_success is not None:
+                    on_late_success()
                 return
-
-            if response is None:
-                self.node.get_logger().error(f"{log_label} failed: empty response from {service_name}")
-                if on_failure is not None:
-                    on_failure()
-                return
-
-            if response.success:
-                self.node.get_logger().info(f"{log_label} ok: {response.message}")
+            done = True
+            finish_timer()
+            if success:
+                self.node.get_logger().info(f"{log_label} ok: {message}")
                 if on_success is not None:
                     on_success()
             else:
-                self.node.get_logger().warn(f"{log_label} rejected: {response.message}")
+                self.node.get_logger().error(f"{log_label} failed: {message}")
                 if on_failure is not None:
                     on_failure()
-
-        future.add_done_callback(_done_callback)
+        future.add_done_callback(response_ready)
 
     def _call_reset_state_service(
         self,
@@ -3302,16 +4038,17 @@ class Robot(Base):
                 self.jointe = self.jointd = self.jointc = self.jointb = self.jointa = 0.0
                 self._menu_grasper_effort = 0.0
                 self._menu_grasper_until_sec = 0.0
+                self.teleop_wrench_body_6 = [0.0] * 6
+                self.teleop_arm_effort_5 = [0.0] * 5
+                self._pending_mode_toggle = False
+        else:
+            self.teleop_wrench_body_6 = [0.0] * 6
+            self.teleop_arm_effort_5 = [0.0] * 5
 
     def _zero_planner_commands(self):
         if self.control_mode == ControlMode.PLANNER:
             st = self.get_state()
-            # hold current position, force roll and pitch to 0
-            pose = np.asarray(st["pose"], dtype=float).copy()
-            pose[3] = 0.0  # roll
-            pose[4] = 0.0  # pitch
-
-            self.pose_command = pose.tolist()
+            self.pose_command = np.asarray(st["pose"], dtype=float).tolist()
         else:
             self.pose_command = [0.0]*6
         self.body_vel_command = [0.0]*6
@@ -3341,24 +4078,158 @@ class Robot(Base):
             self.arm.ddq_command = np.zeros((4,), dtype=float).tolist()
         self.enable_planner_output()
 
+
     def hold_current_state_with_feedback(self, *, hold_arm: bool = True) -> None:
         """Hold measured state, optionally preserving independent arm references."""
         self.hold_pose_with_feedback(hold_arm=hold_arm)
 
 
     def control_loop_callback(self):
+        now = (self.node.get_clock().now().nanoseconds * 1e-9
+               if getattr(self, '_control_uses_ros_time', False) else time.monotonic())
+        previous = getattr(self, '_control_tick', None)
+        self._control_tick = now
+        if previous is None:
+            return
+        self._control_interval = now - previous
+        try:
+            if not np.isfinite(self._control_interval) or self._control_interval <= 0:
+                raise ValueError('controller clock did not advance')
+            # Even newly queued feedback cannot justify integrating across an
+            # executor outage longer than the feedback freshness budget.
+            if self._control_interval > 0.5:
+                raise ValueError('control callback gap exceeds 0.5s freshness budget')
+            Robot._control_loop_impl(self)
+        except Exception as error:
+            # A controller/plugin failure must revoke output, not unwind the
+            # executor and leave the node unable to send a stop.
+            Robot.stop_on_control_fault(self, error)
+
+    def stop_on_control_fault(self, reason):
+        """A broken controller/stop callback must not suppress the native pause."""
+        try:
+            self.stop_execution()
+        except Exception as error:
+            gate = getattr(self, 'execution_gate', None)
+            if gate is not None:
+                gate.stop()
+            self.node.get_logger().error(f'Control fault cleanup failed: {error}')
+            try:
+                self.publish_vehicle_and_arm([0.] * 6, [0.] * 5)
+            except Exception as publish_error:
+                self.node.get_logger().error(f'Fault zero-command publication failed: {publish_error}')
+        try:
+            Robot.pause_simulation_on_fault(self)
+        except Exception as error:
+            self.node.get_logger().error(f'Simulation fault pause failed: {error}')
+        self.node.get_logger().error(f'Control cycle failed; motion stopped: {reason}')
+
+    def pause_simulation_on_fault(self, *, force=False):
+        """Freeze simulated components, keeping an acknowledged transition barrier."""
+        gate = getattr(self, 'execution_gate', None)
+        components = set(gate.simulated_components if gate is not None
+                         else getattr(self, 'simulated_components', ()))
+        if not components:
+            return
+        if getattr(self, '_simulation_pause_pending', False) and not force:
+            return
+        self._release_transaction = None
+        token = object()
+        self._simulation_pause_token = token
+        self._simulation_pause_pending = True
+        self.sim_reset_hold = True
+        if gate is not None:
+            gate.stop()
+            gate.paused_components.update(components)
+        pending = set(components)
+        def acknowledged(part):
+            if self._simulation_pause_token is not token:
+                return
+            pending.discard(part)
+            if not pending:
+                self._simulation_pause_pending = False
+                # A reset owns its own feedback barrier. An older pause ack
+                # must not clear that hold or authorize execution prematurely.
+                if gate is not None and getattr(self, '_reset_feedback_pending', None) is None:
+                    self.sim_reset_hold = False
+        for part in sorted(components):
+            self._call_uvms_service(
+                client=self.pause_sim_component_clients[part],
+                service_name=f'/{self.prefix}pause_sim_{part}',
+                log_label=f'[{self.prefix}] fault pause {part}',
+                on_success=lambda part=part: acknowledged(part),
+                on_late_success=lambda part=part: acknowledged(part))
+
+    def _control_loop_impl(self):
         self._replay_tracking_reference = None
-        state = self.get_state()
+        pending = getattr(self, '_reset_feedback_pending', None)
+        if pending is not None:
+            self.publish_commands([0.0] * 6, [0.0] * 5)
+            if time.monotonic() >= pending['deadline']:
+                self._reset_feedback_pending = None
+                # Fail closed: absent post-reset feedback must not release old
+                # targets or start a replay against a stale observation.
+                pending['failure']()
+                self.sim_reset_hold = True
+                self.node.get_logger().error('Simulation reset timed out waiting for fresh state feedback')
+            return
+        last_received = getattr(self, '_last_state_received', None)
+        feedback_unavailable = getattr(self, '_feedback_fault', False) or (
+            last_received is not None and time.monotonic() - last_received > 0.5)
+        if feedback_unavailable:
+            now = time.monotonic()
+            if getattr(self, '_feedback_stale_since', None) is None:
+                self._feedback_stale_since = now
+            # A synchronous planner can temporarily occupy the executor. Send
+            # zero immediately, but let queued feedback run before cancelling.
+            # Invalid samples have no grace period.
+            if (not getattr(self, '_feedback_fault', False)
+                    and now - self._feedback_stale_since < 0.5):
+                self.publish_vehicle_and_arm([0.0] * 6, [0.0] * 5)
+                return
+            if not getattr(self, '_feedback_stop_applied', False):
+                self.abrupt_planner_stop()
+                self.cancel_replay_settle(mark_failed=True)
+                self._zero_teleop_commands()
+                self.teleop_wrench_body_6 = [0.0] * 6
+                self.teleop_arm_effort_5 = [0.0] * 5
+                self._menu_grasper_effort = 0.0
+                self._menu_grasper_until_sec = 0.0
+                controller = self.active_controller_instance()
+                if controller is not None and hasattr(controller, 'mark_reset_failed'):
+                    controller.mark_reset_failed()
+                self._feedback_stop_applied = True
+                Robot.pause_simulation_on_fault(self)
+                self.node.get_logger().error(
+                    f"[{self.prefix}] Feedback unavailable; motion cancelled. Replan after feedback recovers.")
+            self.publish_commands([0.0] * 6, [0.0] * 5)
+            return
+        self._feedback_stop_applied = False
+        self._feedback_stale_since = None
+        state = dict(self.get_state())
+        # Plant sim_period describes a completed plant step (zero at reset).
+        # Integrators/filters need the elapsed interval of this control loop.
+        state['dt'] = self._control_interval
         if state["status"] != "active":
             return
         if self.sim_reset_hold:
             self.publish_commands([0.0] * 6, [0.0] * 5)
             return
 
+        if self.control_mode == ControlMode.ARM_HOLD:
+            self.publish_arm_hold(state)
+            return
+
         if self.control_mode == ControlMode.TELEOP:
             # read teleop commands and publish
             wrench = getattr(self, "teleop_wrench_body_6", [0.0]*6)
             arm = getattr(self, "teleop_arm_effort_5", [0.0]*5)
+            gate = getattr(self, 'execution_gate', None)
+            requested = {part for part, command in (('vehicle', wrench), ('manipulator', arm))
+                         if any(abs(x) > 0 for x in command)}
+            if gate is not None and requested and (
+                    not gate.authorized or not requested <= gate.active_components):
+                self.authorize_motion(components=requested)
             self.publish_commands(wrench, arm)
             return
 
@@ -3373,6 +4244,10 @@ class Robot(Base):
             return
 
         if self.control_mode == ControlMode.REPLAY_SETTLE:
+            gate = getattr(self, 'execution_gate', None)
+            if gate is not None and not gate.allows_output():
+                self.publish_commands([0.0] * 6, [0.0] * 5)
+                return
             replay_controller = self._replay_settle_controller
             arm_target = self._replay_settle_arm_target
             vehicle_target = self._replay_settle_vehicle_target
@@ -3461,9 +4336,10 @@ class Robot(Base):
                 dt=state["dt"],
             )
 
+            components = self.replay_components(replay_controller)
             self.publish_commands(
-                np.asarray(cmd_body_wrench, float).tolist(),
-                np.asarray(cmd_arm_tau, float).tolist(),
+                np.asarray(cmd_body_wrench, float).tolist() if 'vehicle' in components else [0.] * 6,
+                np.asarray(cmd_arm_tau, float).tolist() if 'manipulator' in components else [0.] * 5,
             )
             return
 
@@ -3488,9 +4364,12 @@ class Robot(Base):
                     self.node.get_logger().error('Replay rejected: requested feedback controller unavailable')
                     self.publish_commands([0.0] * 6, [0.0] * 5)
                     return
-                if needs_feedback:
+                if needs_feedback and not getattr(self, '_hold_after_arm_replay', False):
                     feedback.reset_controller_state()
                 self.performance_metrics.reset()
+                if not self.authorize_motion(components=self.replay_components(active_controller)):
+                    self.publish_commands([0.0] * 6, [0.0] * 5)
+                    return
                 if active_controller.start_playback(sim_time_sec=state["sim_time"]):
                     if (
                         hasattr(active_controller, "recording_enabled")
@@ -3507,6 +4386,13 @@ class Robot(Base):
                 if hasattr(active_controller, "current_sample_index")
                 else None
             )
+            if (getattr(self, '_hold_after_arm_replay', False)
+                    and active_controller.playback_status() == 'complete'):
+                self._stop_replay_session_recording('complete')
+                self.start_arm_hold(active_controller.feedback_controller_name(),
+                                    self._arm_replay_final_target)
+                self.publish_arm_hold(state)
+                return
             feedback_controller_name = (
                 active_controller.feedback_controller_name()
                 if hasattr(active_controller, "feedback_controller_name")
@@ -3651,7 +4537,7 @@ class Robot(Base):
                     source_frame=self.map_frame, warn_context=f"replay reference ({self.prefix})",
                 )
                 if world_reference is not None:
-                    self.reference_pub.publish_replay_targets(
+                    self.reference_pub.publish_targets(
                         stamp_msg=self.node.get_clock().now().to_msg(),
                         world_pose=world_reference, target_ned_pose=target_pos,
                         target_body_vel=target_vel if vehicle_mode == "track_reference" else np.zeros(6),
@@ -3688,6 +4574,10 @@ class Robot(Base):
             return
 
         if self.control_mode == ControlMode.PLANNER:
+            gate = getattr(self, 'execution_gate', None)
+            if gate is not None and not gate.allows_output():
+                self.publish_commands([0.0] * 6, [0.0] * 5)
+                return
             if not getattr(self, "_planner_output_enabled", False):
                 self.publish_commands([0.0] * 6, [0.0] * 5)
                 return
@@ -3723,14 +4613,23 @@ class Robot(Base):
                 dt=state["dt"],
             )
 
-            self.reference_pub.publish_map_targets_and_arm_refs(
-                target_ned_pose=target_ned_pose,
-                target_body_vel=target_body_vel,
-                target_body_acc=target_body_acc,
-                q_ref=q_ref,
-                dq_ref=dq_ref,
-                ddq_ref=ddq_ref,
+            reference_pose = PoseX.from_pose(
+                xyz=target_ned_pose[:3], rot=target_ned_pose[3:6],
+                rot_rep="euler_xyz", frame="NED",
+            ).get_pose_as_Pose_msg(frame="NWU")
+            world_reference = self.try_transform_pose(
+                pose_in_source=reference_pose, target_frame=self.world_frame,
+                source_frame=self.map_frame, warn_context=f"control reference ({self.prefix})",
             )
+            if world_reference is not None:
+                self.reference_pub.publish_targets(
+                    stamp_msg=self.node.get_clock().now().to_msg(),
+                    world_pose=world_reference,
+                    target_ned_pose=target_ned_pose,
+                    target_body_vel=target_body_vel,
+                    target_body_acc=target_body_acc,
+                    q_ref=q_ref, dq_ref=dq_ref, ddq_ref=ddq_ref,
+                )
 
             self.publish_commands(np.asarray(cmd_body_wrench, float).tolist(),
                                 np.asarray(cmd_arm_tau, float).tolist())
@@ -3739,8 +4638,10 @@ class Robot(Base):
     def joystick_read_callback(self):
         if not self.has_joystick_interface:
             return
-
         with self.controller_lock:
+            disconnected = self._joystick_disconnected
+            toggle = self._pending_mode_toggle
+            self._pending_mode_toggle = False
             self.teleop_wrench_body_6 = [
                 self.rov_surge, self.rov_sway, self.rov_z,
                 self.rov_roll, self.rov_pitch, self.rov_yaw
@@ -3748,3 +4649,11 @@ class Robot(Base):
             self.teleop_arm_effort_5 = [
                 self.jointe, self.jointd, self.jointc, self.jointb, self.jointa
             ]
+        if disconnected:
+            self.has_joystick_interface = False
+            if self.control_mode == ControlMode.TELEOP:
+                self.stop_execution()
+            return
+        if toggle:
+            self.set_control_mode(ControlMode.PLANNER if self.control_mode == ControlMode.TELEOP
+                                  else ControlMode.TELEOP)

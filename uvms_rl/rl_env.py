@@ -67,10 +67,10 @@ class UvmsBatchEnv:
             control_dt = 0.01 if dt is None else dt
         if sim_dt is None:
             sim_dt = control_dt
-        if control_dt <= 0.0:
-            raise ValueError("control_dt must be positive")
-        if sim_dt <= 0.0:
-            raise ValueError("sim_dt must be positive")
+        if not np.isfinite(control_dt) or control_dt <= 0.0:
+            raise ValueError("control_dt must be finite and positive")
+        if not np.isfinite(sim_dt) or sim_dt <= 0.0:
+            raise ValueError("sim_dt must be finite and positive")
         if sim_dt > control_dt:
             raise ValueError("sim_dt must be less than or equal to control_dt")
         substeps_float = control_dt / sim_dt

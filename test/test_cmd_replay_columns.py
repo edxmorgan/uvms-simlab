@@ -4,6 +4,7 @@ import types
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 if "rosbag2_py" not in sys.modules:
     sys.modules["rosbag2_py"] = types.ModuleType("rosbag2_py")
@@ -24,6 +25,80 @@ if "rclpy.serialization" not in sys.modules:
 
 from simlab.controllers.cmd_replay import CmdReplayController
 from simlab.mcap_to_replay_profile import _replay_manifest
+from simlab import mcap_to_replay_profile as converter
+
+
+def test_reference_alignment_never_uses_future_data():
+    samples = [(1.0, {'value': 1}), (1.1, {'value': 2})]
+    assert converter._reference_at_or_before(samples, .99, .2) is None
+    assert converter._reference_at_or_before(samples, 1.09, .2) == {'value': 1}
+    assert converter._reference_at_or_before(samples, 1.1, .2) == {'value': 2}
+    assert converter._reference_at_or_before(samples, 1.5, .2) is None
+    assert converter._target_row(samples, time_sec=0, stamp_sec=.9, max_age_sec=.2) == {'time_sec': 0}
+
+
+@pytest.mark.parametrize('values', [[1.0], [float('nan'), 2], [float('inf'), 2]])
+def test_reference_vectors_cannot_be_padded_or_cleaned(values):
+    with pytest.raises(ValueError):
+        converter._fixed_vector(values, 2)
+
+
+def test_reference_extraction_preserves_clock_and_derivatives(monkeypatch, tmp_path):
+    reference = {key: list(np.arange(size) + index * .1)
+                 for index, (key, size) in enumerate([
+                     ('target_ned_pose', 6), ('target_body_vel', 6), ('target_body_acc', 6),
+                     ('arm_ref', 5), ('arm_dref', 5), ('arm_ddref', 5)])}
+    samples = [(10.0, reference), (10.013, reference), (10.031, reference)]
+    monkeypatch.setattr(converter, '_reference_samples', lambda *a, **k: samples)
+    vehicle_interfaces = ('position.x', 'position.y', 'position.z', 'roll', 'pitch', 'yaw',
+                          'velocity.x', 'velocity.y', 'velocity.z',
+                          'angular_velocity.x', 'angular_velocity.y', 'angular_velocity.z')
+
+    def state(stamp, value):
+        return SimpleNamespace(
+            header=SimpleNamespace(stamp=SimpleNamespace(sec=9, nanosec=stamp)),
+            joint_names=['robot_IOs'] + ['robot__axis_' + a for a in 'edcba'],
+            interface_values=[SimpleNamespace(interface_names=vehicle_interfaces, values=[value]*12)] +
+                             [SimpleNamespace(interface_names=['position','velocity'], values=[value,0.])]*5)
+
+    class Reader:
+        def __init__(self):
+            # A future state must not be selected for reset.
+            self.messages = iter([state(990_000_000, 1.), state(1_001_000_000, 2.)])
+            self.remaining = 2
+
+        def get_all_topics_and_types(self):
+            return [SimpleNamespace(name='/states', type='control_msgs/msg/DynamicJointState')]
+
+        def has_next(self):
+            return self.remaining > 0
+
+        def read_next(self):
+            self.remaining -= 1
+            return '/states', next(self.messages), 0
+
+    monkeypatch.setattr(converter, '_open_reader', lambda *a: Reader())
+    monkeypatch.setattr(converter, 'deserialize_message', lambda msg, _: msg)
+    rows, reset = converter._extract_reference_rows(tmp_path, storage_id='mcap', topic='/states',
+                                                    robot_prefix='robot_', max_gap_sec=.1)
+    np.testing.assert_allclose([row['time_sec'] for row in rows], [0, .013, .031], atol=1e-14)
+    assert reset['manipulator_position'] == [1.]*5
+    assert set(rows[0]) == {'time_sec', *converter.TARGET_COLUMNS}
+    assert rows[-1]['arm_ddref_axis_a'] == reference['arm_ddref'][-1]
+    path = tmp_path / 'reference.csv'
+    converter._write_commands_csv(path, rows)
+    with path.open() as handle:
+        restored = list(csv.DictReader(handle))
+    assert float(restored[-1]['arm_ddref_axis_a']) == reference['arm_ddref'][-1]
+    assert not set(converter.ARM_COLUMNS) & set(restored[0])
+    samples.append((11., reference))
+    with pytest.raises(ValueError, match='gap'):
+        converter._extract_reference_rows(tmp_path, storage_id='mcap', topic='/states',
+                                          robot_prefix='robot_', max_gap_sec=.1)
+    samples.pop()
+    with pytest.raises(ValueError, match='no complete'):
+        converter._extract_reference_rows(tmp_path, storage_id='mcap', topic='/states',
+                                          robot_prefix='missing_', max_gap_sec=.1)
 
 
 class _Logger:

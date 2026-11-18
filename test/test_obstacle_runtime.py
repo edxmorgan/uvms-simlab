@@ -149,3 +149,15 @@ def test_all_geometry_kinds_keep_scale_and_shape(tmp_path, kind, dims):
     original = copy.deepcopy(moved)
     original.pose = item.pose
     assert original == item
+
+
+def test_edit_canonicalizes_ids_before_dictionary_operations():
+    host = runtime(obstacle('one'))
+    change = obstacle('one')
+    change.id = ' one '
+    change.pose.position.x = 3.
+    revision, updated = host.edit(expected_revision=0, upsert=[change])
+    assert [o.id for o in updated.obstacles] == ['one']
+    assert updated.obstacles[0].pose.position.x == 3.
+    _, cleared = host.edit(expected_revision=revision, remove=[' one '])
+    assert not cleared.obstacles

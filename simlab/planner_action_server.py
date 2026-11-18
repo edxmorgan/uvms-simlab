@@ -9,7 +9,7 @@ from rclpy.executors import SingleThreadedExecutor
 import tf2_ros
 from simlab.dynamic_world import DynamicWorldModel
 from simlab.fcl_checker import FCLWorld
-from simlab.planner_world import PlannerWorld
+from simlab.planner_world import PlannerWorld, DEFAULT_BOUNDARY_TRACKING_TOLERANCE_M
 from simlab.shutdown import shutdown_node, spin_until_shutdown
 from simlab.motion_planning.planners import DEFAULT_PLANNER_CLASSES
 from simlab.motion_planning.result import MotionPlanResult
@@ -23,6 +23,8 @@ class PlannerActionServer(Node):
 
         self.declare_parameter('robot_description', '')
         self.declare_parameter('world_frame', 'world')
+        self.start_bounds_tolerance = float(self.declare_parameter(
+            'start_bounds_tolerance', DEFAULT_BOUNDARY_TRACKING_TOLERANCE_M).value)
         urdf_string = self.get_parameter('robot_description').get_parameter_value().string_value
         self.world_frame = self.get_parameter('world_frame').get_parameter_value().string_value
         if not urdf_string:
@@ -59,6 +61,9 @@ class PlannerActionServer(Node):
 
         self._goal_handle = None
         self._goal_lock = threading.Lock()
+        self._scene_execution_lock = threading.Lock()
+        from simlab.environment_scene import attach_planner
+        attach_planner(self)
         self._action_server = ActionServer(
             self,
             PlanVehicle,
@@ -70,9 +75,12 @@ class PlannerActionServer(Node):
             callback_group=ReentrantCallbackGroup())
 
     def goal_callback(self, goal_request):
+        if self.scene_participant.held:
+            return GoalResponse.REJECT
         """Accept or reject a client request to begin an action."""
         valid = (
-            len(goal_request.start_xyz) == 3
+            goal_request.robot_prefix in self.fcl_world.robot_prefixes
+            and len(goal_request.start_xyz) == 3
             and len(goal_request.start_quat_wxyz) == 4
             and len(goal_request.goal_xyz) == 3
             and len(goal_request.goal_quat_wxyz) == 4
@@ -124,6 +132,16 @@ class PlannerActionServer(Node):
         self._fcl_ok = self.fcl_world.update_from_tf(self.tf_buffer, rclpy.time.Time())
 
     def execute_callback(self, goal_handle):
+        with self._scene_execution_lock:
+            if self.scene_participant.held:
+                goal_handle.abort()
+                result = PlanVehicle.Result()
+                result.success = False
+                result.message = 'Scene transition in progress'
+                return result
+            return self._execute_scene_unlocked(goal_handle)
+
+    def _execute_scene_unlocked(self, goal_handle):
         req = goal_handle.request
         self.get_logger().info(f"{self._tag} executing planner goal")
 
@@ -134,7 +152,11 @@ class PlannerActionServer(Node):
         feedback_msg.stage = "planner_input_received"
         goal_handle.publish_feedback(feedback_msg)
 
-        # Ensure we have at least one up-to-date TF/FCL snapshot before solving.
+        # Admit a fresh obstacle snapshot once; synchronous search must not age its
+        # own input while callbacks cannot run. Execution keeps using live telemetry.
+        self.planner_world = PlannerWorld(
+            fcl_world=self.fcl_world, dynamic_world=self.dynamic_world.snapshot(),
+            robot_prefix=req.robot_prefix)
         self._fcl_update_callback()
         self.fcl_world.set_robot_collision_radius(float(req.robot_collision_radius))
         if not self._fcl_ok:

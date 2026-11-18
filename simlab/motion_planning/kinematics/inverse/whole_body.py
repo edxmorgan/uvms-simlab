@@ -5,7 +5,7 @@ import time
 from scipy.spatial.transform import Rotation
 import casadi as ca
 import numpy as np
-from simlab.motion_planning.kinematics.inverse.base import WholeBodyIKTemplate
+from simlab.motion_planning.kinematics.inverse.base import WholeBodyIKTemplate, vehicle_position_bounds
 from simlab.motion_planning.kinematics.forward import load_forward_kinematics
 
 
@@ -37,13 +37,13 @@ class EndpointIK(WholeBodyIKTemplate):
     # The notebook owns optimization mathematics; this adapter owns retries
     # and candidate validation. The attempt budget cannot interrupt a solve.
     def solve(self, q, world_pose, target_position, target_rotation, base, tip,
-              lower, upper, position_tolerance=.01, orientation_tolerance=.05, base_align_weight=0.):
+              lower, upper, position_tolerance=.01, orientation_tolerance=.05, base_align_weight=0., vehicle_bounds=None):
         q, world, lower, upper = [np.asarray(v, dtype=float).reshape(-1)
                                   for v in (q, world_pose, lower, upper)]
         if q.shape != (4,) or world.shape != (6,) or lower.shape != (4,) or upper.shape != (4,):
             raise ValueError('Invalid IK configuration dimensions')
         if (not np.all(np.isfinite(np.r_[q, world, lower, upper])) or
-                np.any(lower >= upper) or np.any(q < lower-1e-9) or np.any(q > upper+1e-9)):
+                np.any(lower >= upper)):
             raise ValueError('Measured configuration or joint bounds are invalid')
         rot = Rotation.from_matrix(target_rotation)
         measured = np.r_[world[:3], Rotation.from_euler('xyz',world[3:]).as_quat()[[3,0,1,2]], q]
@@ -53,10 +53,16 @@ class EndpointIK(WholeBodyIKTemplate):
         parameters = np.r_[measured, goal, base, tip, base_align_weight]
         if not np.all(np.isfinite(parameters)):
             raise ValueError('Nonfinite IK input')
+        bounds = (np.array([[-np.inf, np.inf]]*3) if vehicle_bounds is None
+                  else vehicle_position_bounds(vehicle_bounds))
         seeds = [measured.copy()]
+        seeds[0][:3] = np.clip(measured[:3], bounds[:, 0], bounds[:, 1])
+        # Preserve the measured configuration in the objective and FK. Only
+        # optimizer seeds must lie inside the commanded endpoint bounds.
+        seeds[0][7:] = np.clip(q, lower, upper)
         # Wrist branches: optimizer seeds only; never issued as intermediate commands.
         for fraction in (.01, .5, .99):
-            seed = measured.copy()
+            seed = seeds[0].copy()
             seed[10] = lower[3] + fraction*(upper[3]-lower[3])
             seeds.append(seed)
         candidates, attempts = [], []
@@ -67,8 +73,8 @@ class EndpointIK(WholeBodyIKTemplate):
                     break
                 try:
                     result = self.solver(x0=seed, p=parameters,
-                        lbx=np.r_[[-np.inf]*3,[-1.]*4,lower],
-                        ubx=np.r_[[np.inf]*3,[1.]*4,upper], lbg=0., ubg=0.)
+                        lbx=np.r_[bounds[:, 0],[-1.]*4,lower],
+                        ubx=np.r_[bounds[:, 1],[1.]*4,upper], lbg=0., ubg=0.)
                     stats = self.solver.stats()
                     attempts.append(str(stats.get('return_status','unknown')))
                     if not stats.get('success',False):
@@ -77,6 +83,8 @@ class EndpointIK(WholeBodyIKTemplate):
                     if not np.all(np.isfinite(z)) or abs(np.linalg.norm(z[3:7])-1)>1e-6:
                         continue
                     if np.any(z[7:] < lower-1e-9) or np.any(z[7:] > upper+1e-9):
+                        continue
+                    if np.any(z[:3] < bounds[:, 0]-1e-9) or np.any(z[:3] > bounds[:, 1]+1e-9):
                         continue
                     pose = np.r_[z[:3],Rotation.from_quat(z[[4,5,6,3]]).as_euler('xyz')]
                     actual = np.asarray(self.fk(z[7:],base,pose,tip)[-1],dtype=float).reshape(-1)

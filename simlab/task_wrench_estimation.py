@@ -80,7 +80,7 @@ class TaskWrenchObserver:
                 raise ValueError('joint-state telemetry stale')
             fields = {n: dict(zip(v.interface_names, v.values))
                       for n, v in zip(message.joint_names, message.interface_values)}
-            joints = [fields.get(self.prefix+'_axis_'+axis, {}).get('position', np.nan)
+            joints = [fields.get(self.prefix+'_axis_'+axis, {}).get('filtered_position', np.nan)
                       for axis in 'edcb']
             estimates, variances = [], []
             for index, _, key in DOFS.values():

@@ -6,7 +6,6 @@ import pytest
 from geometry_msgs.msg import Pose
 
 from simlab.dynamic_world import DynamicClearance
-from simlab.motion_planning.navigation_safety import stopping_distance
 from simlab.motion_planning.dynamic_replanners.base import ReplanDecision
 from simlab.motion_planning.dynamic_replanners.clearance_hysteresis import ClearanceHysteresisReplanner
 from simlab.motion_planning.trajectory_generators.ruckig import RuckigVehicleTrajectoryGenerator
@@ -48,7 +47,6 @@ def test_actual_trajectory_visualization_uses_read_only_reference(phase):
         robot.planner.clear_target.assert_called_once()
 
 
-
 @pytest.mark.parametrize('count', [2, 3, 4, 5, 7])
 def test_path_markers_have_distance_based_density(count):
     from builtin_interfaces.msg import Time
@@ -87,9 +85,16 @@ def test_display_densifies_long_edges_without_cutting_corners_and_refreshes():
 
 class World:
     def __init__(self):
-        self.obstacles = {'obstacle': object()}
+        self.obstacles = {'obstacle': SimpleNamespace(owner_robot='', velocity_valid=True,
+            angular_velocity_world=np.zeros(3), linear_velocity_world=np.zeros(3), collision_type=1)}
+        self.unavailable_robot_owners = set()
         self.clearance = 2.0
-    def min_clearance_xyz(self, xyz, *, t_offset=0.):
+    def snapshot(self):
+        return self
+    def availability_error(self, exclude_owner=""):
+        return None
+    def min_clearance_xyz(self, xyz, *, t_offset=0., exclude_owner=""):
+        self.last_exclude_owner = exclude_owner
         return DynamicClearance('obstacle', self.clearance)
 
 
@@ -99,10 +104,13 @@ class Robot:
     sim_reset_hold = False
     task_based_controller = False
     max_traj_acc = [0.1]*3
+    max_traj_jerk = [1.]*3
+    world_frame = 'world'
     max_traj_vel = [0.5, 0., 0.]
     def __init__(self):
         self._navigation_epoch = 0
-        self.vehicle_cart_traj = SimpleNamespace(active=True)
+        self.planner = SimpleNamespace(planned_result={'xyz': [[0.,0.,0.],[5.,0.,0.]]})
+        self.vehicle_cart_traj = SimpleNamespace(active=True, current_reference=lambda: None)
         self.planner_action_client = SimpleNamespace(busy=False)
         self.last_vehicle_goal_pose_world = Pose()
         self.last_vehicle_goal_pose_world.position.x = 5.
@@ -131,7 +139,7 @@ class Robot:
 def setup(hardware=False):
     robot = Robot()
     world = World()
-    backend = SimpleNamespace(node=SimpleNamespace(get_logger=lambda: Mock()),
+    backend = SimpleNamespace(dynamic_replanning_enabled=True, node=SimpleNamespace(get_logger=lambda: Mock()),
         world_frame='world', dynamic_world=world, use_vehicle_hardware=hardware,
         fcl_world=SimpleNamespace(vehicle_radius=0.574,
             min_distance_xyz=lambda xyz: float('inf'), planner_in_collision_at_xyz=lambda xyz: False))
@@ -141,67 +149,8 @@ def setup(hardware=False):
     mission.mark_planning()
     replanner = ClearanceHysteresisReplanner(backend, robot, mission,
         cooldown_s=0., lookahead_time_s=4., safety_margin_m=0.25)
-    replanner._remaining_path_decision = lambda _: ReplanDecision('replan', 'blocked', 'obstacle', 0.1, 'path', 4.)
+    replanner._remaining_path_decision = lambda _, **kwargs: ReplanDecision('replan', 'blocked', 'obstacle', 0.1, 'path', 4.)
     return replanner, robot, world, mission
-
-
-def test_braking_estimate_includes_reaction_and_tracking_error():
-    assert stopping_distance(0.4, 0.1, 0.5, 0.1) == pytest.approx(1.1)
-    with pytest.raises(ValueError):
-        stopping_distance(1., 0., 0.)
-
-
-@pytest.mark.parametrize('busy', [False, True])
-def test_urgent_stop_precedes_busy_cooldown_and_hysteresis(busy):
-    replanner, robot, world, mission = setup()
-    replanner.tick()  # One earlier distant request.
-    robot.planner_action_client.busy = busy
-    replanner.cooldown_s = 1000.
-    replanner._remaining_path_decision = lambda _: ReplanDecision('replan', 'urgent', 'obstacle', 0.09, 'path', 0.2)
-    replanner.tick()
-    assert robot.stops == 1
-    assert replanner._paused_goal.position.x == 5.
-    assert mission.state == 'blocked' and mission.active_index == 0
-    assert not mission.executing
-
-
-def test_goal_survives_failed_resume_and_retries_after_obstacle_clears():
-    replanner, robot, world, mission = setup()
-    world.clearance = 0.1
-    replanner.tick()
-    assert robot.stops == 1 and not robot.plans
-    robot.speed = 0.
-    replanner.tick()
-    assert not robot.plans  # Inside inflated margin: no unsafe escape.
-    world.clearance = 1.
-    replanner.tick()
-    assert len(robot.plans) == 1
-    assert robot.plans[0]['goal_pose'].position.x == 5.
-    assert robot.plans[0]['robot_collision_radius'] == pytest.approx(0.824)
-    robot.planner_action_client.busy = False  # Failed attempt, no active trajectory.
-    replanner.tick()
-    assert len(robot.plans) == 1  # Backoff applies.
-    replanner._last_recovery_attempt -= 3.
-    replanner.tick()
-    assert len(robot.plans) == 2
-    robot.planner_action_client.busy = False
-    robot.vehicle_cart_traj.active = True
-    replanner.tick()
-    assert mission.executing and mission.active_index == 0
-    assert replanner._paused_goal is None
-
-
-@pytest.mark.parametrize('hardware', [False, True])
-def test_manual_stop_or_hardware_blocks_automatic_resume(hardware):
-    replanner, robot, world, mission = setup(hardware)
-    world.clearance = 0.1
-    replanner.tick()
-    world.clearance = 2.
-    robot.speed = 0.
-    if not hardware:
-        robot.abrupt_planner_stop()  # Explicit user stop invalidates saved goal.
-    replanner.tick()
-    assert not robot.plans
 
 
 def test_scene_or_path_change_invalidates_suppression():
@@ -210,11 +159,11 @@ def test_scene_or_path_change_invalidates_suppression():
     robot.planner_action_client.busy = False
     replanner.tick()
     assert len(robot.plans) == 1
-    world.obstacles['new'] = object()
+    world.obstacles['new'] = SimpleNamespace(**vars(world.obstacles['obstacle']))
     replanner.tick()
     assert len(robot.plans) == 2
     robot.planner_action_client.busy = False
-    replanner._remaining_path_decision = lambda _: ReplanDecision('replan', 'blocked', 'obstacle', 0.12, 'new_path', 4.)
+    replanner._remaining_path_decision = lambda _, **kwargs: ReplanDecision('replan', 'blocked', 'obstacle', 0.12, 'new_path', 4.)
     replanner.tick()
     assert len(robot.plans) == 3
 
@@ -266,38 +215,14 @@ def test_dynamic_monitor_reads_restored_ruckig_without_changing_execution():
     assert generator.out.time == before
 
 
-
 def test_missing_dynamic_world_is_not_reported_as_valid():
     replanner, robot, _, _ = setup()
     robot.vehicle_cart_traj.preview_samples = lambda **kwargs: []
     replanner.backend.dynamic_world = None
     decision = ClearanceHysteresisReplanner._remaining_path_decision(replanner, robot)
     assert decision.should_replan
-    assert decision.reason == 'dynamic world unavailable'
+    assert 'dynamic world unavailable' in decision.reason
     assert decision.t_offset_s == 0.
-
-
-def test_recovery_waits_for_preview_without_skipping_braking():
-    replanner, robot, world, mission = setup()
-    replanner._pause_navigation('test')
-    robot.vehicle_cart_traj.active = True
-    replanner._recovery_sent = True
-    replanner._remaining_path_decision = lambda _: ReplanDecision('pending', 'preview pending')
-    replanner._try_resume()
-    assert not mission.executing
-    assert replanner._paused_goal is not None
-    world.clearance = .1
-    stops = robot.stops
-    replanner._try_resume()
-    assert robot.stops == stops + 1
-    assert not mission.executing
-    world.clearance = 2.
-    robot.vehicle_cart_traj.active = True
-    replanner._recovery_sent = True
-    replanner._remaining_path_decision = lambda _: ReplanDecision('keep', 'timed trajectory valid')
-    replanner._try_resume()
-    assert mission.executing
-    assert replanner._paused_goal is None
 
 
 def test_late_action_acceptance_is_cancelled_and_stale_result_ignored():
@@ -316,9 +241,6 @@ def test_late_action_acceptance_is_cancelled_and_stale_result_ignored():
     client._on_result.assert_not_called()
 
 
-
-
-
 def test_actual_bitstar_mesh_path_to_incremental_ruckig_trajectory(tmp_path):
     import trimesh
     from bringup.obstacle_description import obstacle_from_config
@@ -330,7 +252,9 @@ def test_actual_bitstar_mesh_path_to_incremental_ruckig_trajectory(tmp_path):
     trimesh.creation.box(extents=[.6, .6, .6]).export(mesh)
     obstacle = obstacle_from_config(dict(id='blocking_mesh', type='mesh',
         collision_mesh_resource=str(mesh), collision_mesh_scale=[1., 1., 1.]), 0)
-    dynamic = DynamicWorldModel(Mock(), world_frame='world', robot_radius_provider=lambda: .1)
+    clock_node = Mock()
+    clock_node.get_clock.return_value.now.return_value.nanoseconds = 0
+    dynamic = DynamicWorldModel(clock_node, world_frame='world', robot_radius_provider=lambda: .1)
     snapshot = DynamicObstacleArray(obstacles=[obstacle])
     snapshot.header.frame_id = 'world'
     dynamic.update_from_msg(snapshot)
@@ -348,11 +272,13 @@ def test_actual_bitstar_mesh_path_to_incremental_ruckig_trajectory(tmp_path):
     assert world.in_collision_xyz([-.3, 0., 0.])
 
 
-def test_waypoint_mission_waits_for_busy_planner():
+@pytest.mark.parametrize("settling", [False, True])
+def test_waypoint_mission_waits_for_busy_planner(settling):
     from simlab.uvms_backend import UVMSBackendCore
-    robot = SimpleNamespace(k_robot=0, navigation_blocked_goal=None,
+    robot = SimpleNamespace(k_robot=0,
         control_mode=ControlMode.PLANNER, sim_reset_hold=False,
-        planner_action_client=SimpleNamespace(busy=True),
+        planner_action_client=SimpleNamespace(busy=not settling),
+        _planning_settle_timer=object() if settling else None,
         abrupt_planner_stop=Mock())
     mission = VehicleWaypointMission('test')
     goal = Pose()
@@ -365,3 +291,84 @@ def test_waypoint_mission_waits_for_busy_planner():
     UVMSBackendCore.vehicle_waypoint_execution_callback(backend)
     assert mission.executing and mission.active_index == 0
     robot.abrupt_planner_stop.assert_not_called()
+
+
+def test_planning_action_requires_explicit_scene_robot_identity():
+    from simlab.action import PlanVehicle
+    from simlab.planner_action_server import PlannerActionServer
+    from rclpy.action import GoalResponse
+    request = PlanVehicle.Goal()
+    request.start_xyz = [0.,0.,-1.]
+    request.goal_xyz = [1.,0.,-1.]
+    request.start_quat_wxyz = request.goal_quat_wxyz = [1.,0.,0.,0.]
+    request.robot_collision_radius = .5
+    request.planner_name = 'Bitstar'
+    server = SimpleNamespace(scene_participant=SimpleNamespace(held=False),
+        fcl_world=SimpleNamespace(robot_prefixes={'robot_real_','robot_2_'}),
+        _planners={'Bitstar':None}, _tag='test', get_logger=lambda:Mock())
+    assert PlannerActionServer.goal_callback(server, request) == GoalResponse.REJECT
+    request.robot_prefix = 'robot_real_'
+    assert PlannerActionServer.goal_callback(server, request) == GoalResponse.ACCEPT
+    request.robot_prefix = 'robot_missing_'
+    assert PlannerActionServer.goal_callback(server, request) == GoalResponse.REJECT
+
+
+def test_navigation_clearance_calls_exclude_own_robot():
+    replanner, robot, world, mission = setup()
+    robot.vehicle_cart_traj = SimpleNamespace(preview_samples=lambda **_: [(0.,np.zeros(3))], speed_bound=lambda: 0., preview_position=lambda t: np.zeros(3))
+    ClearanceHysteresisReplanner._remaining_path_decision(replanner, robot)
+    assert world.last_exclude_owner == robot.prefix
+
+
+def test_navigation_signature_tracks_other_robots_and_missing_telemetry():
+    replanner, robot, world, mission = setup()
+    world.obstacles = {'self':SimpleNamespace(owner_robot=robot.prefix, pose=0.),
+                       'other':SimpleNamespace(owner_robot='robot_2_', pose=1.)}
+    original = replanner._world_signature()
+    world.obstacles['self'].pose = 2.
+    assert replanner._world_signature() == original
+    world.obstacles['other'].pose = 2.
+    assert replanner._world_signature() != original
+    updated = replanner._world_signature()
+    world.unavailable_robot_owners.add('robot_2_')
+    assert replanner._world_signature() != updated
+
+
+def test_disabled_auto_replanning_does_not_plan_for_distant_conflict():
+    replanner, robot, world, mission = setup()
+    replanner.backend.dynamic_replanning_enabled = False
+    world.clearance = 10.
+    replanner._remaining_path_decision = lambda _, **kwargs: ReplanDecision('replan', 'distant', 'other', .1, 'path', 30.)
+    replanner.tick()
+    assert robot.stops == 0
+    assert not robot.plans
+
+
+def test_proactive_clearance_requests_replan_without_emergency_hold():
+    replanner, robot, world, _ = setup()
+    robot.speed = 0.
+    world.clearance = .1
+    robot.vehicle_cart_traj.preview_samples = lambda **_: [(0., np.zeros(3)), (1., np.zeros(3))]
+    robot.vehicle_cart_traj.speed_bound = lambda: 0.
+    robot.vehicle_cart_traj.preview_position = lambda t: np.zeros(3)
+    replanner._remaining_path_decision = lambda robot, **kw: ClearanceHysteresisReplanner._remaining_path_decision(replanner, robot, **kw)
+    replanner.tick()
+    assert robot.stops == 0
+    assert len(robot.plans) == 1
+
+
+
+
+@pytest.mark.parametrize('enabled,busy', [(False,False),(True,False),(True,True)])
+def test_collision_replanning_never_interrupts_execution(enabled, busy):
+    replanner, robot, world, mission = setup()
+    replanner.backend.dynamic_replanning_enabled = enabled
+    robot.planner_action_client.busy = busy
+    replanner._remaining_path_decision = lambda *a, **kw: ReplanDecision(
+        'replan', 'overlap', 'obstacle', -.2, 'path', 0.)
+    replanner.tick()
+    assert robot.stops == 0
+    assert robot.vehicle_cart_traj.active
+    assert len(robot.plans) == int(enabled and not busy)
+    if robot.plans:
+        assert robot.plans[0]['preempt_current'] is False

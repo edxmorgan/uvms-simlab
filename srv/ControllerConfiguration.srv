@@ -1,9 +1,11 @@
 # Configure a controller's estimated model, independently of the simulated plant.
-# operation: get or set_model. set_model is allowed only while inactive or held.
+# operation: get, set_model or set_gains. Writes require inactive/held simulation.
 int32 robot_index
 string controller_name
 string operation
 string model_profile
+# set_gains: JSON object of whitelisted gain arrays; no model/limit changes.
+string gains_json
 ---
 bool success
 string message

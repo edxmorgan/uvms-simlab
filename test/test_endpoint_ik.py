@@ -28,8 +28,7 @@ def test_modular_arm_ik_matches_original_casadi_evaluation(target):
     from simlab.robot import Robot
     from types import SimpleNamespace
     original = ca.Function.load(str(ROOT/'model_functions/arm/ik_eval.casadi'))
-    robot = SimpleNamespace(manipulator_ik=ik_class('manipulator_position', task='position')(ROOT))
-    actual = Robot.manipulator_inverse_kinematics(robot, target)
+    actual = ik_class('manipulator_position', task='position')(ROOT).solve(target)
     np.testing.assert_array_equal(actual, original(target).full().flatten().tolist())
 
 
@@ -37,13 +36,28 @@ def test_manipulator_solver_is_selected_per_robot():
     from simlab.robot import Robot
     from types import SimpleNamespace
     from unittest.mock import Mock
-    first = SimpleNamespace(manipulator_ik=Mock())
+    first = SimpleNamespace(get_state=lambda: {"q": [1., 2., 3., 4.]}, manipulator_ik=Mock(), ik_joint_lower=np.zeros(4), ik_joint_upper=np.full(4, 6.))
     second = SimpleNamespace(manipulator_ik=Mock())
     from simlab.motion_planning.kinematics.inverse.base import IKResult, IKStatus
     first.manipulator_ik.solve_request.return_value = IKResult(IKStatus.SUCCESS, joints=(1., 2., 3., 4.))
     assert Robot.manipulator_inverse_kinematics(first, [.1, .2, .3]) == [1., 2., 3., 4.]
     assert first.manipulator_ik.solve_request.call_args.args[0].target_position == [.1, .2, .3]
     second.manipulator_ik.solve_request.assert_not_called()
+
+
+@pytest.mark.parametrize('joints', [(2.4, .97, .55, 0.), (2.4, .97, .55, 5.8),
+                                  (float('nan'), .97, .55, 2.), (2.4, .97, .55)])
+def test_arm_command_rejects_invalid_actuator_endpoint(joints):
+    from simlab.robot import Robot
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from simlab.motion_planning.kinematics.inverse.base import IKResult, IKStatus
+    robot = SimpleNamespace(get_state=lambda: {"q": [2.4, .97, .55, 2.]}, manipulator_ik=Mock(),
+                            ik_joint_lower=np.array([1., .01, .01, .01]),
+                            ik_joint_upper=np.array([5.5, 3.4, 3.4, 5.7]))
+    robot.manipulator_ik.solve_request.return_value = IKResult(IKStatus.SUCCESS, joints=joints)
+    with pytest.raises(ValueError, match='outside actuator limits'):
+        Robot.manipulator_inverse_kinematics(robot, [.2, 0., -.4])
 
 @pytest.mark.parametrize('angle',[0.,90.,179.9,180.])
 def test_full_pose_with_large_orientation_changes(angle):
@@ -59,10 +73,10 @@ def test_full_pose_with_large_orientation_changes(angle):
     assert 1<=len(solver.last_report['attempts'])<=4
 
 
-def test_invalid_start_is_not_wrapped_or_silently_clamped():
+def test_nonfinite_start_is_rejected():
     solver=EndpointIK(ROOT)
     with pytest.raises(ValueError):
-        solver.solve([3.1,.7,.4,-1.],np.zeros(6),np.zeros(3),np.eye(3),P.base_T0_new,P.tipOffset,[.01]*4,[6.27,3.4,3.4,5.7])
+        solver.solve([3.1,.7,.4,float("nan")],np.zeros(6),np.zeros(3),np.eye(3),P.base_T0_new,P.tipOffset,[.01]*4,[6.27,3.4,3.4,5.7])
 
 
 def test_alignment_toggle_preserves_tool_pose_and_changes_posture():
@@ -212,3 +226,106 @@ def test_solver_success_cannot_override_invalid_quaternion():
     z[3:7] = 0.
     with pytest.raises(RuntimeError, match='No converged'):
         solve([(z,cost)]*4)
+
+
+def test_bounded_arm_ik_uses_forward_model_and_preserves_stationary_posture():
+    from simlab.motion_planning.kinematics.inverse.arm import ManipulatorPositionIK
+    from simlab.motion_planning.kinematics.inverse.base import ManipulatorIKRequest
+    solver = ManipulatorPositionIK(ROOT)
+    lower = np.array([1., .01, .01, .01]); upper = np.array([5.5, 3.4, 3.4, 5.7])
+    rng = np.random.default_rng(17)
+    for _ in range(30):
+        q = rng.uniform(lower+.15, upper-.15)
+        goal_q = np.clip(q+rng.uniform(-.08, .08, 4), lower+.1, upper-.1)
+        target = np.asarray(solver.fk(goal_q, np.zeros(6), np.zeros(6), P.tipOffset)[-1]).ravel()[:3]
+        result = solver.solve_request(ManipulatorIKRequest(target, q, lower, upper, P.tipOffset))
+        assert result.success, result.message
+        actual = np.asarray(solver.fk(result.joints, np.zeros(6), np.zeros(6), P.tipOffset)[-1]).ravel()[:3]
+        assert np.linalg.norm(actual-target) < .001
+        assert np.all(np.asarray(result.joints)>=lower) and np.all(np.asarray(result.joints)<=upper)
+        same = solver.solve_request(ManipulatorIKRequest(actual, result.joints, lower, upper, P.tipOffset))
+        np.testing.assert_allclose(same.joints, result.joints, atol=1e-5)
+
+
+def test_bounded_arm_ik_rejects_unreachable_and_invalid_start():
+    from simlab.motion_planning.kinematics.inverse.arm import ManipulatorPositionIK
+    from simlab.motion_planning.kinematics.inverse.base import ManipulatorIKRequest
+    solver = ManipulatorPositionIK(ROOT)
+    for q, target in (([3., .7, .4, 2.], [10., 0., 0.]), ([3., .7, .4, float("nan")], [.2, 0., -.4])):
+        result = solver.solve_request(ManipulatorIKRequest(target, q, [1., .01, .01, .01], [5.5, 3.4, 3.4, 5.7], P.tipOffset))
+        assert not result.success and result.joints is None
+
+
+@pytest.mark.parametrize("joint,bound", [(1, "lower"), (3, "upper")])
+def test_measured_limit_crossing_can_request_bounded_arm_endpoint(joint, bound):
+    from simlab.motion_planning.kinematics.inverse.arm import ManipulatorPositionIK
+    from simlab.motion_planning.kinematics.inverse.base import ManipulatorIKRequest
+    solver = ManipulatorPositionIK(ROOT)
+    lower = np.array([1., .01, .01, .01])
+    upper = np.array([5.5, 3.4, 3.4, 5.7])
+    q = np.array([3.1, .7, .4, 2.1])
+    q[joint] = lower[joint] - .002 if bound == "lower" else upper[joint] + .002
+    original = q.copy()
+    target_q = np.clip(q, lower + .03, upper - .03)
+    target = np.asarray(solver.fk(target_q, np.zeros(6), np.zeros(6), P.tipOffset)[-1]).ravel()[:3]
+    result = solver.solve_request(ManipulatorIKRequest(target, q, lower, upper, P.tipOffset))
+    assert result.success, result.message
+    assert np.all(np.asarray(result.joints) >= lower)
+    assert np.all(np.asarray(result.joints) <= upper)
+    np.testing.assert_array_equal(q, original)
+
+
+def test_whole_body_recovers_logged_shoulder_boundary_without_changing_measurement():
+    from simlab.motion_planning.kinematics.inverse.base import WholeBodyIKRequest
+    solver = EndpointIK(ROOT)
+    q = np.array([3.1433, .00815, 1.2355, 2.2163])
+    original = q.copy()
+    world = np.array([0., 0., -2., 0., 0., 0.])
+    target_q = q.copy(); target_q[1] = .05
+    pose = np.asarray(solver.fk(target_q, P.base_T0_new, world, P.tipOffset)[-1]).ravel()
+    lower = np.array([1., .01, .01, .01]); upper = np.array([5.5, 3.4, 3.4, 5.7])
+    request = WholeBodyIKRequest(q, world, pose[:3], R.from_quat(pose[[4,5,6,3]]).as_matrix(),
+                                P.base_T0_new, P.tipOffset, lower, upper)
+    result = solver.solve_request(request)
+    assert result.success, result.message
+    assert np.all(np.asarray(result.joints) >= lower - 1e-9)
+    assert np.all(np.asarray(result.joints) <= upper + 1e-9)
+    np.testing.assert_array_equal(q, original)
+
+
+def test_stale_feedback_blocks_arm_ik_before_solver():
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from simlab.robot import Robot
+    robot = SimpleNamespace(execution_gate=SimpleNamespace(ready=lambda: False),
+                            manipulator_ik=Mock(), node=SimpleNamespace(get_logger=lambda: Mock()))
+    with pytest.raises(ValueError, match="fresh feedback"):
+        Robot.manipulator_inverse_kinematics(robot, [.2, 0., -.4])
+    Robot.solve_inverse_kinematics_wrt_world_frame(robot, None)
+    robot.manipulator_ik.solve_request.assert_not_called()
+
+
+def test_launch_surface_target_respects_vehicle_bounds():
+    from simlab.motion_planning.kinematics.inverse.base import WholeBodyIKRequest
+    solver = EndpointIK(ROOT)
+    bounds = np.array([[-22.896, 22.886], [-14.744, 14.744], [-7.99, -.01]])
+    request = WholeBodyIKRequest(
+        [3.143642187, 1.602542639, 2.525663614, 3.611781836],
+        [-2.3461732255, -2.5980310929, 0., 0., 0., 2.0906],
+        [-2.629632977, -1.866612911, -.220351714],
+        R.from_quat([1., 0., 0., 0.]).as_matrix(), P.base_T0_new, P.tipOffset,
+        [1., .01, .01, .01], [5.5, 3.4, 3.4, 5.7], vehicle_bounds=bounds)
+    result = solver.solve_request(request)
+    assert result.success, result.message
+    xyz = np.asarray(result.vehicle_pose)[:3]
+    assert np.all(xyz >= bounds[:, 0]-1e-9)
+    assert np.all(xyz <= bounds[:, 1]+1e-9)
+    assert result.diagnostics['position_error_m'] < 1e-6
+
+
+def test_invalid_vehicle_bounds_rejected():
+    solver = EndpointIK(ROOT)
+    with pytest.raises(ValueError, match='Vehicle bounds'):
+        solver.solve([3.1,.7,.4,2.1], np.zeros(6), np.zeros(3), np.eye(3),
+                     P.base_T0_new, P.tipOffset, [.01]*4, [6.27,3.4,3.4,5.7],
+                     vehicle_bounds=[[0,0]]*3)

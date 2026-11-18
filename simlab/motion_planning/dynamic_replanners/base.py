@@ -29,8 +29,6 @@ class DynamicReplannerTemplate(ABC):
         cooldown_s: float | None = None,
         lookahead_time_s: float | None = None,
         safety_margin_m: float | None = None,
-        collision_stop_enabled: bool | None = None,
-        collision_stop_margin_m: float | None = None,
         replan_hysteresis_m: float | None = None,
     ) -> None:
         pass

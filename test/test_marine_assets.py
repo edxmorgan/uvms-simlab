@@ -83,7 +83,7 @@ def test_marine_markers_use_original_materials_not_orange():
         _marker_type=DynamicObstacleTransport._marker_type,
         _set_marker_scale=DynamicObstacleTransport._set_marker_scale,
         _marker_mesh_resource=DynamicObstacleTransport._marker_mesh_resource)
-    DynamicObstacleTransport._publish_markers(node)
+    DynamicObstacleTransport._publish_markers(node, node.obstacles)
     marker = node.marker_publisher.publish.call_args.args[0].markers[0]
     assert marker.mesh_use_embedded_materials
     assert marker.mesh_resource.endswith('.dae')

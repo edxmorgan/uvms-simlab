@@ -30,8 +30,9 @@ def test_joint_mode_preserves_trajectory_derivatives():
 
 @pytest.mark.parametrize("axis", [[1.,0.,0.], [0.,1.,0.], [0.,0.,1.]])
 @pytest.mark.parametrize('conversion_ok', [True, False])
+@pytest.mark.parametrize('collision_clear', [True, False])
 @pytest.mark.parametrize('turns', [-3, 0, 3])
-def test_accepted_ik_endpoint_clears_derivatives(axis, conversion_ok, turns):
+def test_accepted_ik_endpoint_clears_derivatives(axis, conversion_ok, turns, collision_clear):
     # Exercise the production acceptance path with frame conversion supplied.
     import numpy as np
     from unittest.mock import Mock
@@ -58,6 +59,15 @@ def test_accepted_ik_endpoint_clears_derivatives(axis, conversion_ok, turns):
     previous_joints = list(r.arm.q_command)
     if not conversion_ok:
         r.world_nwu_to_map_ned = lambda **kwargs: None
+    r._ik_resource_directory = Path(__file__).resolve().parents[1]/'resource'
+    r.execution_gate = Mock()
+    r.authorize_motion = lambda: True
+    r.enable_planner_output = Mock()
+    r.task_vehicle_bounds_provider = lambda: np.array([[-25.,25.],[-25.,25.],[-8.,-.01]])
+    r.task_motion_validator = Mock(side_effect=None if collision_clear else ValueError("blocked translation"))
+    r._accept_task_ik = lambda request, result: Robot._accept_task_ik(r, request, result)
+    # Test command acceptance independently of process scheduling.
+    r._submit_motion_calculation = lambda function, args, apply, **kwargs: apply(r.endpoint_ik.solve_request(args[-1]))
     r.endpoint_ik.solve=Mock(wraps=r.endpoint_ik.solve)
     Robot.solve_inverse_kinematics_wrt_world_frame(r,target)
     assert r.endpoint_ik.solve.call_args.kwargs["base_align_weight"]==1.
@@ -66,7 +76,7 @@ def test_accepted_ik_endpoint_clears_derivatives(axis, conversion_ok, turns):
     np.testing.assert_allclose(r.endpoint_ik.solve.call_args.args[3][:,2],marker_rotation@axis,atol=1e-10)
     assert r.endpoint_ik.last_report['position_error_m']<1e-6
     assert r.endpoint_ik.last_report['orientation_error_rad']<1e-6
-    if conversion_ok:
+    if conversion_ok and collision_clear:
         assert abs(r.pose_command[5]-r.ned_pose[5]) <= np.pi
         # Branch selection must preserve the solved orientation exactly.
         solved = r.endpoint_ik.solve.call_args

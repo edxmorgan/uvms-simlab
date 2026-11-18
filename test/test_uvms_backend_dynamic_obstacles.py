@@ -108,3 +108,135 @@ def test_live_snapshot_updates_recording_without_aliasing(monkeypatch):
     assert recorded.obstacles[0].position == 3.0
     recorded.obstacles[0].position = 9.0
     assert backend.dynamic_obstacle_snapshot.obstacles[0].position == 3.0
+
+
+def test_generated_robots_are_not_replayed_as_editable_obstacles(monkeypatch):
+    backend = _backend(monkeypatch, success=True)
+    from ros2_control_blue_reach_5.msg import DynamicObstacleArray, DynamicObstacle
+    scene = DynamicObstacleArray()
+    scene.header.frame_id = 'world'
+    scripted = DynamicObstacle(id='box', source='scripted')
+    observed = DynamicObstacle(id='robot/robot_2_', source='robot', owner_robot='robot_2_')
+    scene.obstacles = [scripted, observed]
+    assert backend._apply_dynamic_obstacles(scene, 'recorded scene')
+    request = backend.obstacle_edit_client.requests[-1]
+    assert [obstacle.id for obstacle in request.obstacles.obstacles] == ['box']
+    assert len(scene.obstacles) == 2
+
+
+
+
+
+
+
+
+def test_collision_geometry_refresh_does_not_command_robots():
+    from unittest.mock import Mock
+    from simlab.uvms_backend import UVMSBackendCore
+    backend = UVMSBackendCore.__new__(UVMSBackendCore)
+    backend.fcl_world = Mock()
+    backend.tf_buffer = Mock()
+    robot = Mock()
+    backend.robots = [robot]
+    backend.fcl_update_callback()
+    backend.fcl_world.update_from_tf.assert_called_once()
+    assert robot.mock_calls == []
+
+
+def test_replanning_timer_exists_only_while_enabled():
+    from unittest.mock import Mock
+    from simlab.uvms_backend import UVMSBackendCore
+    backend = UVMSBackendCore.__new__(UVMSBackendCore)
+    backend.node = Mock()
+    backend.dynamic_replanning_enabled = False
+    backend.dynamic_replanning_rate = 3.
+    backend.dynamic_replanner_timer = None
+    backend._dynamic_replanning_status_message = lambda: 'status'
+    backend._recreate_dynamic_replanner_timer()
+    backend.node.create_timer.assert_not_called()
+    backend._enable_dynamic_replanning()
+    timer = backend.dynamic_replanner_timer
+    assert timer is not None
+    backend.node.create_timer.assert_called_once()
+    backend._disable_dynamic_replanning()
+    timer.cancel.assert_called_once()
+    backend.node.destroy_timer.assert_called_once_with(timer)
+    assert backend.dynamic_replanner_timer is None
+
+
+def test_queued_waypoint_cannot_take_over_joystick():
+    from unittest.mock import Mock
+    from simlab.robot import ControlMode
+    from simlab.uvms_backend import UVMSBackendCore
+    backend = UVMSBackendCore.__new__(UVMSBackendCore)
+    robot = Mock(control_mode=ControlMode.TELEOP)
+    mission = Mock(executing=True, active_index=None)
+    assert not backend._dispatch_vehicle_waypoint_if_ready(robot, mission)
+    mission.stop.assert_called_once()
+    robot.set_control_mode.assert_not_called()
+    robot.plan_vehicle_trajectory_action.assert_not_called()
+
+
+def test_late_replay_reset_cannot_override_mode_roundtrip():
+    from unittest.mock import Mock
+    from simlab.robot import ControlMode
+    from simlab.uvms_backend import UVMSBackendCore
+    backend = UVMSBackendCore.__new__(UVMSBackendCore)
+    controller = Mock(execution_id=1)
+    controller.playback_status.return_value = 'idle'
+    controller.vehicle_subsystem_mode.return_value = 'direct'
+    controller.manipulator_subsystem_mode.return_value = 'direct'
+    controller.reset_mode.return_value = 'simulator'
+    backend._cmd_replay_controller = lambda robot: controller
+    robot = Mock(controller_name='CmdReplay', _replay_reset_pending=False,
+                 control_mode=ControlMode.REPLAY, _control_mode_epoch=2)
+    assert backend.start_replay(robot)[0]
+    controller.playback_status.return_value = 'resetting'
+    callback = robot.reset_simulation_with_state.call_args.kwargs['on_success']
+    robot._control_mode_epoch = 4 # REPLAY -> TELEOP -> REPLAY
+    callback()
+    robot.set_control_mode.assert_not_called()
+    controller.mark_reset_succeeded.assert_not_called()
+
+
+def test_delayed_waypoint_release_cannot_restart_after_mode_roundtrip():
+    from unittest.mock import Mock
+    from simlab.robot import ControlMode
+    from simlab.uvms_backend import UVMSBackendCore
+    backend = UVMSBackendCore.__new__(UVMSBackendCore)
+    backend.node = Mock()
+    robot = Mock(k_robot=0, control_mode=ControlMode.PLANNER, sim_reset_hold=True,
+                 task_based_controller=False, _control_mode_epoch=1)
+    backend.robot_selected = robot
+    mission = Mock(executing=False, waypoints=[object()])
+    backend.vehicle_waypoint_missions = {0: mission}
+    backend._dispatch_vehicle_waypoint_if_ready = Mock()
+    assert backend.execute_selected_vehicle_waypoints()
+    callback = robot.release_simulation.call_args.kwargs['on_success']
+    robot._control_mode_epoch = 3
+    callback()
+    mission.start.assert_not_called()
+    backend._dispatch_vehicle_waypoint_if_ready.assert_not_called()
+
+
+def test_stop_replay_clears_preparation_without_stale_callback_rearming():
+    from unittest.mock import Mock
+    from simlab.robot import ControlMode
+    from simlab.uvms_backend import UVMSBackendCore
+    backend = UVMSBackendCore.__new__(UVMSBackendCore)
+    controller = Mock(execution_id=1)
+    controller.playback_status.return_value = 'idle'
+    controller.vehicle_subsystem_mode.return_value = 'direct'
+    controller.manipulator_subsystem_mode.return_value = 'direct'
+    controller.reset_mode.return_value = 'simulator'
+    backend._cmd_replay_controller = lambda robot: controller
+    robot = Mock(controller_name='CmdReplay', _replay_reset_pending=False,
+                 control_mode=ControlMode.REPLAY, _control_mode_epoch=2)
+    assert backend.start_replay(robot)[0]
+    callback = robot.reset_simulation_with_state.call_args.kwargs['on_success']
+    assert robot._replay_reset_pending
+    backend.stop_replay(robot)
+    assert not robot._replay_reset_pending
+    callback()
+    controller.mark_reset_succeeded.assert_not_called()
+    assert backend.start_replay(robot)[0]

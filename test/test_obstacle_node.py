@@ -223,3 +223,114 @@ def test_robot_menu_has_no_obstacle_controls():
     assert '"Dynamic Obstacles"' not in source
     assert 'clear_dynamic_obstacles_handle' not in source
     assert 'enable_dynamic_replanning_handle' not in source
+
+
+def transport_snapshot_fixture():
+    """Exercise composition without DDS, robot commands, or source integration."""
+    from types import SimpleNamespace as NS
+    from geometry_msgs.msg import TransformStamped
+    from rclpy.time import Time
+    from bringup.dynamic_obstacle_sim import DynamicObstacleTransport
+    from ros2_control_blue_reach_5.msg import DynamicObstacleArray
+    tf = TransformStamped()
+    tf.header.stamp = Time(seconds=9.9).to_msg()
+    tf.transform.rotation.w = 1.
+    tf.transform.translation.x = 2.
+    node = NS(world_frame='world', obstacles=DynamicObstacleArray(obstacles=[item()]),
+        robot_base_frames=['robot_1_base_link'], robot_collision_radius=.574,
+        robot_feedback_timeout=.5, _robot_history={},
+        tf_buffer=Mock(), get_clock=lambda:NS(now=lambda:Time(seconds=10.)),
+        _robot_owner=DynamicObstacleTransport._robot_owner)
+    node.tf_buffer.lookup_transform.return_value = tf
+    return node, tf
+
+
+def test_robot_composition_preserves_editable_store_and_clear_keeps_robot():
+    from bringup.dynamic_obstacle_sim import DynamicObstacleTransport
+    node, _ = transport_snapshot_fixture()
+    original = list(node.obstacles.obstacles)
+    snapshot = DynamicObstacleTransport._compose_snapshot(node)
+    assert node.obstacles.obstacles == original
+    assert [o.source for o in snapshot.obstacles] == ['scripted', 'robot']
+    assert snapshot.obstacles[0].stamp == snapshot.header.stamp
+    robot = snapshot.obstacles[-1]
+    assert robot.owner_robot == 'robot_1_' and robot.id == 'robot/robot_1_'
+    assert list(robot.collision_dimensions) == [.574]
+    assert not robot.velocity_valid
+    assert robot.stamp != snapshot.header.stamp
+    assert not snapshot.unavailable_robot_owners
+    node.obstacles.obstacles.clear()
+    snapshot = DynamicObstacleTransport._compose_snapshot(node)
+    assert [o.owner_robot for o in snapshot.obstacles] == ['robot_1_']
+
+
+def test_robot_velocity_requires_fresh_tf_samples_and_duplicate_retains_estimate():
+    from rclpy.time import Time
+    from bringup.dynamic_obstacle_sim import DynamicObstacleTransport
+    node, tf = transport_snapshot_fixture()
+    DynamicObstacleTransport._compose_snapshot(node)
+    tf.header.stamp = Time(seconds=9.95).to_msg()
+    tf.transform.translation.x += .1
+    robot = DynamicObstacleTransport._compose_snapshot(node).obstacles[-1]
+    assert robot.velocity_valid and robot.twist.linear.x == pytest.approx(2.)
+    duplicate = DynamicObstacleTransport._compose_snapshot(node).obstacles[-1]
+    assert duplicate.velocity_valid and duplicate.twist == robot.twist
+    tf.header.stamp = Time(seconds=9.8).to_msg()
+    assert not DynamicObstacleTransport._compose_snapshot(node).obstacles[-1].velocity_valid
+
+
+@pytest.mark.parametrize('failure', ['missing', 'stale', 'future', 'invalid'])
+def test_unavailable_robot_is_explicit_and_resets_velocity_history(failure):
+    from rclpy.time import Time
+    from bringup.dynamic_obstacle_sim import DynamicObstacleTransport
+    node, tf = transport_snapshot_fixture()
+    DynamicObstacleTransport._compose_snapshot(node)
+    if failure == 'missing':
+        node.tf_buffer.lookup_transform.side_effect = RuntimeError('missing TF')
+    elif failure == 'stale':
+        tf.header.stamp = Time(seconds=9.).to_msg()
+    elif failure == 'future':
+        tf.header.stamp = Time(seconds=11.).to_msg()
+    else:
+        tf.transform.translation.x = float('nan')
+    snapshot = DynamicObstacleTransport._compose_snapshot(node)
+    assert snapshot.unavailable_robot_owners == ['robot_1_']
+    assert [o.id for o in snapshot.obstacles] == ['one']
+    assert not node._robot_history
+
+
+def test_static_robot_transform_has_known_zero_velocity_and_no_proxy_visual():
+    from builtin_interfaces.msg import Time
+    from bringup.dynamic_obstacle_sim import DynamicObstacleTransport
+    from bringup.obstacle_description import visual_geometry
+    node, tf = transport_snapshot_fixture()
+    tf.header.stamp = Time()
+    robot = DynamicObstacleTransport._compose_snapshot(node).obstacles[-1]
+    assert robot.velocity_valid and robot.twist.linear.x == 0.
+    assert visual_geometry(robot) == (0, (), '')
+
+
+def test_robot_generated_identity_is_not_editable(node):
+    robot = item()
+    robot.id = 'robot/robot_1_'
+    assert not edit(node, 'add', robot).success
+    robot.id = 'spoof'
+    robot.owner_robot = 'robot_1_'
+    assert not edit(node, 'add', robot).success
+
+
+def test_spawn_robot_positions_share_snapshot_freshness():
+    from bringup.dynamic_obstacle_sim import DynamicObstacleTransport
+    from rclpy.time import Time
+    node, tf = transport_snapshot_fixture()
+    node._compose_snapshot = lambda: DynamicObstacleTransport._compose_snapshot(node)
+    assert DynamicObstacleTransport._current_robot_positions(node) == {
+        'robot_1_base_link': (2., 0., 0.)}
+    tf.header.stamp = Time(seconds=9.).to_msg()
+    with pytest.raises(ValueError, match='stale robot poses: robot_1_'):
+        DynamicObstacleTransport._current_robot_positions(node)
+
+
+def test_standalone_radius_uses_shared_workspace_configuration(node):
+    from simlab.utils.geometry import robot_obstacle_radius
+    assert node.robot_collision_radius == robot_obstacle_radius()

@@ -343,3 +343,107 @@ def test_hover_success_can_avoid_episode_termination():
     assert not np.any(dones)
     assert info.task["success_rate"] == pytest.approx(1.0)
     assert info.task["success_now_rate"] == pytest.approx(1.0)
+
+
+@pytest.fixture(params=['cpu', 'gpu'])
+def native_batch(request):
+    suffix = '_batch_uvms_core' if request.param == 'cpu' else '_batch_uvms_gpu_core'
+    module = pytest.importorskip('ros2_control_blue_reach_5.' + suffix)
+    core = module.BatchUvmsCore(2)
+    initial = np.zeros((2, module.OBSERVATION_DIM))
+    initial[:, 2] = 2.
+    initial[:, 12:17] = [3.1, .7, .4, 2.1, .006]
+    core.reset(True, initial)
+    return core, initial
+
+
+def _batch_snapshot(core):
+    return (core.observations().copy(), core.actions().copy(), core.sim_time,
+            core.step_count, core.tick_id, core.commands_held)
+
+
+def _assert_batch_unchanged(core, before):
+    after = _batch_snapshot(core)
+    np.testing.assert_array_equal(after[0], before[0])
+    np.testing.assert_array_equal(after[1], before[1])
+    assert after[2:] == before[2:]
+
+
+@pytest.mark.parametrize('dt', [0., -.005, float('nan'), float('inf'), 5.01])
+@pytest.mark.parametrize('held', [True, False])
+def test_batch_invalid_step_is_atomic(native_batch, dt, held):
+    core, initial = native_batch
+    core.reset(held, initial)
+    before = _batch_snapshot(core)
+    with pytest.raises(RuntimeError):
+        core.step(dt)
+    _assert_batch_unchanged(core, before)
+
+
+@pytest.mark.parametrize('dt', [.001, .005, .02])
+def test_batch_explicit_step_hold_release_and_reset(native_batch, dt):
+    core, initial = native_batch
+    core.step(dt)
+    np.testing.assert_array_equal(core.observations(), initial)
+    assert core.commands_held
+    # Batch holds physics, but each explicit call still advances its logical tick.
+    assert core.sim_time == pytest.approx(dt)
+    assert core.step_count == 1 and core.tick_id == 2
+    actions = np.zeros_like(core.actions()); actions[:, 0] = .2
+    core.set_actions(actions, 42)
+    assert not core.commands_held
+    core.step(dt)
+    assert np.isfinite(core.observations()).all()
+    assert not np.array_equal(core.observations(), initial)
+    assert core.sim_time == pytest.approx(2*dt)
+    assert core.step_count == 2 and core.tick_id == 42
+    core.reset(True, initial)
+    np.testing.assert_array_equal(core.observations(), initial)
+    np.testing.assert_array_equal(core.actions(), 0.)
+    assert core.sim_time == 0. and core.step_count == 0. and core.tick_id == 1
+    assert core.commands_held
+    core.reset()
+    assert not core.commands_held and core.tick_id == 0 and core.sim_time == 0.
+
+
+def test_batch_invalid_mutations_preserve_active_state(native_batch):
+    core, _ = native_batch
+    core.set_actions(np.ones_like(core.actions())*.01, 8)
+    core.step(.005)
+    before = _batch_snapshot(core)
+    for operation in (lambda: core.reset(True, np.zeros(3)),
+                      lambda: core.set_actions(np.zeros(3), 99),
+                      lambda: core.set_observations(np.zeros(3))):
+        with pytest.raises(ValueError):
+            operation()
+        _assert_batch_unchanged(core, before)
+
+
+def test_batch_concurrent_steps_are_serialized(native_batch):
+    from concurrent.futures import ThreadPoolExecutor
+    core, initial = native_batch
+    actions = np.zeros_like(core.actions())
+    core.set_actions(actions, 1)
+    for _ in range(40):
+        core.step(.001)
+    expected = _batch_snapshot(core)
+    core.reset(True, initial)
+    core.set_actions(actions, 1)
+    def advance():
+        for _ in range(20):
+            core.step(.001)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(advance) for _ in range(2)]
+        for future in futures:
+            future.result()
+    _assert_batch_unchanged(core, expected)
+
+
+@pytest.mark.parametrize('field', ['control_dt', 'sim_dt'])
+@pytest.mark.parametrize('value', [0., -.01, float('nan'), float('inf')])
+def test_rl_timing_rejects_nonfinite_and_nonpositive_before_core_creation(field, value):
+    kwargs = dict(robot_count=1, control_dt=.01, sim_dt=.005, backend='cpu',
+                  dynamics_profile='dory_alpha')
+    kwargs[field] = value
+    with pytest.raises(ValueError, match=field + ' must be finite and positive'):
+        UvmsBatchEnv(**kwargs)

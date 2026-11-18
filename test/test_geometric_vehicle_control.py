@@ -100,7 +100,7 @@ def test_geometric_clf_directional_derivative_and_invariance():
     f = c.A_b_V_func
     s = c.ss
     matrices = ca.Function('weights', [s.opt_weight], [s.Q1,s.Q2,s.Q3])
-    weights = np.ones(24)*.2
+    weights = np.r_[[.2,.2,.2,.1,.8,.3], [.3,.3,.3,.2,.5,.4], np.ones(6)*.04, np.ones(6)*.2]
     Q1,Q2,Q3 = [np.asarray(v) for v in matrices(weights)]
     rng = np.random.default_rng(774)
     log = ca.Function.load(str(ROOT/'rotation_log.casadi'))
@@ -119,8 +119,8 @@ def test_geometric_clf_directional_derivative_and_invariance():
             for actual,expected in zip(results,(A,b,V)):
                 np.testing.assert_allclose(actual,expected,atol=1e-10)
         R,Rd=G(q[3:])[:3,:3],G(qr[3:])[:3,:3]
-        error=np.r_[q[:3]-qr[:3],-R@np.asarray(log(R.T@Rd)).ravel()]
-        dv=G(q[3:])@v-G(qr[3:])@vr
+        error=np.r_[q[:3]-qr[:3],-np.asarray(log(R.T@Rd)).ravel()]
+        dv=np.r_[R@v[:3]-Rd@vr[:3],v[3:]-R.T@Rd@vr[3:]]
         decay=.5*error@Q1@error+.5*dv@Q2@dv+dv@Q3@error
         def step(q,v,a,t):
             rotation=Rotation.from_euler('xyz',q[3:])

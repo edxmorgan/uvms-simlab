@@ -39,10 +39,15 @@ class CollisionNode(Node):
         self.tf = TransformListener(self.tf_buf, self)
         self.contact_pub = self.create_publisher(Marker, 'contact_markers', 100)
 
+        from simlab.environment_scene import attach_contact
+        attach_contact(self)
+
         # 20 Hz
         self.timer = self.create_timer(0.05, self.tick)
 
     def tick(self):
+        if self.scene_participant.held:
+            return
         if not rclpy.ok():
             return
         # clear old markers
@@ -57,8 +62,9 @@ class CollisionNode(Node):
             return
 
         try:
-            if self.dynamic_world.error:
-                raise RuntimeError(self.dynamic_world.error)
+            error = self.dynamic_world.availability_error()
+            if error:
+                raise RuntimeError(error)
             self.world.set_dynamic_bodies(self.dynamic_world.bodies)
             if not self.world.update_from_tf(self.tf_buf, rclpy.time.Time()):
                 raise RuntimeError(f"missing TF: {', '.join(self.world.missing_frames)}")

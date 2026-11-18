@@ -12,6 +12,7 @@ from geometry_msgs.msg import WrenchStamped
 from rclpy.qos import qos_profile_sensor_data
 from simlab.motion_planning.kinematics.forward.tool_wrench import ToolWrenchMapper
 from simlab.uvms_parameters_sim import ReachParams
+from simlab.shutdown import spin_until_shutdown
 
 import rclpy
 from rclpy.action import ActionServer, GoalResponse, CancelResponse
@@ -77,17 +78,6 @@ class DisturbanceInjectionNode(Node):
         if not self.joint_states or time.monotonic()-self.joint_states[-1][1] >= .5:
             raise ValueError('Task disturbance needs fresh joint-state telemetry')
         msg = self.joint_states[-1][0]
-        if frame == 'world':
-            try:
-                latest = self.tf_buffer.lookup_transform('world', self.prefix+'base_link', rclpy.time.Time())
-                limit = rclpy.time.Time.from_msg(latest.header.stamp).nanoseconds
-                msg = next((m for m, receipt in reversed(self.joint_states)
-                    if time.monotonic()-receipt < .5
-                    and rclpy.time.Time.from_msg(m.header.stamp).nanoseconds <= limit), None)
-                if msg is None:
-                    raise ValueError('No fresh joint state overlaps the world/body TF history')
-            except tf2_ros.TransformException as error:
-                raise ValueError('Task disturbance world/body transform unavailable: '+str(error)) from error
         stamp = rclpy.time.Time.from_msg(msg.header.stamp)
         age = (self.get_clock().now()-stamp).nanoseconds/1e9
         if not 0. <= age < .5:
@@ -100,9 +90,18 @@ class DisturbanceInjectionNode(Node):
         rotation = None
         if frame == 'world':
             try:
-                transform = self.tf_buffer.lookup_transform('world', self.prefix+'base_link', stamp)
+                # Injection belongs to the simulated plant: use its physical
+                # attitude, not the EKF pose published as body TF. Only the
+                # static placement of the robot's map comes from TF.
+                vehicle = rows.get(self.prefix+'IOs', {})
+                attitude = np.array([vehicle.get(k, np.nan) for k in ('roll', 'pitch', 'yaw')])
+                if not np.all(np.isfinite(attitude)):
+                    raise ValueError('Physical vehicle attitude unavailable for wrench injection')
+                transform = self.tf_buffer.lookup_transform('world', self.prefix+'map', stamp)
                 q = transform.transform.rotation
-                rotation = Rotation.from_quat([q.x, q.y, q.z, q.w]).as_matrix()
+                world_from_map = Rotation.from_quat([q.x, q.y, q.z, q.w]).as_matrix()
+                convention = np.diag([1., -1., -1.])
+                rotation = world_from_map @ convention @ Rotation.from_euler('xyz', attitude).as_matrix() @ convention
             except (tf2_ros.TransformException, ValueError) as error:
                 raise ValueError('Task disturbance world/body transform unavailable: '+str(error)) from error
         if self.task_mapper is None:
@@ -295,9 +294,7 @@ def main(args=None):
     executor = SingleThreadedExecutor()
     executor.add_node(node)
     try:
-        executor.spin()
-    except (KeyboardInterrupt, rclpy.executors.ExternalShutdownException):
-        pass
+        spin_until_shutdown(node, executor)
     finally:
         # If ROS has already shut down, the receiver watchdog clears the lease.
         if node.run is not None and rclpy.ok():

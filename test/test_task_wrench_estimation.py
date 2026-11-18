@@ -83,7 +83,7 @@ def test_observer_locked_and_stale(monkeypatch):
                 data['estimator_joint_locked.'+key[-1]] = 1.
                 data['estimator_joint_at_limit.'+key[-1]] = 0.
                 data['estimator_disturbance_observable.'+key[-1]] = 0.
-        rows.update({'robot_1__axis_'+axis: {'position': value} for axis, value in zip('edcb', q)})
+        rows.update({'robot_1__axis_'+axis: {'filtered_position': value, 'position': value + 1.0} for axis, value in zip('edcb', q)})
         message = DynamicJointState()
         message.header.stamp = node.get_clock().now().to_msg()
         message.joint_names = list(rows)
@@ -179,7 +179,7 @@ def test_observer_preserves_arm_covariance_and_masks_unavailable_arm(monkeypatch
             rows[prefix].update({f'estimated_disturbance.covariance.{i}.{j}':
                                 float(covariance[start+i,start+j])
                                 for i in range(count) for j in range(count)})
-        rows.update({'robot_1__axis_'+axis: {'position': value} for axis,value in zip('edcb',q)})
+        rows.update({'robot_1__axis_'+axis: {'filtered_position': value, 'position': value + 1.0} for axis,value in zip('edcb',q)})
         def publish():
             message = DynamicJointState()
             message.header.stamp = node.get_clock().now().to_msg()

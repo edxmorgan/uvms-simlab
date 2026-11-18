@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+import copy
 from dataclasses import dataclass
 from typing import Callable
 
@@ -25,6 +27,11 @@ class DynamicObstacleState:
     collision_dimensions: tuple[float, ...]
     collision_mesh_resource: str = ""
     collision_mesh_scale: tuple[float, ...] = ()
+    owner_robot: str = ""
+    source: str = "scripted"
+    sample_age_at_receipt: float = 0.0
+    velocity_valid: bool = True
+    sample_timestamped: bool = False
 
 
 @dataclass(frozen=True)
@@ -43,12 +50,19 @@ class DynamicWorldModel:
         world_frame: str,
         robot_radius_provider: Callable[[], float],
         topic: str = "/dynamic_obstacles",
+        snapshot_timeout: float = 1.0,
     ):
         self.node = node
         self.world_frame = world_frame
         self.robot_radius_provider = robot_radius_provider
         self.obstacles: dict[str, DynamicObstacleState] = {}
-        self._warned_frame_mismatch = False
+        self.snapshot_timeout = float(snapshot_timeout)
+        if not np.isfinite(self.snapshot_timeout) or self.snapshot_timeout <= 0:
+            raise ValueError('snapshot_timeout must be finite and positive')
+        self._received_at = None
+        self._snapshot_at = None
+        self._transport_age = 0.
+        self.unavailable_robot_owners: set[str] = set()
         self.error: str | None = "waiting for initial dynamic obstacle snapshot"
         self.bodies: list[dict] = []
 
@@ -64,6 +78,59 @@ class DynamicWorldModel:
             self._obstacles_callback,
             qos,
         )
+
+    def _query_time(self):
+        return time.monotonic() if self._snapshot_at is None else self._snapshot_at
+
+    def snapshot(self):
+        """Read-only, request-local world at admission time.
+
+        A planning solve must not change obstacle positions as its CPU time
+        advances. Live execution monitors continue querying the subscribed model.
+        Freshness is evaluated at snapshot admission, including source sample age.
+        """
+        result = copy.copy(self)
+        result._snapshot_at = self._query_time()
+        result.obstacles = self.obstacles.copy()
+        result.unavailable_robot_owners = self.unavailable_robot_owners.copy()
+        result.bodies = list(self.bodies)
+        result.subscription = None
+        return result
+
+
+    @property
+    def error(self):
+        return self.availability_error()
+
+    def availability_error(self, exclude_owner=''):
+        """One freshness/availability contract for every scene consumer."""
+        if self._error:
+            return self._error
+        if self._received_at is None:
+            return 'waiting for initial dynamic obstacle snapshot'
+        elapsed = self._transport_age + self._query_time() - self._received_at
+        if elapsed > self.snapshot_timeout:
+            return 'stale dynamic obstacle snapshot'
+        unavailable = self.unavailable_robot_owners - {exclude_owner}
+        if unavailable:
+            return 'missing robot obstacle poses: ' + ', '.join(sorted(unavailable))
+        for obstacle in self.obstacles.values():
+            if exclude_owner and obstacle.owner_robot == exclude_owner:
+                continue
+            if obstacle.sample_age_at_receipt + elapsed > self.snapshot_timeout:
+                return 'stale obstacle sample: ' + obstacle.obstacle_id
+        return None
+
+    @error.setter
+    def error(self, value):
+        self._error = value
+
+    @property
+    def external_bodies(self):
+        return [body for body in self.bodies if body['source'] != 'robot']
+
+    def bodies_for(self, exclude_owner=''):
+        return [body for body in self.bodies if not exclude_owner or body['owner'] != exclude_owner]
 
     def close(self) -> None:
         self.obstacles.clear()
@@ -86,19 +153,37 @@ class DynamicWorldModel:
             self.error = error
 
     def _accept_snapshot(self, msg: DynamicObstacleArray) -> None:
-        frame_id = msg.header.frame_id or self.world_frame
+        frame_id = msg.header.frame_id
         if frame_id != self.world_frame:
             raise ValueError(f"obstacle frame '{frame_id}' does not match '{self.world_frame}'")
 
+        snapshot_stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        # A retained DDS sample can be old when first received. Receipt time
+        # alone must not make that sample fresh again. Zero ROS time denotes an
+        # unstarted clock; zero-stamped local snapshots have no transport age.
+        now_ns = self.node.get_clock().now().nanoseconds
+        transport_age = max(0., now_ns * 1e-9 - snapshot_stamp) if (
+            now_ns > 0 and snapshot_stamp > 0) else 0.
+        unavailable = set(msg.unavailable_robot_owners)
         next_obstacles: dict[str, DynamicObstacleState] = {}
         next_bodies = []
         old_bodies = {body['name']: body for body in self.bodies}
         seen = set()
-        for index, obstacle in enumerate(msg.obstacles):
-            obstacle_id = obstacle.id.strip() or f"obstacle_{index}"
+        for obstacle in msg.obstacles:
+            obstacle_id = obstacle.id.strip()
+            if not obstacle_id:
+                raise ValueError('obstacle id must not be empty')
             if obstacle_id in seen:
                 raise ValueError(f"duplicate obstacle id: {obstacle_id}")
             seen.add(obstacle_id)
+            source = obstacle.source
+            owner = obstacle.owner_robot
+            if source not in ('scripted', 'robot') or (source == 'robot') != bool(owner):
+                raise ValueError(f'invalid obstacle ownership/source: {obstacle_id}')
+            if owner in unavailable:
+                raise ValueError(f'robot is both available and unavailable: {owner}')
+            sample_stamp = obstacle.stamp.sec + obstacle.stamp.nanosec * 1e-9
+            sample_age = max(0., snapshot_stamp - sample_stamp) if sample_stamp else 0.
             if obstacle.collision_type == DynamicObstacle.GEOMETRY_NONE:
                 continue
             center_world = np.array(
@@ -112,11 +197,9 @@ class DynamicWorldModel:
             q = obstacle.pose.orientation
             quat_xyzw = np.array([q.x, q.y, q.z, q.w], dtype=float)
             if np.linalg.norm(quat_xyzw) < 1e-9:
-                obstacle_to_world_rotation = np.eye(3)
-                world_to_obstacle_rotation = np.eye(3)
-            else:
-                obstacle_to_world_rotation = Rotation.from_quat(quat_xyzw).as_matrix()
-                world_to_obstacle_rotation = obstacle_to_world_rotation.T
+                raise ValueError(f'zero obstacle quaternion: {obstacle_id}')
+            obstacle_to_world_rotation = Rotation.from_quat(quat_xyzw).as_matrix()
+            world_to_obstacle_rotation = obstacle_to_world_rotation.T
             linear_velocity_world = np.array(
                 [
                     obstacle.twist.linear.x,
@@ -140,10 +223,17 @@ class DynamicWorldModel:
             body = old_bodies.get(name)
             if body is None or body['geom'] is not geometry:
                 body = {'name': name, 'geom': geometry, 'fcl_obj': fcl.CollisionObject(geometry)}
+            body['owner'] = owner
+            body['source'] = source
             body['fcl_obj'].setTransform(fcl.Transform(obstacle_to_world_rotation, center_world))
             next_bodies.append(body)
             next_obstacles[obstacle_id] = DynamicObstacleState(
                 obstacle_id=obstacle_id,
+                owner_robot=owner,
+                source=source,
+                sample_age_at_receipt=sample_age,
+                sample_timestamped=bool(sample_stamp or snapshot_stamp),
+                velocity_valid=bool(obstacle.velocity_valid) if source == 'robot' else True,
                 center_world=center_world,
                 obstacle_to_world_rotation=obstacle_to_world_rotation,
                 world_to_obstacle_rotation=world_to_obstacle_rotation,
@@ -154,15 +244,18 @@ class DynamicWorldModel:
                 collision_mesh_resource=obstacle.collision_mesh_resource,
                 collision_mesh_scale=tuple(obstacle.collision_mesh_scale),
             )
+        self.unavailable_robot_owners = unavailable
+        self._received_at = time.monotonic()
+        self._transport_age = transport_age
         self.obstacles = next_obstacles
         self.bodies = next_bodies
 
-    def in_collision_at_xyz(self, xyz: np.ndarray, *, t_offset: float = 0.0) -> bool:
-        clearance = self.min_clearance_xyz(xyz, t_offset=t_offset)
+    def in_collision_at_xyz(self, xyz: np.ndarray, *, t_offset: float = 0.0, exclude_owner: str = '') -> bool:
+        clearance = self.min_clearance_xyz(xyz, t_offset=t_offset, exclude_owner=exclude_owner)
         return clearance is not None and clearance.distance_m <= 0.0
 
-    def min_clearance_xyz(self, xyz: np.ndarray, *, t_offset: float = 0.0) -> DynamicClearance | None:
-        if self.error:
+    def min_clearance_xyz(self, xyz: np.ndarray, *, t_offset: float = 0.0, exclude_owner: str = '') -> DynamicClearance | None:
+        if self.availability_error(exclude_owner):
             # Unknown geometry must not be interpreted as free space by planners.
             return DynamicClearance("unavailable", float("-inf"))
         if not self.obstacles:
@@ -171,8 +264,16 @@ class DynamicWorldModel:
         point = np.asarray(xyz, dtype=float).reshape(3)
         robot_radius = max(0.0, float(self.robot_radius_provider()))
         best: DynamicClearance | None = None
+        elapsed = max(0., self._query_time() - self._received_at)
         for obstacle in self.obstacles.values():
-            distance_m = self._distance_to_obstacle(point, obstacle, robot_radius, float(t_offset))
+            if exclude_owner and obstacle.owner_robot == exclude_owner:
+                continue
+            age = obstacle.sample_age_at_receipt + self._transport_age + elapsed
+            if obstacle.source == 'robot' and t_offset > 0 and not obstacle.velocity_valid:
+                return DynamicClearance('velocity unavailable/' + obstacle.obstacle_id, float('-inf'))
+            # Predict from the sample time, not from the time the query happens.
+            prediction_time = ((age if obstacle.sample_timestamped else 0.) + max(0., float(t_offset))) if obstacle.velocity_valid else 0.
+            distance_m = self._distance_to_obstacle(point, obstacle, robot_radius, prediction_time)
             if best is None or distance_m < best.distance_m:
                 best = DynamicClearance(obstacle.obstacle_id, distance_m)
         return best

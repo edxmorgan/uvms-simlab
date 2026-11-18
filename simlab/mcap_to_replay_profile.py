@@ -4,6 +4,7 @@ import argparse
 import csv
 import json
 import math
+from bisect import bisect_right
 from pathlib import Path
 
 import rosbag2_py
@@ -80,21 +81,14 @@ ARM_REFERENCE_ACCELERATION_COLUMNS = TARGET_COLUMNS[28:33]
 REFERENCE_TOPIC_TYPE = "simlab/msg/ReferenceTargets"
 
 
-def _clean(value: float, eps: float = 1e-12) -> float:
-    value = float(value)
-    if not math.isfinite(value):
-        return 0.0
-    return 0.0 if abs(value) < eps else value
-
-
 def _interface_value(msg: DynamicJointState, name: str, interface: str, default: float = 0.0) -> float:
     try:
         joint_index = msg.joint_names.index(name)
         values = msg.interface_values[joint_index]
         interface_index = values.interface_names.index(interface)
-        return _clean(values.values[interface_index])
+        return float(values.values[interface_index])
     except (ValueError, IndexError):
-        return _clean(default)
+        return float(default)
 
 
 def _has_name(msg: DynamicJointState, name: str) -> bool:
@@ -129,9 +123,9 @@ def _reference_topic(prefix: str) -> str:
 
 
 def _fixed_vector(values, size: int) -> list[float]:
-    out = [_clean(value) for value in list(values)[:size]]
-    if len(out) < size:
-        out.extend([0.0] * (size - len(out)))
+    out = [float(value) for value in values]
+    if len(out) != size or not _finite(out):
+        raise ValueError(f'reference must contain exactly {size} finite values')
     return out
 
 
@@ -168,20 +162,88 @@ def _reference_samples(
             )
         )
 
+    for previous, current in zip(samples, samples[1:]):
+        if current[0] <= previous[0]:
+            raise ValueError('reference timestamps must increase; select one uninterrupted recording')
     return samples
 
 
-def _nearest_reference_sample(
+def _reference_at_or_before(
     samples: list[tuple[float, dict[str, list[float]]]],
     stamp_sec: float,
     max_age_sec: float,
 ) -> dict[str, list[float]] | None:
     if not samples:
         return None
-    best_time, best_value = min(samples, key=lambda item: abs(item[0] - stamp_sec))
-    if max_age_sec >= 0.0 and abs(best_time - stamp_sec) > max_age_sec:
+    index = bisect_right(samples, stamp_sec, key=lambda item: item[0]) - 1
+    if index < 0:
+        return None
+    best_time, best_value = samples[index]
+    if max_age_sec >= 0.0 and stamp_sec - best_time > max_age_sec:
         return None
     return best_value
+
+
+def _extract_reference_rows(
+    bag_path: Path, *, storage_id: str, topic: str, robot_prefix: str, max_gap_sec: float,
+) -> tuple[list[dict[str, float]], dict[str, list[float]]]:
+    """Preserve the recorded reference clock; state is used only for reset.
+
+    Reference replay never replays recorded effort or substitutes measured
+    motion for a missing target. The initial state must precede the reference.
+    """
+    samples = _reference_samples(bag_path, storage_id=storage_id, robot_prefix=robot_prefix)
+    if len(samples) < 2:
+        raise ValueError('reference replay requires at least two recorded ReferenceTargets messages')
+    if not math.isfinite(max_gap_sec) or max_gap_sec <= 0:
+        raise ValueError('reference maximum gap must be finite and positive')
+    if any(b[0] - a[0] > max_gap_sec for a, b in zip(samples, samples[1:])):
+        raise ValueError('recorded reference gap exceeds the allowed interval; replay would hide missing data')
+    first = samples[0][0]
+    reader = _open_reader(bag_path, storage_id)
+    if _topic_type_map(reader).get(topic) != 'control_msgs/msg/DynamicJointState':
+        raise ValueError('recorded dynamic states are required to initialize reference replay')
+    vehicle = f'{robot_prefix}IOs'
+    joints = [f'{robot_prefix}_axis_{axis}' for axis in ARM_AXES]
+    reset = None
+    reset_time = -math.inf
+    while reader.has_next():
+        name, data, stamp = reader.read_next()
+        if name != topic:
+            continue
+        msg = deserialize_message(data, DynamicJointState)
+        time = _message_time_sec(msg, stamp)
+        if time > first or time < reset_time or first - time > max_gap_sec:
+            continue
+        fields = {
+            joint: dict(zip(group.interface_names, group.values))
+            for joint, group in zip(msg.joint_names, msg.interface_values)
+        }
+        try:
+            value = {
+                'manipulator_position': [fields[j]['position'] for j in joints],
+                'manipulator_velocity': [fields[j]['velocity'] for j in joints],
+                'vehicle_pose': [fields[vehicle][k] for k in (
+                    'position.x', 'position.y', 'position.z', 'roll', 'pitch', 'yaw')],
+                'vehicle_twist': [fields[vehicle][k] for k in (
+                    'velocity.x', 'velocity.y', 'velocity.z',
+                    'angular_velocity.x', 'angular_velocity.y', 'angular_velocity.z')],
+                'vehicle_wrench': [0.0] * 6,
+            }
+        except KeyError:
+            continue
+        if not all(_finite(v) for v in value.values()):
+            continue
+        reset, reset_time = value, time
+    if reset is None:
+        raise ValueError('no complete, finite state precedes the first reference within the allowed interval')
+    rows = []
+    for stamp, reference in samples:
+        values = [value for key in ('target_ned_pose', 'target_body_vel', 'target_body_acc',
+                                    'arm_ref', 'arm_dref', 'arm_ddref')
+                  for value in reference[key]]
+        rows.append(dict(time_sec=stamp - first, **dict(zip(TARGET_COLUMNS, values))))
+    return rows, reset
 
 
 def _target_row(
@@ -191,13 +253,15 @@ def _target_row(
     stamp_sec: float,
     max_age_sec: float,
 ) -> dict[str, float]:
-    reference = _nearest_reference_sample(reference_samples, stamp_sec, max_age_sec) or {}
-    target_ned_pose = reference.get("target_ned_pose", [0.0] * 6)
-    target_body_vel = reference.get("target_body_vel", [0.0] * 6)
-    target_body_acc = reference.get("target_body_acc", [0.0] * 6)
-    arm_ref = reference.get("arm_ref", [0.0] * 5)
-    arm_dref = reference.get("arm_dref", [0.0] * 5)
-    arm_ddref = reference.get("arm_ddref", [0.0] * 5)
+    reference = _reference_at_or_before(reference_samples, stamp_sec, max_age_sec)
+    if reference is None:
+        return {"time_sec": time_sec}
+    target_ned_pose = reference["target_ned_pose"]
+    target_body_vel = reference["target_body_vel"]
+    target_body_acc = reference["target_body_acc"]
+    arm_ref = reference["arm_ref"]
+    arm_dref = reference["arm_dref"]
+    arm_ddref = reference["arm_ddref"]
     values = [*target_ned_pose, *target_body_vel, *target_body_acc, *arm_ref, *arm_dref, *arm_ddref]
     row = {"time_sec": time_sec}
     row.update(dict(zip(TARGET_COLUMNS, values)))
@@ -245,8 +309,7 @@ def _extract_rows(
 
         sim_time = _interface_value(msg, vehicle_name, "sim_time", default=math.nan)
         if not math.isfinite(sim_time):
-            stamp = msg.header.stamp
-            sim_time = float(stamp.sec) + float(stamp.nanosec) * 1e-9
+            sim_time = _message_time_sec(msg, stamp)
         if first_sim_time is None:
             first_sim_time = sim_time
         time_sec = sim_time - first_sim_time
@@ -308,12 +371,13 @@ def _extract_rows(
 
 
 def _write_commands_csv(path: Path, rows: list[dict[str, float]]) -> None:
-    fieldnames = ("time_sec", *VEHICLE_COLUMNS, *ARM_COLUMNS, *TARGET_COLUMNS)
+    fieldnames = tuple(key for key in ("time_sec", *VEHICLE_COLUMNS, *ARM_COLUMNS, *TARGET_COLUMNS)
+                      if key in rows[0])
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         for row in rows:
-            writer.writerow({key: f"{float(row[key]):.9f}" for key in fieldnames})
+            writer.writerow({key: format(float(row[key]), '.17g') for key in fieldnames})
 
 
 def _replay_manifest(args, reset: dict[str, list[float]]) -> dict:
@@ -421,17 +485,31 @@ def main(argv: list[str] | None = None) -> int:
     profile_dir = output_root / args.profile
     if profile_dir.exists() and not args.force:
         raise SystemExit(f"profile already exists: {profile_dir}; pass --force to overwrite")
+    if args.vehicle_mode == args.manipulator_mode == 'track_reference':
+        if args.sample_period != 0:
+            raise ValueError('reference replay preserves every recorded sample; use --sample-period 0')
+        rows, reset = _extract_reference_rows(
+            bag_path, storage_id=args.storage_id, topic=args.topic,
+            robot_prefix=args.robot_prefix, max_gap_sec=args.target_max_age)
+    else:
+        rows, reset = _extract_rows(
+            bag_path,
+            storage_id=args.storage_id,
+            topic=args.topic,
+            robot_prefix=args.robot_prefix,
+            arm_interface=args.arm_interface,
+            sample_period=max(0.0, float(args.sample_period)),
+            target_max_age_sec=float(args.target_max_age),
+        )
+        if 'track_reference' in (args.vehicle_mode, args.manipulator_mode):
+            if any(not all(key in row for key in TARGET_COLUMNS) for row in rows):
+                raise ValueError('mixed reference replay requires fresh causal references for every state sample')
+        else:
+            # Direct command playback does not need reference fields. Never
+            # manufacture zero targets for an unavailable reference topic.
+            rows = [{key: value for key, value in row.items() if key not in TARGET_COLUMNS}
+                    for row in rows]
     profile_dir.mkdir(parents=True, exist_ok=True)
-
-    rows, reset = _extract_rows(
-        bag_path,
-        storage_id=args.storage_id,
-        topic=args.topic,
-        robot_prefix=args.robot_prefix,
-        arm_interface=args.arm_interface,
-        sample_period=max(0.0, float(args.sample_period)),
-        target_max_age_sec=float(args.target_max_age),
-    )
     _write_commands_csv(profile_dir / "commands.csv", rows)
     (profile_dir / "replay.json").write_text(
         json.dumps(_replay_manifest(args, reset), indent=2) + "\n",

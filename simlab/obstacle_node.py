@@ -1,5 +1,4 @@
 """Authoritative ROS adapter: one selected source, one motion integrator."""
-import copy
 import json
 
 import rclpy
@@ -7,6 +6,8 @@ from geometry_msgs.msg import Twist
 from rclpy.executors import ExternalShutdownException
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from bringup.dynamic_obstacle_sim import DynamicObstacleTransport
+from bringup.obstacle_description import normalize_obstacle, canonical_obstacle_id
+from simlab.utils.geometry import robot_obstacle_radius
 from simlab.dynamic_obstacle_sources import obstacle_behavior_source_class
 from simlab.obstacle_runtime import ObstacleRuntime, ObstacleRevisionConflict
 from simlab.msg import ObstacleScene
@@ -15,7 +16,7 @@ from simlab.srv import EditDynamicObstacles
 
 class ObstacleNode(DynamicObstacleTransport):
     def __init__(self):
-        super().__init__()
+        super().__init__(robot_collision_radius=robot_obstacle_radius())
         self.declare_parameter('dynamic_obstacle_source', 'scripted_motion')
         self.declare_parameter('source_config', '{}')
         self.declare_parameter('experiment_seed', 0)
@@ -80,7 +81,7 @@ class ObstacleNode(DynamicObstacleTransport):
                 self.fault = ''
                 self._last_time = self.get_clock().now()
             else:
-                items = copy.deepcopy(request.obstacles.obstacles)
+                items = [normalize_obstacle(o) for o in request.obstacles.obstacles]
                 if request.obstacles.header.frame_id not in ('', self.world_frame):
                     raise ValueError(f'expected frame {self.world_frame}')
                 existing = {o.id for o in current.obstacles}
@@ -95,7 +96,7 @@ class ObstacleNode(DynamicObstacleTransport):
                 elif operation == 'remove':
                     if items:
                         raise ValueError('remove accepts IDs only')
-                    remove = list(request.ids)
+                    remove = [canonical_obstacle_id(name) for name in request.ids]
                 elif operation == 'clear':
                     if items or request.ids:
                         raise ValueError('clear accepts no obstacle payload')

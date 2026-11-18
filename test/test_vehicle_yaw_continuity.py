@@ -147,7 +147,7 @@ def test_completed_translation_waits_for_waypoint_heading_instead_of_stopping():
     from simlab.robot import ControlMode
     from simlab.vehicle_waypoint_mission import VehicleWaypointMission
     mission=VehicleWaypointMission('robot_1_');mission.add_waypoint(Pose());mission.start();mission.mark_planning()
-    robot=SimpleNamespace(k_robot=0,prefix='robot_1_',navigation_blocked_goal=None,
+    robot=SimpleNamespace(k_robot=0,prefix='robot_1_',
         control_mode=ControlMode.PLANNER,sim_reset_hold=False,planner_action_client=SimpleNamespace(busy=False),
         vehicle_cart_traj=SimpleNamespace(active=False,last_result=Result.Finished),abrupt_planner_stop=Mock(),
         final_goal_map_ned_6=np.zeros(6),_accept_planner_results=True,
@@ -171,7 +171,7 @@ def test_waypoint_inside_tolerance_does_not_skip_unfinished_translation():
     from simlab.robot import ControlMode
     from simlab.vehicle_waypoint_mission import VehicleWaypointMission
     mission=VehicleWaypointMission('robot_1_');mission.add_waypoint(Pose());mission.start();mission.mark_planning()
-    robot=NS(k_robot=0,prefix='robot_1_',navigation_blocked_goal=None,
+    robot=NS(k_robot=0,prefix='robot_1_',
         control_mode=ControlMode.PLANNER,sim_reset_hold=False,planner_action_client=NS(busy=False),
         vehicle_cart_traj=NS(active=True,last_result=Result.Working),abrupt_planner_stop=Mock(),
         final_goal_map_ned_6=np.zeros(6),_accept_planner_results=True,

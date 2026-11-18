@@ -42,6 +42,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
 
 ament_get_python_install_dir(PYTHON_INSTALL_DIR)
 ament_python_install_module(simlab/__init__.py DESTINATION_SUFFIX simlab)
+# An old package directory takes precedence over the replacement dr_oges.py.
+install(CODE "file(REMOVE_RECURSE \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${PYTHON_INSTALL_DIR}/simlab/controllers/dr_oges\")")
 install(
   DIRECTORY simlab/
   DESTINATION ${PYTHON_INSTALL_DIR}/simlab
@@ -105,10 +107,23 @@ install(
 )
 
 install(FILES package.xml DESTINATION share/${PROJECT_NAME})
-install(FILES resource/effort_visualization.md DESTINATION share/${PROJECT_NAME})
 
 if(BUILD_TESTING)
   find_package(ament_cmake_pytest REQUIRED)
+  ament_add_pytest_test(test_tool_wrench test/test_tool_wrench.py)
+  ament_add_pytest_test(test_task_wrench_estimation test/test_task_wrench_estimation.py)
+  ament_add_pytest_test(test_task_visualization test/test_task_visualization.py)
+  ament_add_pytest_test(test_task_reference_derivatives test/test_task_reference_derivatives.py)
+  ament_add_pytest_test(test_sliding_mode_controller test/test_sliding_mode_controller.py)
+  ament_add_pytest_test(test_arm_pid_windup test/test_arm_pid_windup.py)
+  ament_add_pytest_test(test_replay_reference_targets test/test_replay_reference_targets.py)
+  ament_add_pytest_test(test_interactive_menu_integration test/test_interactive_menu_integration.py)
+  ament_add_pytest_test(test_gripper_endpoints test/test_gripper_endpoints.py)
+  ament_add_pytest_test(test_geometric_vehicle_control test/test_geometric_vehicle_control.py)
+  ament_add_pytest_test(test_estimated_state_feedback test/test_estimated_state_feedback.py)
+  ament_add_pytest_test(test_endpoint_ik test/test_endpoint_ik.py)
+  ament_add_pytest_test(test_arm_hold_ownership test/test_arm_hold_ownership.py)
+  ament_add_pytest_test(test_arm_reference_hold test/test_arm_reference_hold.py)
   ament_add_pytest_test(test_disturbance_injection_node test/test_disturbance_injection_node.py)
   ament_add_pytest_test(test_effort_visualization test/test_effort_visualization.py)
   ament_add_pytest_test(test_flake8 test/test_flake8.py)
@@ -124,6 +139,7 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_motion_plan_result test/test_motion_plan_result.py)
   ament_add_pytest_test(test_dynamic_replanner test/test_dynamic_replanner.py)
   ament_add_pytest_test(test_navigation_safety test/test_navigation_safety.py)
+  ament_add_pytest_test(test_task_collision_safety test/test_task_collision_safety.py)
   ament_add_pytest_test(test_dynamic_obstacle_sources test/test_dynamic_obstacle_sources.py)
   ament_add_pytest_test(test_obstacle_runtime test/test_obstacle_runtime.py)
   ament_add_pytest_test(test_obstacle_node test/test_obstacle_node.py)

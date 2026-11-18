@@ -12,6 +12,14 @@ import numpy as np
 class ReachParams:
     profile_name = "sim"
 
+    # Joint-space acceleration gains; fifth component is the scalar gripper.
+    # Matching surface/damping rates give a critically damped nominal error ODE.
+    smc_surface = np.r_[np.sqrt([40., 40., 750., 750.]), 1.]
+    smc_damping = np.r_[np.sqrt([40., 40., 750., 750.]), 4.]
+    smc_switching = np.array([.25, .25, .25, .25, .005])
+    smc_boundary = np.array([.02, .02, .02, .02, .002])
+    gripper_model = np.array([300., 400., 0.])  # mass, damping, stiffness
+
     joint_home = np.array([3.1, 0.7, 0.4, 2.1])
     endeffector_wrt_base_home = np.array([0.09669330716133118, 0.0, 0.1003517135977745])
 
@@ -29,6 +37,12 @@ class ReachParams:
     grasper_kp = np.array([1000.0])
     grasper_ki = np.array([0.0])
     grasper_kd = np.array([0.0])
+
+    # Acceleration gains for computed torque: retain 1000 N/m nominal stiffness
+    # with the configured mass, and critically damp the nominal scalar model.
+    invdyn_grasper_kp = grasper_kp / gripper_model[0]
+    invdyn_grasper_ki = np.zeros(1)
+    invdyn_grasper_kd = 2 * np.sqrt(invdyn_grasper_kp)
 
     grasper_u_min = np.array([-10.0])
     grasper_u_max = np.array([10.0])
@@ -63,16 +77,21 @@ class ReachParams:
 
 class VehicleControllerParams:
     profile_name = "sim"
+    # Body-wrench gains (different units from the arm acceleration gains).
+    smc_surface = np.array([.6, .6, .6, .8, .8, .8])
+    smc_damping = np.array([25., 25., 30., 3., 3., 3.])
+    smc_switching = np.array([2., 2., 2., .15, .15, .15])
+    smc_boundary = np.array([.05, .05, .05, .03, .03, .03])
 
     model_params = np.array(
         [
             3.72028553e+01,
             2.21828075e+01,
             6.61734807e+01,
-            3.38909801e+00,
-            6.41362046e-01,
-            6.41362034e-01,
-            3.38909800e+00,
+            3.389098005e+00,
+            6.41362040e-01,
+            6.41362040e-01,
+            3.389098005e+00,
             1.39646394e+00,
             4.98032205e-01,
             2.53118738e+00,

@@ -1,3 +1,4 @@
+import time
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -21,7 +22,7 @@ def test_replay_message_is_fresh_and_transforms_body_derivatives():
     pose = Pose()
     pose.position.x = 10.
     pose.orientation.w = 1.
-    publisher.publish_replay_targets(
+    publisher.publish_targets(
         stamp_msg=Time(sec=42), world_pose=pose,
         target_ned_pose=[1., 2., 3., 0., 0., 0.],
         target_body_vel=[2., 0., 0., 0., 0., 1.],
@@ -80,6 +81,7 @@ def test_replay_publishes_controller_inputs_without_changing_commands(vehicle_mo
     robot.try_transform_pose = Mock(return_value=Pose() if tf_ready else None)
     robot.reference_pub = Mock()
     robot.publish_commands = Mock()
+    robot._control_tick = time.monotonic() - .01
     robot.control_loop_callback()
     supported = ('track_reference', 'hold_initial')
     if deferred:
@@ -98,7 +100,7 @@ def test_replay_publishes_controller_inputs_without_changing_commands(vehicle_mo
     else:
         assert robot._replay_tracking_reference is None
     if tf_ready and vehicle_mode in supported and arm_mode in supported:
-        args = robot.reference_pub.publish_replay_targets.call_args.kwargs
+        args = robot.reference_pub.publish_targets.call_args.kwargs
         vehicle = spec.vehicle_fn.call_args.kwargs
         arm = spec.arm_fn.call_args.kwargs
         for published, used in [('target_ned_pose', 'target_pos'), ('target_body_vel', 'target_vel'), ('target_body_acc', 'target_acc')]:
@@ -107,7 +109,7 @@ def test_replay_publishes_controller_inputs_without_changing_commands(vehicle_mo
             np.testing.assert_array_equal(args[key], arm[key])
         assert robot.try_transform_pose.call_args.kwargs['source_frame'] == 'robot_1_map'
     else:
-        robot.reference_pub.publish_replay_targets.assert_not_called()
+        robot.reference_pub.publish_targets.assert_not_called()
     expected_vehicle = 11. if vehicle_mode in supported else (9. if vehicle_mode == 'replay_command' else 0.)
     expected_arm = 12. if arm_mode in supported else (10. if arm_mode == 'replay_command' else 0.)
     robot.publish_commands.assert_called_once_with([expected_vehicle] * 6, [expected_arm] * 5)
@@ -161,6 +163,7 @@ def test_replay_pass_resets_selected_feedback_or_rejects_missing_controller(avai
         manipulator_subsystem_mode=lambda: 'track_reference',
         start_playback=Mock(return_value=False), mark_reset_failed=Mock(), enabled=False)
     robot.active_controller_instance = lambda: replay
+    robot._control_tick = time.monotonic() - .01
     robot.control_loop_callback()
     if available:
         controller.reset_controller_state.assert_called_once()
@@ -170,3 +173,42 @@ def test_replay_pass_resets_selected_feedback_or_rejects_missing_controller(avai
         replay.start_playback.assert_not_called()
         replay.mark_reset_failed.assert_called_once()
     robot.publish_commands.assert_called_once_with([0.] * 6, [0.] * 5)
+
+
+def test_reset_waits_for_state_published_after_service_completion(monkeypatch):
+    from simlab.robot import Robot
+    from ros2_control_blue_reach_5.srv import ResetSimUvms
+    from control_msgs.msg import DynamicJointState
+    monkeypatch.setattr('simlab.robot.forward_dynamics_observations', lambda *_: None)
+    callbacks={};success=Mock();failure=Mock()
+    robot=SimpleNamespace(sim_reset_hold=True,_reset_local_command_state=Mock(),prefix='robot_1_',
+        node=Mock(),update_state=Mock(),_call_reset_state_service=lambda **kw:callbacks.update(kw))
+    robot.node.get_clock.return_value.now.return_value.nanoseconds=100
+    Robot.reset_simulation_with_state(robot,ResetSimUvms.Request(),success,failure)
+    msg=DynamicJointState();msg.header.stamp.nanosec=99
+    Robot.listener_callback(robot,msg)
+    success.assert_not_called()
+    callbacks['on_success']()
+    Robot.listener_callback(robot,msg)
+    success.assert_not_called()
+    msg.header.stamp.nanosec=100
+    Robot.listener_callback(robot,msg)
+    success.assert_not_called()
+    msg.header.stamp.nanosec=101
+    Robot.listener_callback(robot,msg)
+    success.assert_called_once();failure.assert_not_called()
+    assert robot._reset_feedback_pending is None
+    Robot.listener_callback(robot,msg)
+    success.assert_called_once()
+
+
+def test_reset_feedback_timeout_holds_commands():
+    from simlab.robot import Robot
+    failure=Mock()
+    robot=SimpleNamespace(_reset_feedback_pending={'deadline':0.,'failure':failure},
+        publish_commands=Mock(),node=Mock(),sim_reset_hold=False,get_state=Mock())
+    robot._control_tick = time.monotonic() - .01
+    Robot.control_loop_callback(robot)
+    robot.publish_commands.assert_called_once_with([0.]*6,[0.]*5)
+    robot.get_state.assert_not_called();failure.assert_called_once()
+    assert robot.sim_reset_hold and robot._reset_feedback_pending is None

@@ -61,23 +61,46 @@ def test_standard_mcap_roundtrip_preserves_injection_and_estimates(tmp_path, mon
         applied_joint_torques=[.01, -.02, .03, -.04])
     status = DisturbanceRunStatus(session_id='recording-test', state='running',
         configuration_json='{"frequency_hz":0.1,"cycles":3}')
-    joints = DynamicJointState(joint_names=['robot_1_IOs'], interface_values=[
-        InterfaceValue(interface_names=['estimated_disturbance.force.x'], values=[.25])])
+    # Deliberately distinct truth/estimate channels must survive MCAP unchanged.
+    joints = DynamicJointState(joint_names=['robot_1_IOs', 'robot_1__axis_e'], interface_values=[
+        InterfaceValue(interface_names=['position.x','position_estimate.x',
+            'velocity.x','velocity_estimate.x','roll','roll_estimate',
+            'estimated_disturbance.force.x'], values=[1.,1.1,2.,2.1,.3,.4,.25]),
+        InterfaceValue(interface_names=['position','filtered_position','velocity','filtered_velocity'],
+                       values=[.5,.6,.7,.8])])
     task_wrench = WrenchStamped()
     task_wrench.header.frame_id = 'robot_1_joint_4'
     task_wrench.wrench.force.x = 1.
     samples = {base+'task_estimate':TaskWrenchEstimate(valid=True, rank=6),
                base+'task_wrench':task_wrench, base+'command':command, base+'vehicle/state':vehicle,
                base+'arm/state':arm, base+'status':status, 'dynamic_joint_states':joints}
-    pubs = {topic:publisher.create_publisher(type(msg), topic, 10) for topic,msg in samples.items()}
+    from std_msgs.msg import String
+    samples['/robot_1_/controller/context'] = String(data='{"revision":1,"selected_controller":"PID"}')
+    samples['/robot_1_/performance/kinematics'] = String(data='{"context":{"revision":1}}')
+    from tf2_msgs.msg import TFMessage
+    from geometry_msgs.msg import TransformStamped
+    from simlab.bag_recorder import transient_local_qos
+    for index, topic in enumerate(['/tf','/tf_static','/simulation_truth/tf','/simulation_truth/tf_static']):
+        transform = TransformStamped(child_frame_id='frame_'+str(index))
+        transform.header.frame_id = 'world'
+        transform.transform.rotation.w = 1.
+        transform.transform.translation.x = float(index)
+        samples[topic] = TFMessage(transforms=[transform])
+    pubs = {topic:publisher.create_publisher(type(msg), topic,
+                transient_local_qos(100) if topic.endswith('tf_static') or topic.endswith('/controller/context') else 10)
+            for topic,msg in samples.items()}
     try:
+        # Context exists before recording; late subscription must retain it.
+        context_topic='/robot_1_/controller/context'
+        pubs[context_topic].publish(samples[context_topic])
         assert recorder.start_recording()[0]
         deadline = time.monotonic()+5.
         while time.monotonic()<deadline and not all(p.get_subscription_count() for p in pubs.values()):
             executor.spin_once(timeout_sec=.02)
         assert all(p.get_subscription_count() for p in pubs.values())
         for topic,msg in samples.items():
-            pubs[topic].publish(msg)
+            if topic != context_topic:
+                pubs[topic].publish(msg)
         deadline = time.monotonic()+.5
         while time.monotonic()<deadline:
             executor.spin_once(timeout_sec=.02)
@@ -106,3 +129,10 @@ def test_evaluation_trace_is_opt_in_and_per_robot(monkeypatch):
     specs = BagRecorder._evaluation_trace_topic_specs(['robot_1_', 'robot_2_'])
     assert [s.name for s in specs] == ['/robot_1_ekf_evaluation_trace', '/robot_2_ekf_evaluation_trace']
     assert all(s.type_str == 'std_msgs/msg/Float64MultiArray' and s.qos_depth == 2048 for s in specs)
+
+
+def test_standard_recording_keeps_both_transform_trees():
+    specs = {s.name: s for s in BagRecorder._transform_topic_specs()}
+    assert set(specs) == {'/tf', '/tf_static', '/simulation_truth/tf', '/simulation_truth/tf_static'}
+    for topic in ['/tf_static', '/simulation_truth/tf_static']:
+        assert specs[topic].qos_depth.durability == QoSDurabilityPolicy.TRANSIENT_LOCAL

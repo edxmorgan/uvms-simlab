@@ -42,7 +42,8 @@ def _quat(x, y, z, w):
 
 def _obstacle_msg():
     obstacle = SimpleNamespace(
-        id="path_blocker",
+        id="path_blocker", source="scripted", owner_robot="",
+        stamp=SimpleNamespace(sec=7,nanosec=8), velocity_valid=True,
         collision_type=1,
         collision_dimensions=[0.8],
         visual_type=1,
@@ -54,7 +55,7 @@ def _obstacle_msg():
     )
     return SimpleNamespace(
         header=SimpleNamespace(frame_id="world", stamp=SimpleNamespace(sec=7, nanosec=8)),
-        obstacles=[obstacle],
+        obstacles=[obstacle], unavailable_robot_owners=[],
     )
 
 
@@ -155,3 +156,20 @@ def test_recording_collision_does_not_overwrite_existing_csv(tmp_path, monkeypat
     with pytest.raises(FileExistsError):
         robot._start_replay_session_recording(controller, state)
     assert path.read_bytes() == original
+
+
+def test_recording_preserves_generated_robot_identity_and_validity(tmp_path):
+    robot = _robot(tmp_path)
+    message = _obstacle_msg()
+    item = message.obstacles[0]
+    item.id = 'robot/robot_2_'
+    item.owner_robot = 'robot_2_'
+    item.source = 'robot'
+    item.velocity_valid = False
+    message.unavailable_robot_owners = ['robot_3_']
+    record = robot._dynamic_obstacle_array_to_recording_dict(message)
+    assert record['obstacles'][0]['source'] == 'robot'
+    assert record['obstacles'][0]['owner_robot'] == 'robot_2_'
+    assert not record['obstacles'][0]['velocity_valid']
+    assert record['obstacles'][0]['stamp'] == {'sec':7, 'nanosec':8}
+    assert record['unavailable_robot_owners'] == ['robot_3_']

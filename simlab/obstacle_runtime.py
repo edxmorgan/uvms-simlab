@@ -7,7 +7,7 @@ import copy
 import math
 import threading
 
-from bringup.obstacle_description import normalize_obstacle, validate_unique_obstacle_ids
+from bringup.obstacle_description import normalize_obstacle, validate_unique_obstacle_ids, canonical_obstacle_id
 from simlab.dynamic_obstacle_sources.behavior import ObstacleBehaviorContext
 
 
@@ -69,7 +69,8 @@ class ObstacleRuntime:
             self._ensure_active()
             if expected_revision != self._revision:
                 raise ObstacleRevisionConflict(f"expected revision {expected_revision}, current {self._revision}")
-            upsert, remove = list(upsert), list(remove)
+            upsert = [normalize_obstacle(o) for o in upsert]
+            remove = [canonical_obstacle_id(name) for name in remove]
             validate_unique_obstacle_ids(upsert)
             if len(set(remove)) != len(remove) or set(remove) & {o.id for o in upsert}:
                 raise ValueError("duplicate or conflicting obstacle edits")

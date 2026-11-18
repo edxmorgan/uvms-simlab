@@ -82,3 +82,39 @@ class ControllerTemplate(ABC):
         dt: float,
     ) -> np.ndarray:
         raise NotImplementedError
+
+
+def bounded_integral_control(evaluate, integral, gains, limits, lower, upper, dt):
+    """Evaluate at accepted integral state; reject increments worsening saturation.
+
+    Compare changes in actual body wrench, not world-coordinate error: rotations
+    and inertia couple integral channels to actuator limits. The export remains
+    the sole source of controller equations. ``evaluate(buffer, dt)`` returns
+    raw wrench and next integral state.
+    """
+    if not np.isfinite(dt) or dt <= 0:
+        raise ValueError('controller dt must be finite and positive')
+
+    def checked(buffer, step):
+        wrench, next_buffer = evaluate(buffer, step)
+        wrench = np.asarray(wrench, dtype=float).reshape(-1)
+        next_buffer = np.asarray(next_buffer, dtype=float).reshape(-1)
+        if wrench.shape != (6,) or next_buffer.shape != (6,) or not np.isfinite(
+                np.r_[wrench, next_buffer]).all():
+            raise ValueError('controller returned invalid wrench or integral state')
+        return wrench, next_buffer
+
+    if not np.any(gains):
+        # No latent integral history while integral feedback is disabled.
+        buffer = np.zeros(6)
+        wrench, _ = checked(buffer, 0.)
+        return np.clip(wrench, lower, upper), buffer
+    buffer = np.clip(np.asarray(integral, dtype=float), -limits, limits)
+    old_wrench, _ = checked(buffer, 0.)
+    _, candidate = checked(buffer, dt)
+    candidate = np.clip(candidate, -limits, limits)
+    new_wrench, _ = checked(candidate, 0.)
+    excess = new_wrench - np.clip(new_wrench, lower, upper)
+    if np.any(excess * (new_wrench - old_wrench) > 0):
+        return np.clip(old_wrench, lower, upper), buffer.copy()
+    return np.clip(new_wrench, lower, upper), candidate.copy()

@@ -1,9 +1,10 @@
+from bringup.scene_runtime import robot_link_owners
 # fcl_world.py
 import numpy as np
 import fcl
-from bringup.collision_geometry import distance_with_nearest
+from bringup.collision_geometry import distance_with_nearest, collision_surface_mesh
 from typing import Dict, Tuple
-from simlab.utils.meshes import fcl_bvh_from_mesh, collect_env_meshes, conc_env_trimesh, getAABB_OBB
+from simlab.utils.meshes import fcl_bvh_from_mesh, collect_env_meshes, environment_mesh_bounds, se3_from_rpy_xyz
 
 class FCLWorld:
     """
@@ -23,16 +24,13 @@ class FCLWorld:
         robot_mesh_infos, env_mesh_infos, floor_depth = collect_env_meshes(urdf_string)
         self.floor_depth = floor_depth
 
-        # merge meshes into one Trimesh in world frame
-        env_mesh = conc_env_trimesh(env_mesh_infos)
-        AABB, OBB = getAABB_OBB(env_mesh)
-        self.min_coords, self.max_coords = AABB
-        self.obb_corners = OBB
+        self.min_coords, self.max_coords = environment_mesh_bounds(env_mesh_infos)
 
         # build FCL bodies identical to your original structure
         self.bodies_robot = self._build_fcl_bodies(robot_mesh_infos, "robot")
         self.bodies_env   = self._build_fcl_bodies(env_mesh_infos,   "env")
         self.bodies_dynamic = []
+        self.robot_prefixes = set(robot_link_owners(urdf_string).values())
         self.missing_frames = []
         self.last_clearance_pair = None
 
@@ -79,15 +77,37 @@ class FCLWorld:
             bvh, _, _ = fcl_bvh_from_mesh(path_abs, scale_vec, rpy, xyz)
             obj = fcl.CollisionObject(bvh, fcl.Transform())
 
+            mesh = collision_surface_mesh(4, (), path_abs, tuple(scale_vec))
+            transform = se3_from_rpy_xyz(rpy, xyz)
+            vertices = np.asarray(mesh.vertices) @ transform[:3, :3].T + transform[:3, 3]
+            bounds = np.array([vertices.min(axis=0), vertices.max(axis=0)])
             out.append({
                 "name":   m["link"],
                 "frame":  m["link"],
+                "owner": m.get("owner"),
                 "fcl_obj": obj,
                 "geom":   bvh,
+                "local_bounds": bounds,
             })
         return out
 
     # --------------- TF update ---------------
+
+    def collision_pairs(self):
+        """Detailed robot/environment contacts and one pair per robot proxy.
+
+        Robot proxies share the dynamic snapshot; never collide a robot mesh
+        against its own proxy or also report the same robot pair as mesh pairs.
+        """
+        scripted = [b for b in self.bodies_dynamic if b['source'] != 'robot']
+        proxies = [b for b in self.bodies_dynamic if b['source'] == 'robot']
+        for robot in self.bodies_robot:
+            for obstacle in self.bodies_env + scripted:
+                yield robot, obstacle
+        for index, robot in enumerate(proxies):
+            for other in proxies[index + 1:]:
+                if robot['owner'] != other['owner']:
+                    yield robot, other
 
     def set_dynamic_bodies(self, bodies):
         """Synchronize current dynamic objects into the environment broad phase.
@@ -111,19 +131,26 @@ class FCLWorld:
         """
         ok_all = True
         self.missing_frames = []
+        environment_changed = False
+        environment_ids = {id(body) for body in self.bodies_env}
         for body in self.bodies_robot + self.bodies_env:
             try:
                 t = tf_buffer.lookup_transform(self.world_frame, body["frame"], time_obj)
                 q = t.transform.rotation
                 p = t.transform.translation
-                body["fcl_obj"].setTransform(
-                    fcl.Transform([q.w, q.x, q.y, q.z], [p.x, p.y, p.z])
-                )
+                pose = (q.w, q.x, q.y, q.z, p.x, p.y, p.z)
+                if body.get('_last_tf_pose') != pose:
+                    body["fcl_obj"].setTransform(
+                        fcl.Transform(list(pose[:4]), list(pose[4:]))
+                    )
+                    body['_last_tf_pose'] = pose
+                    environment_changed |= id(body) in environment_ids
             except Exception:
                 ok_all = False
                 self.missing_frames.append(body['frame'])
 
-        self.manager_env.update()
+        if environment_changed:
+            self.manager_env.update()
         return ok_all
 
     # --------------- collision contacts ---------------
@@ -136,15 +163,14 @@ class FCLWorld:
         pair_to_point: Dict[Tuple[str, str], np.ndarray] = {}
         # Per-pair requests avoid a global contact cap hiding other obstacles.
         # Direct object ownership also disambiguates obstacles sharing cached geometry.
-        for robot in self.bodies_robot:
-            for env in self.bodies_env + self.bodies_dynamic:
-                result = fcl.CollisionResult()
-                fcl.collide(robot['fcl_obj'], env['fcl_obj'],
-                            fcl.CollisionRequest(num_max_contacts=1, enable_contact=True), result)
-                if result.contacts:
-                    point = np.asarray(result.contacts[0].pos, dtype=float)
-                    if np.all(np.isfinite(point)):
-                        pair_to_point[(robot['name'], env['name'])] = point
+        for robot, env in self.collision_pairs():
+            result = fcl.CollisionResult()
+            fcl.collide(robot['fcl_obj'], env['fcl_obj'],
+                        fcl.CollisionRequest(num_max_contacts=1, enable_contact=True), result)
+            if result.contacts:
+                point = np.asarray(result.contacts[0].pos, dtype=float)
+                if np.all(np.isfinite(point)):
+                    pair_to_point[(robot['name'], env['name'])] = point
 
         return pair_to_point
 
@@ -157,13 +183,39 @@ class FCLWorld:
         """
         best = None
         self.last_clearance_pair = None
-        for robot in self.bodies_robot:
-            for env in self.bodies_env + self.bodies_dynamic:
-                distance, robot_point, env_point = distance_with_nearest(robot, env)
-                if best is None or distance < best[0]:
-                    best = (distance, robot_point, env_point)
-                    self.last_clearance_pair = (robot['name'], env['name'])
+        for robot, env in self.collision_pairs():
+            distance, robot_point, env_point = distance_with_nearest(robot, env)
+            if best is None or distance < best[0]:
+                best = (distance, robot_point, env_point)
+                self.last_clearance_pair = (robot['name'], env['name'])
         return best
+
+    def has_clearance(self, margin):
+        """Exact threshold query, pruning pairs by conservative world AABBs."""
+        if not np.isfinite(margin) or margin < 0:
+            raise ValueError('Clearance margin must be finite and nonnegative')
+        self.last_clearance_pair = None
+        def bounds(body):
+            local = body.get('local_bounds')
+            if local is None:
+                return None
+            obj = body['fcl_obj']
+            center = obj.getRotation() @ local.mean(axis=0) + obj.getTranslation()
+            extent = np.abs(obj.getRotation()) @ ((local[1] - local[0]) * .5)
+            return center - extent, center + extent
+        for robot, env in self.collision_pairs():
+            a, b = bounds(robot), bounds(env)
+            if a is not None and b is not None:
+                separation = np.maximum(np.maximum(a[0] - b[1], b[0] - a[1]), 0.)
+                if np.linalg.norm(separation) > margin + 1e-9:
+                    continue
+            result = fcl.DistanceResult()
+            distance = float(fcl.distance(robot['fcl_obj'], env['fcl_obj'],
+                fcl.DistanceRequest(enable_nearest_points=False), result))
+            if not np.isfinite(distance) or distance <= margin:
+                self.last_clearance_pair = (robot['name'], env['name'])
+                return False
+        return bool(self.bodies_robot and (self.bodies_env or self.bodies_dynamic))
 
     # --------------- optional planner sphere helpers ---------------
     def set_robot_collision_radius(self, r: float):
@@ -199,6 +251,19 @@ class FCLWorld:
         return np.clip(xyz, mins, maxs)
 
     
+    def planner_has_clearance_at_xyz(self, xyz, margin):
+        """Threshold clearance query using an inflated sphere, without nearest points."""
+        radius = self.vehicle_radius + max(0.0, float(margin))
+        cached = getattr(self, '_clearance_sphere', None)
+        if cached is None or cached[0] != radius:
+            cached = (radius, fcl.CollisionObject(fcl.Sphere(radius)))
+            self._clearance_sphere = cached
+        obj = cached[1]
+        obj.setTransform(fcl.Transform([1., 0., 0., 0.], list(map(float, xyz))))
+        data = fcl.CollisionData(request=fcl.CollisionRequest(num_max_contacts=1, enable_contact=False))
+        self.manager_env.collide(obj, data, fcl.defaultCollisionCallback)
+        return not data.result.is_collision
+
     def planner_in_collision_at_xyz(self, xyz) -> bool:
         """
         Check collision between the planner sphere at xyz and the environment.
@@ -212,6 +277,16 @@ class FCLWorld:
         self.manager_env.collide(self._planner_obj, cdata, fcl.defaultCollisionCallback)
         return bool(cdata.result.is_collision)
     
+    def planner_collision_obstacle(self, xyz):
+        """Name the intersecting body for a rejected request (not a hot-path query)."""
+        self._planner_obj.setTransform(fcl.Transform([1., 0., 0., 0.], list(map(float, xyz))))
+        for body in self.bodies_env + self.bodies_dynamic:
+            result = fcl.CollisionResult()
+            fcl.collide(self._planner_obj, body['fcl_obj'], fcl.CollisionRequest(), result)
+            if result.is_collision:
+                return body['name']
+        return ''
+
     def min_distance_xyz(self, xyz) -> float:
         """
         Return minimum distance between planner sphere at xyz and the environment.
@@ -219,7 +294,10 @@ class FCLWorld:
         """
         if self._planner_obj is None or self.manager_env is None:
             return float("inf")
-        self._planner_obj.setTransform(fcl.Transform([1.0, 0.0, 0.0, 0.0], [float(x) for x in xyz]))
+        # FCL mesh/sphere distance is not a signed penetration query. Some
+        # bindings return an uninitialized tiny positive distance on overlap.
+        if self.planner_in_collision_at_xyz(xyz):
+            return 0.0
         req = fcl.DistanceRequest(enable_nearest_points=True)
         ddata = fcl.DistanceData(request=req)
         self.manager_env.distance(self._planner_obj, ddata, fcl.defaultDistanceCallback)

@@ -14,6 +14,12 @@
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 #!/usr/bin/env python3
+import json
+from pathlib import Path
+from ament_index_python.packages import get_package_share_directory
+from rclpy.qos import QoSProfile, DurabilityPolicy
+from ros2_control_blue_reach_5.srv import EnvironmentScene
+from std_msgs.msg import String
 import gc
 import copy
 
@@ -30,6 +36,50 @@ import numpy as np
 from simlab.uvms_parameters import ReachParams
 from simlab.utils.frames import PoseX
 from simlab.robot import Robot, ControlSpace
+
+class SceneMenu:
+    def __init__(self, node, menu, server):
+        self.node = node; self.menu = menu; self.server = server
+        self.client = node.create_client(EnvironmentScene, '/environment_scene/command')
+        parent = menu.insert('Environment')
+        share = Path(get_package_share_directory('ros2_control_blue_reach_5'))
+        names = ['default'] + sorted(p.parent.name for p in (share/'scenes').glob('*/world.xacro'))
+        self.handles = {}
+        for name in names:
+            label = 'Terrain' if name == 'default' else name
+            handle = menu.insert(label, parent=parent, callback=lambda _,n=name:self.request('switch',n))
+            menu.setCheckState(handle, MenuHandler.UNCHECKED); self.handles[name] = handle
+        self.subscription = node.create_subscription(String, '/environment_scene/status', self.status,
+            QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
+
+    def request(self, command, scene=''):
+        if not self.client.service_is_ready():
+            self.node.get_logger().warning('Scene manager unavailable; relaunch with the updated simulator')
+            return
+        future = self.client.call_async(EnvironmentScene.Request(command=command, scene=scene))
+        def finished(f):
+            try:
+                result = f.result()
+                if result.success:
+                    self.node.get_logger().info(result.message)
+                else:
+                    self.node.get_logger().warning(result.message)
+            except Exception as exc:
+                self.node.get_logger().error(f'Scene request failed: {exc}')
+        future.add_done_callback(finished)
+
+    def status(self, msg):
+        try:
+            status = json.loads(msg.data)
+            for name, handle in self.handles.items():
+                checked = status['state'] == 'ready' and name == status['scene']
+                self.menu.setCheckState(handle, MenuHandler.CHECKED if checked else MenuHandler.UNCHECKED)
+            self.menu.reApply(self.server); self.server.applyChanges()
+            scene = status['scene'] if status['state'] == 'ready' else status.get('target_scene', status['scene'])
+            self.node.get_logger().info(f"Environment: {status['state']} — {scene} {status.get('error', '')}")
+        except (KeyError, ValueError) as exc:
+            self.node.get_logger().warning(f'Invalid scene status: {exc}')
+
 
 class InteractiveControlsNode(Node):
     def __init__(self):
@@ -54,6 +104,8 @@ class InteractiveControlsNode(Node):
                                                               self.vehicle_target_frame, self.arm_base_target_frame, 
                                                               self.world_frame,
                                                               self.world_endeffector_target_frame, ReachParams)
+        from simlab.environment_scene import attach_backend
+        attach_backend(self.uvms_backend)
         # Create marker server, menu handler
         self.server = InteractiveMarkerServer(self, "uvms_interactive_controls")
         from simlab.obstacle_editor import ObstacleEditor
@@ -64,6 +116,8 @@ class InteractiveControlsNode(Node):
             "Plan & Execute",
             callback=self.plan_execute,
         )
+        self.stop_execution_handle = self.menu_handler.insert(
+            "Stop Execution", callback=lambda feedback: self.uvms_backend.stop_selected_execution())
         robot_select_menu_handle = self.menu_handler.insert("Robots", callback=self.noop_menu_callback)
         waypoints_parent = self.menu_handler.insert("Waypoints", callback=self.noop_menu_callback)
         path_planner_root = self.menu_handler.insert("Path Planner", callback=self.noop_menu_callback)
@@ -79,6 +133,7 @@ class InteractiveControlsNode(Node):
             for label, enabled in (("On", True), ("Off", False))
         }
         self._sensor_noise_menu_state = None
+        self.scene_menu = SceneMenu(self, self.menu_handler, self.server)
         self.obstacle_marker_handle = self.menu_handler.insert(
             "Obstacle marker", callback=self.toggle_obstacle_marker)
         self.menu_handler.setCheckState(self.obstacle_marker_handle, MenuHandler.UNCHECKED)
@@ -322,7 +377,24 @@ class InteractiveControlsNode(Node):
         # Initial application of menu and markers
         self._apply_joint_control_mode(robot = self.uvms_backend.robot_selected)
         self._refresh_robot_menu_state(self.uvms_backend.robot_selected.k_robot)
+        self.uvms_backend.on_targets_reset = self._sync_reset_target_markers
         self._sensor_noise_menu_timer = self.create_timer(0.5, self._refresh_sensor_noise_menu)
+        self._refresh_vehicle_waypoint_delete_menu()
+
+    def _sync_reset_target_markers(self):
+        """Commit reset targets to RViz and their cloud frames together."""
+        backend = self.uvms_backend
+        backend.target_vehicle_in_world_tf_timer_callback()
+        backend.target_arm_base_tf_timer_callback()
+        backend.target_endeffector_in_world_tf_timer_callback()
+        self.uv_marker.pose = copy.deepcopy(backend.target_vehicle_pose)
+        self.arm_base_task_marker.pose = copy.deepcopy(
+            backend.target_world_endeffector_pose if backend.robot_selected.task_based_controller
+            else backend.target_arm_base_endeffector_pose)
+        # setPose updates only inserted markers; vehicle is absent in task mode.
+        self.server.setPose(self.uv_marker.name, self.uv_marker.pose)
+        self.server.setPose(self.arm_base_task_marker.name, self.arm_base_task_marker.pose)
+        self.server.applyChanges()
         self._refresh_vehicle_waypoint_delete_menu()
 
     def set_sensor_noise(self, feedback: InteractiveMarkerFeedback):
@@ -568,7 +640,8 @@ class InteractiveControlsNode(Node):
 
         # Joint mode uses position-only arm IK; do not offer ignored rotation controls.
         self._configure_arm_marker_mode(False)
-        self.arm_base_task_marker.pose = self.uvms_backend.target_arm_base_endeffector_pose
+        self.arm_base_task_marker.header.frame_id = self.uvms_backend.arm_base_target_frame
+        self.arm_base_task_marker.pose = copy.deepcopy(self.uvms_backend.target_arm_base_endeffector_pose)
         self.server.insert(self.arm_base_task_marker)
         self.server.setCallback(self.arm_base_task_marker.name, self.arm_base_task_marker_processFeedback)
 
@@ -591,6 +664,8 @@ class InteractiveControlsNode(Node):
             robot.planner.planned_result = None
         self._clear_markers()
         self._configure_arm_marker_mode(True)
+        self.arm_base_task_marker.header.frame_id = self.uvms_backend.world_frame
+        self.arm_base_task_marker.pose = copy.deepcopy(self.uvms_backend.target_world_endeffector_pose)
 
         self.server.insert(self.arm_base_task_marker)
         self.server.setCallback(self.arm_base_task_marker.name, self.world_task_marker_processFeedback)
@@ -809,30 +884,17 @@ class InteractiveControlsNode(Node):
         return ok
 
     def world_task_marker_processFeedback(self, feedback: InteractiveMarkerFeedback):
-        pose_world = self.uvms_backend.robot_selected.try_transform_pose(
-            feedback.pose,
-            target_frame=self.uvms_backend.world_frame,
-            source_frame=self.uvms_backend.arm_base_target_frame,
-            warn_context="world_task_marker_processFeedback,to_world",
-        )
-        if pose_world is None:
+        if (feedback.event_type != InteractiveMarkerFeedback.POSE_UPDATE
+                or getattr(self.uvms_backend, "scene_transition", False)):
             return
-
-        ok, message = self.uvms_backend.set_task_target_world(self.uvms_backend.robot_selected, pose_world)
+        if feedback.header.frame_id != self.uvms_backend.world_frame:
+            return
+        ok, message = self.uvms_backend.set_task_target_world(
+            self.uvms_backend.robot_selected, feedback.pose)
         if not ok:
             self.get_logger().warn(message)
             return
-
-        pose_arm = self.uvms_backend.robot_selected.try_transform_pose(
-            self.uvms_backend.target_world_endeffector_pose,
-            target_frame=self.uvms_backend.arm_base_target_frame,
-            source_frame=self.uvms_backend.world_frame,
-            warn_context="world_task_marker_processFeedback,to_arm_base",
-        )
-        if pose_arm is None:
-            return
-
-        self.server.setPose(feedback.marker_name, pose_arm)
+        self.server.setPose(feedback.marker_name, self.uvms_backend.target_world_endeffector_pose)
         self.server.applyChanges()
 
     def destroy_node(self):

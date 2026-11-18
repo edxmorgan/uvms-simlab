@@ -2,6 +2,7 @@ import numpy as np
 from rclpy.node import Node
 
 from simlab.controllers.base import ControllerTemplate
+from simlab.dynamics_profiles import NominalModel, load_robot_dynamics_profile
 from scipy.spatial.transform import Rotation
 from simlab.uvms_parameters import select_robot_params
 
@@ -26,11 +27,10 @@ except ImportError as exc:
 class OgesModelbasedController(ControllerTemplate):
     name = "OGES"
     registry_name = "Ours"
-    attitude_error = 'so3_log_world'
-    configuration_fields = ('attitude_error', 'vehicle_weights', 'arm_weights', 'vehicle_w_scale',
-                            'arm_w_scale', 'vehicle_lowpass_tau', 'arm_lowpass_tau',
-                            'use_vehicle_control_filter', 'use_arm_control_filter',
-                            'arm_u_min', 'arm_u_max', 'grasper_kp', 'grasper_kd')
+    attitude_error = 'so3_log_body'
+    configuration_fields = ('attitude_error', 'vehicle_weights', 'arm_weights',
+                            'vehicle_w_scale', 'arm_w_scale', 'arm_u_min', 'arm_u_max',
+                            'grasper_kp', 'grasper_kd')
 
     def set_model_profile(self, model) -> None:
         # Loaders may return parameter classes. Instantiate before assigning to
@@ -42,6 +42,7 @@ class OgesModelbasedController(ControllerTemplate):
         alpha.step_model_params = model.arm_oges
         self.blue, self.alpha_params = blue, alpha
         self.model_profile_sha256 = model.sha256
+        self.reset_controller_state()
 
     def configuration_snapshot(self) -> dict:
         result = super().configuration_snapshot()
@@ -52,28 +53,20 @@ class OgesModelbasedController(ControllerTemplate):
             vehicle_u_max=np.asarray(self.blue.u_max, dtype=float).tolist())
         return result
 
-    def reset_controller_state(self) -> None:
-        """Start an independent segment without previous-command filter memory."""
-        self.vehicle_u_prev = np.zeros(6, dtype=float)
-        self.arm_u_prev = np.zeros(self.arm_dof, dtype=float)
-
     def __init__(self, node: Node, arm_dof: int = 4, robot_prefix: str = ""):
         super().__init__(node, arm_dof, robot_prefix)
         if NAMOR_IMPORT_ERROR is not None:
             raise ImportError(
                 "OgesModelbasedController requires the optional 'namor' dependency."
             ) from NAMOR_IMPORT_ERROR
-        self.use_vehicle_control_filter = True
-        self.use_arm_control_filter = False
-
         self.uv_oges = OGES(n_dof=6, use_jit=True, cyclic_dims=(3, 4, 5))
         uv_A, uv_b, uv_V = self.uv_oges.define_lyapunov_joint_constraints()
         self.vehicle_policy = self.uv_oges.controller(
             uv_A,
             uv_b,
             uv_V,
-            include_constraint_violation=True,
-            filter_control=self.use_vehicle_control_filter,
+            filter_control=False,
+            nominal_feedback=True,
         )
 
         self.arm_oges = OGES(n_dof=self.arm_dof, use_jit=True)
@@ -82,8 +75,7 @@ class OgesModelbasedController(ControllerTemplate):
             arm_A,
             arm_b,
             arm_V,
-            include_constraint_violation=True,
-            filter_control=self.use_arm_control_filter,
+            filter_control=False,
         )
 
         self.vehicle_weights = build_weight_vector(
@@ -95,7 +87,7 @@ class OgesModelbasedController(ControllerTemplate):
 
         self.arm_weights = build_weight_vector(
             a1=[100, 100, 100, 100],
-            a2=[4, 3, 2, 0.04],
+            a2=[4., 3., 2., 100./225.],
             cross_ratio=0.95,
             decay_rate=0.001,
         )
@@ -103,20 +95,29 @@ class OgesModelbasedController(ControllerTemplate):
         self.blue = load_blue_rov_params()
         self.alpha_params = load_alpha_reach_params()
         self.arm_params, self.vehicle_params = select_robot_params(self.robot_prefix)
+        # Model layout differs from the adapters, but the physical defaults do
+        # not: include the same mounting pose, current and actuator limits.
+        import copy
+        self.blue = self.blue() if isinstance(self.blue, type) else copy.copy(self.blue)
+        self.alpha_params = (self.alpha_params() if isinstance(self.alpha_params, type)
+                             else copy.copy(self.alpha_params))
+        self.blue.sim_p = np.r_[np.asarray(self.vehicle_params.model_params).ravel(),
+                               np.asarray(self.vehicle_params.v_c).ravel()]
+        self.blue.u_min = np.asarray(self.vehicle_params.u_min).copy()
+        self.blue.u_max = np.asarray(self.vehicle_params.u_max).copy()
+        self.alpha_params.step_model_params = np.r_[
+            np.asarray(self.arm_params.sim_p).ravel(), self.arm_params.tipOffset]
 
         self.M_uv_matrix = load_uv_model_function("M_id.casadi")
         self.C_uv_mat = load_uv_model_function("C_id.casadi")
         self.g_uv_vec = load_uv_model_function("g_depth_id.casadi")
         self.Dp_uv_vec = load_uv_model_function("body_damping_matrix_id.casadi")
-        self.J_uv = load_uv_model_function("J_uv.casadi")
 
         self.M_arm_matrix = load_manipulator_model_function("alpha_id_D.casadi")
         self.Cqot_arm_vector = load_manipulator_model_function("alpha_id_Cqot.casadi")
         self.g_arm_vec = load_manipulator_model_function("alpha_id_g.casadi")
         self.B_arm_vec = load_manipulator_model_function("alpha_id_B.casadi")
 
-        self.vehicle_u_prev = np.zeros(6, dtype=float)
-        self.arm_u_prev = np.zeros(self.arm_dof, dtype=float)
         self.arm_u_min = self.arm_vector(
             list(self.arm_params.u_min) + list(self.arm_params.grasper_u_min),
             "arm_u_min",
@@ -129,15 +130,23 @@ class OgesModelbasedController(ControllerTemplate):
         self.grasper_kd = float(self.arm_params.grasper_kd[0])
         self.vehicle_w_scale = 0.1
         self.arm_w_scale = 1.0
-        self.vehicle_lowpass_tau = np.full(6, 0.0)
-        self.arm_lowpass_tau = np.array([0.1, 0.1, 0.1, 0.25])
+        if 'real' not in robot_prefix:
+            # Shared engineer-selected nominal model, independent of plant changes.
+            model = NominalModel.from_profile(load_robot_dynamics_profile('dory_alpha', node))
+            self.blue.sim_p = model.vehicle_oges
+            self.alpha_params.step_model_params = model.arm_oges
+            self.model_profile_sha256 = model.sha256
 
-        self.node.get_logger().info(
-            f"\033[96mOGES vehicle controller {self.vehicle_policy} : controller active.\033[0m"
-        )
-        self.node.get_logger().info(
-            f"\033[93mOGES controller parameters{self.blue.sim_p} : controller active.\033[0m"
-        )
+    def bounded_arm_effort(self, arm_tau, grasper_tau):
+        effort = self.arm_vector(np.r_[arm_tau, grasper_tau], 'arm effort')
+        if not np.isfinite(effort).all():
+            raise ValueError('OGES returned nonfinite arm effort')
+        return np.clip(effort, self.arm_u_min, self.arm_u_max)
+
+    def _evaluate_policy(self, subsystem, args, dt):
+        """Call the controller API; DR overrides only this final evaluation."""
+        policy = getattr(self, subsystem + '_policy')
+        return np.asarray(policy(*args)[0], dtype=float).reshape(-1)
 
     def vehicle_controller(
         self,
@@ -148,6 +157,8 @@ class OgesModelbasedController(ControllerTemplate):
         dt: float,
     ) -> np.ndarray:
         dt = float(dt)
+        if not np.isfinite(dt) or dt <= 0:
+            raise ValueError('OGES vehicle dt must be finite and positive')
 
         vr_i = state[6:12].reshape(-1, 1)
 
@@ -157,7 +168,7 @@ class OgesModelbasedController(ControllerTemplate):
         Dp_i = self.Dp_uv_vec(vr_i, self.blue.sim_p)
 
         F_i = g_i + C_i @ vr_i + Dp_i @ vr_i
-        N_i = np.linalg.inv(H_i)
+        N_i = np.linalg.inv(np.asarray(H_i, dtype=float))
         # Physical twists in world axes, not Euler-coordinate rates.
         R = Rotation.from_euler('xyz', state[3:6]).as_matrix()
         Rd = Rotation.from_euler('xyz', target_pos[3:6]).as_matrix()
@@ -187,17 +198,7 @@ class OgesModelbasedController(ControllerTemplate):
             tau_nullspace,
         ]
 
-        if self.use_vehicle_control_filter:
-            vehicle_policy_args.extend([
-                self.vehicle_u_prev,
-                self.vehicle_lowpass_tau,
-                dt,
-            ])
-
-        u, V, null_err, idem_err, metric_err, clf_violation = self.vehicle_policy(*vehicle_policy_args)
-        u = np.asarray(u.full(), dtype=float).reshape(-1)
-        self.vehicle_u_prev = u.copy()
-        return u
+        return self._evaluate_policy('vehicle', vehicle_policy_args, dt)
 
     def arm_controller(
         self,
@@ -209,6 +210,8 @@ class OgesModelbasedController(ControllerTemplate):
         dt: float,
     ) -> np.ndarray:
         dt = float(dt)
+        if not np.isfinite(dt) or dt <= 0:
+            raise ValueError('OGES arm dt must be finite and positive')
 
         q_arm = q[: self.arm_dof]
         qdot_arm = q_dot[: self.arm_dof]
@@ -222,40 +225,18 @@ class OgesModelbasedController(ControllerTemplate):
         B_i = self.B_arm_vec(qdot_arm, self.alpha_params.step_model_params)
 
         F_i = Cqot_i + g_i + B_i
-        N_i = np.linalg.inv(H_i)
+        N_i = np.linalg.inv(np.asarray(H_i, dtype=float))
         Jk = np.eye(self.arm_dof, dtype=float)
         Jk_ref = np.eye(self.arm_dof, dtype=float)
         tau_nullspace = np.zeros(self.arm_dof, dtype=float)
-
         arm_policy_args = [
-            np.concatenate((q_arm, qdot_arm)),
-            self.arm_weights,
-            N_i,
-            H_i,
-            F_i,
-            qref_arm,
-            dqref_arm,
-            ddqref_arm,
-            Jk,
-            Jk_ref,
-            self.arm_w_scale,
-            self.arm_u_min[: self.arm_dof],
-            self.arm_u_max[: self.arm_dof],
-            tau_nullspace,
+            np.concatenate((q_arm, qdot_arm)), self.arm_weights, N_i, H_i, F_i,
+            qref_arm, dqref_arm, ddqref_arm, Jk, Jk_ref, self.arm_w_scale,
+            self.arm_u_min[:self.arm_dof], self.arm_u_max[:self.arm_dof], tau_nullspace,
         ]
-
-        if self.use_arm_control_filter:
-            arm_policy_args.extend([
-                self.arm_u_prev,
-                self.arm_lowpass_tau,
-                dt,
-            ])
-
-        arm_tau, V, null_err, idem_err, metric_err, clf_violation = self.arm_policy(*arm_policy_args)
-        arm_tau = np.asarray(arm_tau.full(), dtype=float).reshape(-1)
-        self.arm_u_prev = arm_tau.copy()
+        arm_tau = self._evaluate_policy('arm', arm_policy_args, dt)
 
         grasp_err = q_ref[-1] - q[-1]
         grasp_d_err = dq_ref[-1] - q_dot[-1]
         grasper_tau = self.grasper_kp * grasp_err + self.grasper_kd * grasp_d_err
-        return np.concatenate((arm_tau, np.array([grasper_tau], dtype=float)))
+        return self.bounded_arm_effort(arm_tau, grasper_tau)

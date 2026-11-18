@@ -17,11 +17,18 @@ def test_dynamic_replanner_registry_exposes_default_strategy():
 
 class FakeDynamicWorld:
     def __init__(self, close_clearance=0.1):
-        self.obstacles = {"moving": object()}
+        self.obstacles = {"moving": SimpleNamespace(owner_robot="", velocity_valid=True, linear_velocity_world=np.zeros(3), angular_velocity_world=np.zeros(3), collision_type=1)}
+        self.unavailable_robot_owners = set()
         self.t_offsets = []
         self.close_clearance = float(close_clearance)
 
-    def min_clearance_xyz(self, xyz, *, t_offset=0.0):
+    def snapshot(self):
+        return self
+
+    def availability_error(self, exclude_owner=""):
+        return None
+
+    def min_clearance_xyz(self, xyz, *, t_offset=0.0, exclude_owner=""):
         np.asarray(xyz, dtype=float).reshape(3)
         self.t_offsets.append(float(t_offset))
         if t_offset >= 3.0:
@@ -35,12 +42,14 @@ class FakeRobot:
     sim_reset_hold = False
     task_based_controller = False
     max_traj_vel = [0.5, 0.0, 0.0]
+    world_frame = "world"
 
     def __init__(self):
         self.planner_action_client = SimpleNamespace(busy=False)
-        self.vehicle_cart_traj = SimpleNamespace(active=True,
-            preview_samples=lambda **kwargs: [(0., [0., 0., -2.]),
-                (2., [1., 0., -2.]), (4., [2., 0., -2.])])
+        self.vehicle_cart_traj = SimpleNamespace(active=True, current_reference=lambda: None,
+            speed_bound=lambda: .5,
+            preview_position=lambda t: [float(t)*.5, 0., -2.],
+            preview_samples=lambda **kwargs: [(float(t), [float(t)*.5, 0., -2.]) for t in np.linspace(0.,4.,81)])
         self.plan_calls = 0
         self.last_plan_kwargs = None
         self.planner = SimpleNamespace(
@@ -56,20 +65,10 @@ class FakeRobot:
             }
         )
 
-    def _pose_from_state_in_frame(self, frame):
-        return SimpleNamespace(
-            position=SimpleNamespace(x=0.0, y=0.0, z=-2.0),
-        )
 
-    def abrupt_planner_stop(self, publish_zero=False):
-        self.vehicle_cart_traj.active = False
 
-    def hold_current_state_with_feedback(self):
-        pass
 
-    def _current_vehicle_velocity_world_nwu(self):
-        # A slowly tracking robot has time for a non-preemptive distant replan.
-        return np.array([0.05, 0.0, 0.0], dtype=float)
+
 
     def plan_vehicle_trajectory_action(self, **kwargs):
         self.plan_calls += 1
@@ -89,10 +88,17 @@ class FakeLogger:
 
 class FakeCurrentClearanceWorld:
     def __init__(self, clearance):
-        self.obstacles = {"moving": object()}
+        self.obstacles = {"moving": SimpleNamespace(owner_robot="", velocity_valid=True, linear_velocity_world=np.zeros(3), angular_velocity_world=np.zeros(3), collision_type=1)}
+        self.unavailable_robot_owners = set()
         self.clearance = float(clearance)
 
-    def min_clearance_xyz(self, xyz, *, t_offset=0.0):
+    def snapshot(self):
+        return self
+
+    def availability_error(self, exclude_owner=""):
+        return None
+
+    def min_clearance_xyz(self, xyz, *, t_offset=0.0, exclude_owner=""):
         np.asarray(xyz, dtype=float).reshape(3)
         return DynamicClearance("moving", self.clearance)
 
@@ -143,83 +149,34 @@ def test_reset_selected_simulation_clears_dynamic_obstacles_before_robot_reset()
     assert events == [("clear_waypoints", 0), "clear_obstacles", "reset_robot"]
 
 
-
-
-def test_dynamic_replanner_does_not_emergency_stop_on_tangent_clearance():
-    robot = FakeRobot()
-    robot.abrupt_stops = 0
-    robot.holds = 0
-    robot.abrupt_planner_stop = lambda publish_zero=False: setattr(robot, "abrupt_stops", robot.abrupt_stops + 1)
-    robot.hold_current_state_with_feedback = lambda: setattr(robot, "holds", robot.holds + 1)
-    mission = SimpleNamespace(pause_calls=0)
-    mission.pause = lambda: setattr(mission, "pause_calls", mission.pause_calls + 1)
-    backend = SimpleNamespace(
-        world_frame="world",
-        dynamic_world=FakeCurrentClearanceWorld(-5e-5),
-    )
-    replanner = ClearanceHysteresisReplanner.__new__(ClearanceHysteresisReplanner)
-    replanner.backend = backend
-    replanner.robot = robot
-    replanner.mission = mission
-    replanner.collision_stop_enabled = True
-    replanner.collision_stop_margin_m = 0.0
-
-    assert not replanner._stop_if_current_dynamic_collision()
-    assert mission.pause_calls == 0
-    assert robot.abrupt_stops == 0
-    assert robot.holds == 0
-
-
-def test_dynamic_replanner_emergency_stops_on_real_penetration():
-    robot = FakeRobot()
-    robot.abrupt_stops = 0
-    robot.holds = 0
-    robot.abrupt_planner_stop = lambda publish_zero=False: setattr(robot, "abrupt_stops", robot.abrupt_stops + 1)
-    robot.hold_current_state_with_feedback = lambda: setattr(robot, "holds", robot.holds + 1)
-    mission = SimpleNamespace(pause_calls=0)
-    mission.pause = lambda: setattr(mission, "pause_calls", mission.pause_calls + 1)
-    backend = SimpleNamespace(
-        world_frame="world",
-        dynamic_world=FakeCurrentClearanceWorld(-5e-3),
-    )
-    replanner = ClearanceHysteresisReplanner.__new__(ClearanceHysteresisReplanner)
-    replanner.backend = backend
-    replanner.robot = robot
-    replanner.mission = mission
-    replanner.node = SimpleNamespace(get_logger=lambda: FakeLogger())
-    replanner.collision_stop_enabled = True
-    replanner.collision_stop_margin_m = 0.0
-
-    assert replanner._stop_if_current_dynamic_collision()
-    assert mission.pause_calls == 1
-    assert robot.abrupt_stops == 1
-    assert robot.holds == 1
-
 def test_dynamic_replanner_uses_predicted_obstacle_time_offsets():
     dynamic_world = FakeDynamicWorld()
     replanner = ClearanceHysteresisReplanner.__new__(ClearanceHysteresisReplanner)
     replanner.backend = SimpleNamespace(
         world_frame="world",
         dynamic_world=dynamic_world,
+        fcl_world=SimpleNamespace(vehicle_radius=.574, min_distance_xyz=lambda xyz: float("inf")),
+        dynamic_replanning_enabled=True,
     )
     replanner.robot = FakeRobot()
     replanner.lookahead_time_s = 10.0
     replanner.safety_margin_m = 0.25
 
-    decision = replanner.evaluate()
+    decision = replanner._remaining_path_decision(replanner.robot)
 
     assert decision.should_replan
-    assert decision.t_offset_s == 4.0
+    assert decision.t_offset_s == 3.0
     assert max(dynamic_world.t_offsets) >= 3.0
 
 
 def test_dynamic_replanner_suppresses_repeat_replan_with_hysteresis():
     robot = FakeRobot()
     backend = SimpleNamespace(
+        dynamic_replanning_enabled=True,
         node=SimpleNamespace(get_logger=lambda: FakeLogger()),
         world_frame="world",
         dynamic_world=FakeDynamicWorld(close_clearance=0.12),
-        fcl_world=SimpleNamespace(vehicle_radius=0.574),
+        fcl_world=SimpleNamespace(vehicle_radius=0.574, min_distance_xyz=lambda xyz: float("inf")),
     )
     mission = SimpleNamespace(
         pause=lambda: None,
@@ -243,7 +200,7 @@ def test_dynamic_replanner_suppresses_repeat_replan_with_hysteresis():
 
     assert robot.plan_calls == 1
     assert robot.last_plan_kwargs is not None
-    assert robot.last_plan_kwargs["robot_collision_radius"] == pytest.approx(0.574 + 0.25)
+    assert robot.last_plan_kwargs["robot_collision_radius"] == pytest.approx(0.574)
     assert robot.last_plan_kwargs["dynamic_obstacle_prediction_speed"] == pytest.approx(0.5)
 
 
@@ -252,12 +209,13 @@ def test_dynamic_replanner_replans_from_current_pose_without_artificial_handoff(
     goal_pose = SimpleNamespace(position=SimpleNamespace(x=3.0, y=0.0, z=-2.0))
     robot.last_vehicle_goal_pose_world = goal_pose
     backend = SimpleNamespace(
+        dynamic_replanning_enabled=True,
         node=SimpleNamespace(get_logger=lambda: FakeLogger()),
         world_frame="world",
         dynamic_world=FakeDynamicWorld(close_clearance=0.12),
-        fcl_world=SimpleNamespace(vehicle_radius=0.574),
+        fcl_world=SimpleNamespace(vehicle_radius=0.574, min_distance_xyz=lambda xyz: float("inf")),
     )
-    backend.dynamic_world.min_clearance_xyz = lambda xyz, t_offset=0.0: DynamicClearance("moving", 2.0 if t_offset < 3.0 else 0.12)
+    backend.dynamic_world.min_clearance_xyz = lambda xyz, t_offset=0.0, exclude_owner="": DynamicClearance("moving", 2.0 if t_offset < 3.0 else 0.12)
     mission = SimpleNamespace(executing=False, active_index=None, active_waypoint=lambda: goal_pose)
     replanner = ClearanceHysteresisReplanner(
         backend,
@@ -274,42 +232,6 @@ def test_dynamic_replanner_replans_from_current_pose_without_artificial_handoff(
     assert robot.plan_calls == 1
     assert robot.last_plan_kwargs["preempt_current"] is False
     assert "handoff_start_xyz" not in robot.last_plan_kwargs
-
-
-def test_dynamic_replanner_retains_single_goal_when_inside_clearance_margin():
-    robot = FakeRobot()
-    goal_pose = object()
-    robot.last_vehicle_goal_pose_world = goal_pose
-    backend = SimpleNamespace(
-        node=SimpleNamespace(get_logger=lambda: FakeLogger()),
-        world_frame="world",
-        dynamic_world=FakeDynamicWorld(close_clearance=0.12),
-        fcl_world=SimpleNamespace(vehicle_radius=0.574),
-    )
-    backend.dynamic_world.min_clearance_xyz = lambda xyz, t_offset=0.0: DynamicClearance("moving", 0.12)
-    mission = SimpleNamespace(
-        pause=lambda: None,
-        resume=lambda: None,
-        executing=False,
-        active_index=None,
-        active_waypoint=lambda: (_ for _ in ()).throw(AssertionError("waypoint goal should not be used")),
-    )
-    replanner = ClearanceHysteresisReplanner(
-        backend,
-        robot,
-        mission,
-        cooldown_s=0.0,
-        lookahead_time_s=10.0,
-        safety_margin_m=0.25,
-        replan_hysteresis_m=0.10,
-    )
-
-    replanner.tick()
-
-    assert robot.plan_calls == 0
-    assert replanner._paused_goal is not None
-    assert replanner._safety_held
-
 
 
 class FakePlannerWorld:
@@ -528,7 +450,6 @@ def test_replan_result_trim_skips_nearly_duplicate_next_waypoint():
     assert trimmed["count"] == 2
 
 
-
 def test_current_vehicle_velocity_rotates_from_map_ned_to_world_nwu(monkeypatch):
     import simlab.robot as robot_module
 
@@ -567,7 +488,7 @@ def test_current_vehicle_velocity_rotates_from_map_ned_to_world_nwu(monkeypatch)
 def test_generator_without_preview_fails_closed():
     replanner = ClearanceHysteresisReplanner.__new__(ClearanceHysteresisReplanner)
     replanner.robot = FakeRobot()
-    replanner.robot.vehicle_cart_traj = SimpleNamespace(active=True)
+    replanner.robot.vehicle_cart_traj = SimpleNamespace(active=True, current_reference=lambda: None)
     decision = replanner._remaining_path_decision(replanner.robot)
     assert decision.should_replan
     assert decision.t_offset_s == 0.0

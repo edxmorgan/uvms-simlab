@@ -28,6 +28,11 @@ class IKStatus(Enum):
 @dataclass(frozen=True)
 class ManipulatorIKRequest:
     target_position: ArrayLike
+    q: ArrayLike | None = None
+    lower: ArrayLike | None = None
+    upper: ArrayLike | None = None
+    tip: ArrayLike | None = None
+    position_tolerance: float = .001
 
 
 @dataclass(frozen=True)
@@ -43,6 +48,7 @@ class WholeBodyIKRequest:
     position_tolerance: float = .01
     orientation_tolerance: float = .05
     base_align_weight: float = 0.
+    vehicle_bounds: ArrayLike | None = None
 
 
 @dataclass(frozen=True)
@@ -67,7 +73,16 @@ def finite_vector(value, size, name):
     return vector.copy()
 
 
+def vehicle_position_bounds(value):
+    bounds = np.asarray(value, dtype=float)
+    if bounds.shape != (3, 2) or not np.isfinite(bounds).all() or np.any(bounds[:, 0] >= bounds[:, 1]):
+        raise ValueError("Vehicle bounds must be finite ordered XYZ intervals")
+    return bounds
+
+
 def validate_pose_request(request):
+    if request.vehicle_bounds is not None:
+        vehicle_position_bounds(request.vehicle_bounds)
     for name, size in (('q', 4), ('world_pose', 6), ('target_position', 3),
                        ('base', 6), ('tip', 6), ('lower', 4), ('upper', 4)):
         finite_vector(getattr(request, name), size, name)
@@ -77,8 +92,8 @@ def validate_pose_request(request):
             not np.isclose(np.linalg.det(rotation), 1., atol=1e-8, rtol=0)):
         raise ValueError('Target rotation must belong to SO(3)')
     lower, upper, q = map(np.asarray, (request.lower, request.upper, request.q))
-    if np.any(lower >= upper) or np.any(q < lower-1e-9) or np.any(q > upper+1e-9):
-        raise ValueError('Invalid joint bounds or measured joints outside bounds')
+    if np.any(lower >= upper):
+        raise ValueError('Invalid joint bounds')
     for tolerance in (request.position_tolerance, request.orientation_tolerance):
         if not np.isfinite(tolerance) or tolerance <= 0:
             raise ValueError('IK tolerances must be finite and positive')
@@ -89,6 +104,10 @@ def validate_pose_request(request):
 def validate_pose_endpoint(request, vehicle_pose, joints, fk):
     """Independent model check, shared by adapters and command acceptance."""
     pose = finite_vector(vehicle_pose, 6, 'vehicle solution')
+    if request.vehicle_bounds is not None:
+        bounds = vehicle_position_bounds(request.vehicle_bounds)
+        if np.any(pose[:3] < bounds[:, 0]-1e-9) or np.any(pose[:3] > bounds[:, 1]+1e-9):
+            raise ValueError('Vehicle solution outside bounds')
     q = finite_vector(joints, 4, 'joint solution')
     if np.any(q < np.asarray(request.lower)-1e-9) or np.any(q > np.asarray(request.upper)+1e-9):
         raise ValueError('Joint solution outside limits')
@@ -153,7 +172,8 @@ class WholeBodyIKTemplate(IKTemplate):
                 request.q, request.world_pose, request.target_position, request.target_rotation,
                 request.base, request.tip, request.lower, request.upper,
                 request.position_tolerance, request.orientation_tolerance,
-                base_align_weight=request.base_align_weight)
+                base_align_weight=request.base_align_weight,
+                **({"vehicle_bounds": request.vehicle_bounds} if request.vehicle_bounds is not None else {}))
             errors = validate_pose_endpoint(request, pose, joints, self.fk)
             errors['elapsed_seconds'] = time.monotonic()-start
             return IKResult(IKStatus.SUCCESS, joints=tuple(joints), vehicle_pose=tuple(pose),

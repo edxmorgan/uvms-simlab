@@ -87,7 +87,7 @@ def test_native_task_action_maps_and_releases(monkeypatch, mapper, frame):
     from rclpy.executors import SingleThreadedExecutor
     from control_msgs.msg import DynamicJointState, InterfaceValue
     from geometry_msgs.msg import TransformStamped
-    from tf2_ros import TransformBroadcaster
+    from tf2_ros import StaticTransformBroadcaster
     from ros2_control_blue_reach_5.msg import DisturbanceCommand, DisturbanceState
     from simlab.action import RunDisturbance
     from simlab.disturbance_injection_node import DisturbanceInjectionNode
@@ -104,7 +104,7 @@ def test_native_task_action_maps_and_releases(monkeypatch, mapper, frame):
     received = []
     q = [.8,1.6,.9,1.1]
     publish_joints = [True]
-    broadcast = TransformBroadcaster(fixture)
+    broadcast = StaticTransformBroadcaster(fixture)
     world_rotation = Rotation.from_euler('xyz', [.4,np.pi/2,.8])
     request_wrench = [1.,-.5,.3,.1,-.2,.4]
     def receive(msg):
@@ -117,11 +117,14 @@ def test_native_task_action_maps_and_releases(monkeypatch, mapper, frame):
     def tick():
         msg = DynamicJointState(joint_names=['robot_1__axis_'+a for a in 'edcb'],
             interface_values=[InterfaceValue(interface_names=['position'], values=[v]) for v in q])
+        msg.joint_names.append('robot_1_IOs')
+        msg.interface_values.append(InterfaceValue(
+            interface_names=['roll', 'pitch', 'yaw'], values=[0., 0., 0.]))
         msg.header.stamp = fixture.get_clock().now().to_msg()
         transform = TransformStamped()
         transform.header.stamp = msg.header.stamp
         transform.header.frame_id = 'world'
-        transform.child_frame_id = 'robot_1_base_link'
+        transform.child_frame_id = 'robot_1_map'
         quat = world_rotation.as_quat()
         transform.transform.rotation.x, transform.transform.rotation.y, transform.transform.rotation.z, transform.transform.rotation.w = map(float, quat)
         broadcast.sendTransform(transform)
@@ -204,7 +207,7 @@ def test_native_task_action_maps_and_releases(monkeypatch, mapper, frame):
         client.destroy(); executor.shutdown(); fixture.destroy_node(); node.destroy_node(); rclpy.shutdown()
 
 
-@pytest.mark.parametrize('fault', ['none','missing_joint','nan_joint','future','stale_stamp','stale_receipt','missing_tf'])
+@pytest.mark.parametrize('fault', ['none','missing_joint','nan_joint','future','stale_stamp','stale_receipt','missing_tf','missing_attitude'])
 def test_task_mapping_requires_fresh_consistent_state(mapper, fault):
     import time
     from types import SimpleNamespace
@@ -219,6 +222,12 @@ def test_task_mapping_requires_fresh_consistent_state(mapper, fault):
     now = clock.now()
     state = DynamicJointState(joint_names=['robot_1__axis_'+a for a in 'edcb'],
         interface_values=[InterfaceValue(interface_names=['position'], values=[v]) for v in [.8,1.6,.9,1.1]])
+    state.joint_names.append('robot_1_IOs')
+    state.interface_values.append(InterfaceValue(
+        interface_names=['roll','pitch','yaw','roll_estimate','pitch_estimate','yaw_estimate'],
+        values=[.2,-.3,.7,1.,1.,1.]))
+    if fault == 'missing_attitude':
+        state.interface_values[-1].values[0] = float('nan')
     state.header.stamp = (now-Duration(seconds=.1)).to_msg()
     receipt = time.monotonic()
     if fault == 'missing_joint':
@@ -235,16 +244,16 @@ def test_task_mapping_requires_fresh_consistent_state(mapper, fault):
     if fault != 'missing_tf':
         for delay in (.2,.05):
             tf = TransformStamped()
-            tf.header.frame_id, tf.child_frame_id = 'world','robot_1_base_link'
+            tf.header.frame_id, tf.child_frame_id = 'world','robot_1_map'
             tf.header.stamp = (now-Duration(seconds=delay)).to_msg()
             tf.transform.rotation.w = 1.
-            buffer.set_transform(tf, 'test')
+            buffer.set_transform_static(tf, 'test')
     probe = SimpleNamespace(joint_states=deque([(state,receipt)]), prefix='robot_1_',
         get_clock=lambda:clock, tf_buffer=buffer, task_mapper=mapper)
     if fault == 'none':
         q,rotation,stamp = DisturbanceInjectionNode.task_state(probe,'world')
         assert q == [.8,1.6,.9,1.1]
-        np.testing.assert_array_equal(rotation,np.eye(3))
+        np.testing.assert_allclose(rotation, Rotation.from_euler('xyz',[.2,.3,-.7]).as_matrix(), atol=1e-14)
         assert stamp == state.header.stamp
     else:
         with pytest.raises(ValueError):

@@ -2,17 +2,22 @@ from geometry_msgs.msg import TransformStamped
 from visualization_msgs.msg import Marker
 from geometry_msgs.msg import Pose
 import numpy as np
+from functools import lru_cache
 
-def compute_bounding_sphere_radius(points, quantile=0.995, pad=0.03):
+@lru_cache(maxsize=1)
+def robot_obstacle_radius():
+    """Shared vehicle/arm workspace sphere, centred at the vehicle base.
+
+    Use the outermost workspace sample, not a random point-cloud quantile.
+    This is the navigation approximation, not exact articulated geometry.
     """
-    Robust radius from the origin for a cloud, using a high quantile,
-    then add a small pad.
-    """
-    pts = np.asarray(points, dtype=float)
-    if pts.ndim != 2 or pts.shape[1] != 3 or pts.size == 0:
-        return 0.4  # fallback
-    r = np.linalg.norm(pts, axis=1)
-    return float(np.quantile(r, quantile) + pad)
+    from pathlib import Path
+    from ament_index_python.packages import get_package_share_directory
+    path = Path(get_package_share_directory('simlab')) / 'model_functions/arm/workspace.npy'
+    points = np.load(path)
+    if points.ndim != 2 or points.shape[1] != 3 or not np.isfinite(points).all() or not len(points):
+        raise ValueError('Invalid arm workspace for robot obstacle sphere')
+    return max(.3, float(np.linalg.norm(points, axis=1).max())) + .03
 
 
 def makeBox(fixed, scale, marker_type, initial_pose):
@@ -106,3 +111,40 @@ def visualize_min_max_coords(min_coords, max_coords, bottom_z, world_frame):
     max_marker.action = Marker.ADD
 
     return min_marker, max_marker
+
+
+def environment_grid_markers(bounds, frame):
+    """Two retained square grids covering scene XY bounds, at surface and floor."""
+    from geometry_msgs.msg import Point
+    from visualization_msgs.msg import MarkerArray
+    import math
+    xmin, xmax, ymin, ymax, bottom, _ = map(float, bounds)
+    if not all(map(math.isfinite, (xmin, xmax, ymin, ymax, bottom))) or xmin > xmax or ymin > ymax:
+        raise ValueError('Invalid environment grid bounds')
+    span = max(50., xmax - xmin, ymax - ymin)
+    # 1/2/5 metre progression; at most 200 cells across either grid.
+    required = max(1., span / 198.)
+    decade = 10. ** math.floor(math.log10(required))
+    step = next(m * decade for m in (1., 2., 5., 10.) if m * decade >= required)
+    cx, cy = (xmin + xmax) / 2., (ymin + ymax) / 2.
+    x0 = math.floor((cx - span / 2.) / step) * step
+    y0 = math.floor((cy - span / 2.) / step) * step
+    cells = math.ceil(max(xmax - x0, ymax - y0, span) / step)
+    result = MarkerArray()
+    for index, (z, color) in enumerate(((0., (1., 1., 1.)), (bottom, (139/255., 69/255., 19/255.)))):
+        marker = Marker()
+        marker.header.frame_id = frame
+        marker.ns = 'environment_grid'
+        marker.id = index
+        marker.type = Marker.LINE_LIST
+        marker.action = Marker.ADD
+        marker.pose.orientation.w = 1.
+        marker.scale.x = .03
+        marker.color.r, marker.color.g, marker.color.b = color
+        marker.color.a = .5
+        for i in range(cells + 1):
+            x, y = x0 + i * step, y0 + i * step
+            marker.points.extend([Point(x=x, y=y0, z=z), Point(x=x, y=y0 + cells * step, z=z),
+                                  Point(x=x0, y=y, z=z), Point(x=x0 + cells * step, y=y, z=z)])
+        result.markers.append(marker)
+    return result

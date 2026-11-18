@@ -62,10 +62,17 @@ class BagRecorder(Node):
         self._subs = []
         self._topic_names: List[str] = []
         self._topics = list(topics)
+        from std_msgs.msg import String
+        self._topics.extend([TopicSpec(name, String, "std_msgs/msg/String", transient_local_qos())
+                             for name in ("/robot_description", "/environment_scene/status")
+                             if name not in {spec.name for spec in self._topics}])
         self._topics.extend(self._dynamic_obstacle_topic_specs())
+        self._topics.extend(self._transform_topic_specs())
         self._topics.extend(self._desired_target_topic_specs(robot_prefixes))
+        self._topics.extend(self._controller_trace_topic_specs(robot_prefixes))
         self._topics.extend(self._disturbance_topic_specs(robot_prefixes))
         self._topics.extend(self._evaluation_trace_topic_specs(robot_prefixes))
+
 
         self._topic_names = [spec.name for spec in self._topics]
 
@@ -97,6 +104,22 @@ class BagRecorder(Node):
         for sub in self._subs:
             self.destroy_subscription(sub)
         self._subs = []
+
+    @staticmethod
+    def _transform_topic_specs() -> List[TopicSpec]:
+        from tf2_msgs.msg import TFMessage
+        # Preserve both operational localization and physical camera geometry.
+        return [TopicSpec(topic, TFMessage, "tf2_msgs/msg/TFMessage",
+                          transient_local_qos(depth=100) if topic.endswith('tf_static') else 100)
+                for topic in ('/tf', '/tf_static', '/simulation_truth/tf',
+                              '/simulation_truth/tf_static')]
+
+    @staticmethod
+    def _controller_trace_topic_specs(robot_prefixes):
+        from std_msgs.msg import String
+        return [spec for prefix in robot_prefixes for spec in (
+            TopicSpec(f"/{prefix}/controller/context", String, "std_msgs/msg/String", transient_local_qos()),
+            TopicSpec(f"/{prefix}/performance/kinematics", String, "std_msgs/msg/String", 10))]
 
     @staticmethod
     def _evaluation_trace_topic_specs(robot_prefixes: List[str]) -> List[TopicSpec]:

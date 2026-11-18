@@ -16,6 +16,7 @@
 #!/usr/bin/env python3
 import copy
 import json
+import textwrap
 from datetime import datetime
 from simlab.uvms_parameters import ReachParams
 from rclpy.node import Node
@@ -25,6 +26,7 @@ from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
 from rcl_interfaces.srv import SetParameters
 import rclpy
 from simlab.fcl_checker import FCLWorld
+from simlab.planner_world import PlannerWorld, DEFAULT_BOUNDARY_TRACKING_TOLERANCE_M
 import numpy as np
 from scipy.spatial.transform import Rotation
 from scipy.spatial import ConvexHull
@@ -97,6 +99,7 @@ class UVMSBackendCore:
                   robot_model):
         package_share_directory = ament_index_python.get_package_share_directory('simlab')
         self.node = node
+        self.on_targets_reset = None
         self.tf_broadcaster = tf2_ros.TransformBroadcaster(self.node)
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self.node)
@@ -128,7 +131,6 @@ class UVMSBackendCore:
         self.node.get_logger().info(f"self.fcl_world.floor_depth: {self.fcl_world.floor_depth:.3f} m")
         self.node.get_logger().info(f"Minimum coordinates (min_x, min_y, min_z): {self.fcl_world.min_coords}")
         self.node.get_logger().info(f"Maximum coordinates (max_x, max_y, max_z): {self.fcl_world.max_coords}")
-        self.node.get_logger().info(f"Oriented Bounding Box corners: {self.fcl_world.obb_corners}")
 
          # Load workspace point cloud and hull
         workspace_pts_path = os.path.join(package_share_directory, 'model_functions/arm/workspace.npy')
@@ -145,6 +147,9 @@ class UVMSBackendCore:
 
         self.taskspace_pc_publisher_ = self.node.create_publisher(PointCloud2,'workspace_pointcloud',pointcloud_qos)
         self.rov_pc_publisher_ = self.node.create_publisher(PointCloud2, 'base_pointcloud', pointcloud_qos)
+        header = Header(frame_id=self.vehicle_target_frame, stamp=Time().to_msg())
+        self._target_cloud_messages = tuple(pc2.create_cloud_xyz32(header, points) for points in (
+            self.workspace_pts, self.rov_ellipsoid_cl_pts, np.empty((0, 3), dtype=np.float32)))
         self.robot_metrics_overlay_pub = self.node.create_publisher(
             OverlayText,
             'robot_metrics_overlay_text',
@@ -156,13 +161,7 @@ class UVMSBackendCore:
             10,
         )
 
-        # stack clouds that represent the vehicle occupied volume
-        all_pts = np.vstack([
-            np.asarray(self.rov_ellipsoid_cl_pts, dtype=float),
-            np.asarray(self.workspace_pts, dtype=float)
-        ])
-
-        robot_collision_radius = geometry.compute_bounding_sphere_radius(all_pts, quantile=0.995, pad=0.03)
+        robot_collision_radius = geometry.robot_obstacle_radius()
         self.node.get_logger().info(f"Planner robot approximation sphere radius set to {robot_collision_radius:.3f} m")
         self.fcl_world.set_robot_collision_radius(robot_collision_radius)
         self.dynamic_world = DynamicWorldModel(
@@ -240,9 +239,12 @@ class UVMSBackendCore:
             )
             robot_k.set_control_mode(ControlMode.PLANNER)
             robot_k.dynamic_obstacle_snapshot_provider = self.dynamic_obstacle_snapshot_for_recording
+            robot_k.task_motion_validator = lambda start, goal, prefix=robot_k.prefix: self.validate_task_vehicle_motion(start, goal, prefix)
+            robot_k.task_vehicle_bounds_provider = self.task_vehicle_bounds
 
             self.robots.append(robot_k)
             self.vehicle_waypoint_missions[k] = VehicleWaypointMission(robot_prefix=prefix)
+            robot_k.on_control_mode_changed = self.vehicle_waypoint_missions[k].stop
             self.vehicle_waypoint_viz[k] = VehicleWaypointViz(
                 self.planner_marker_publisher,
                 ns=f"vehicle_waypoints/{prefix}",
@@ -261,6 +263,7 @@ class UVMSBackendCore:
             self._mocap_pose_cb,
             10,
         )
+        self._robot_targets = {}
         self.initialise_target_Poses()
         self.camera_selection_retry_timer = self.node.create_timer(
             0.5,
@@ -282,7 +285,10 @@ class UVMSBackendCore:
         self.dynamic_replanner_timer = None
         self.dynamic_replanning_enabled = False
         self.dynamic_replanning_rate = float(parameter_or_default(self.node, "dynamic_replanning_rate", 3.0))
-        self.dynamic_braking_deceleration = float(parameter_or_default(self.node, 'dynamic_braking_deceleration', 0.1))
+        self.task_boundary_tracking_tolerance = float(parameter_or_default(
+            self.node, 'task_boundary_tracking_tolerance', DEFAULT_BOUNDARY_TRACKING_TOLERANCE_M))
+        if not np.isfinite(self.task_boundary_tracking_tolerance) or self.task_boundary_tracking_tolerance < 0:
+            raise ValueError('task_boundary_tracking_tolerance must be finite and nonnegative')
         self.dynamic_replanning_latency_budget = float(parameter_or_default(self.node, 'dynamic_replanning_latency_budget', 1.5))
         self.dynamic_replanning_cooldown = float(parameter_or_default(self.node, "dynamic_replanning_cooldown", 1.0))
         self.dynamic_replanning_lookahead_time = float(
@@ -294,19 +300,17 @@ class UVMSBackendCore:
         self.dynamic_replanning_hysteresis = float(
             parameter_or_default(self.node, "dynamic_replanning_hysteresis", 0.10)
         )
-        self.dynamic_collision_stop_enabled = bool(
-            parameter_or_default(self.node, "dynamic_collision_stop_enabled", True)
-        )
-        self.dynamic_collision_stop_margin = float(
-            parameter_or_default(self.node, "dynamic_collision_stop_margin", 0.0)
-        )
         self.dynamic_replanning_enabled = bool(parameter_or_default(self.node, "dynamic_replanning_enabled", False))
-        if self.dynamic_replanning_enabled:
-            self._enable_dynamic_replanning()
+        self._start_dynamic_monitoring()
         self._create_backend_api_services()
 
     def close(self) -> None:
         self._disable_dynamic_replanning()
+        self.dynamic_replanners.clear()
+        if self.dynamic_replanner_timer is not None:
+            self.dynamic_replanner_timer.cancel()
+            self.node.destroy_timer(self.dynamic_replanner_timer)
+            self.dynamic_replanner_timer = None
         if self.dynamic_world is not None:
             self.dynamic_world.close()
             self.dynamic_world = None
@@ -320,9 +324,7 @@ class UVMSBackendCore:
         for replanner in list(self.dynamic_replanners.values()):
             replanner.tick()
 
-    def _enable_dynamic_replanning(self) -> None:
-        if self.dynamic_replanning_rate <= 0.0:
-            raise RuntimeError("dynamic_replanning_rate must be > 0 when dynamic replanning is enabled.")
+    def _start_dynamic_monitoring(self) -> None:
         if self.dynamic_world is None:
             self.dynamic_world = DynamicWorldModel(
                 self.node,
@@ -339,23 +341,20 @@ class UVMSBackendCore:
                 cooldown_s=self.dynamic_replanning_cooldown,
                 lookahead_time_s=self.dynamic_replanning_lookahead_time,
                 safety_margin_m=self.dynamic_replanning_safety_margin,
-                collision_stop_enabled=self.dynamic_collision_stop_enabled,
-                collision_stop_margin_m=self.dynamic_collision_stop_margin,
                 replan_hysteresis_m=self.dynamic_replanning_hysteresis,
             )
             for robot in self.robots
         }
         self._recreate_dynamic_replanner_timer()
+
+    def _enable_dynamic_replanning(self) -> None:
         self.dynamic_replanning_enabled = True
+        self._recreate_dynamic_replanner_timer()
         self.node.get_logger().info(self._dynamic_replanning_status_message())
 
     def _disable_dynamic_replanning(self) -> None:
         self.dynamic_replanning_enabled = False
-        self.dynamic_replanners.clear()
-        if self.dynamic_replanner_timer is not None:
-            self.dynamic_replanner_timer.cancel()
-            self.node.destroy_timer(self.dynamic_replanner_timer)
-            self.dynamic_replanner_timer = None
+        self._recreate_dynamic_replanner_timer()
         self.node.get_logger().info("Dynamic replanning disabled.")
 
     def _recreate_dynamic_replanner_timer(self) -> None:
@@ -363,8 +362,10 @@ class UVMSBackendCore:
             self.dynamic_replanner_timer.cancel()
             self.node.destroy_timer(self.dynamic_replanner_timer)
             self.dynamic_replanner_timer = None
+        if not self.dynamic_replanning_enabled:
+            return
         if self.dynamic_replanning_rate <= 0.0:
-            raise RuntimeError("dynamic_replanning_rate must be > 0 when dynamic replanning is enabled.")
+            raise RuntimeError("dynamic_replanning_rate must be > 0 when replanning is enabled.")
         self.dynamic_replanner_timer = self.node.create_timer(
             1.0 / self.dynamic_replanning_rate,
             self.dynamic_replanning_callback,
@@ -380,8 +381,6 @@ class UVMSBackendCore:
             f"lookahead={self.dynamic_replanning_lookahead_time:.2f} s, "
             f"safety_margin={self.dynamic_replanning_safety_margin:.3f} m, "
             f"replan_hysteresis={self.dynamic_replanning_hysteresis:.3f} m, "
-            f"collision_stop={'enabled' if self.dynamic_collision_stop_enabled else 'disabled'}, "
-            f"collision_stop_margin={self.dynamic_collision_stop_margin:.3f} m"
             + self._dynamic_replanner_status_suffix()
         )
 
@@ -423,13 +422,10 @@ class UVMSBackendCore:
                 cooldown_s=self.dynamic_replanning_cooldown,
                 lookahead_time_s=self.dynamic_replanning_lookahead_time,
                 safety_margin_m=self.dynamic_replanning_safety_margin,
-                collision_stop_enabled=self.dynamic_collision_stop_enabled,
-                collision_stop_margin_m=self.dynamic_collision_stop_margin,
                 replan_hysteresis_m=self.dynamic_replanning_hysteresis,
             )
 
-        if self.dynamic_replanning_enabled:
-            self._recreate_dynamic_replanner_timer()
+        self._recreate_dynamic_replanner_timer()
 
         if enabled is True and not self.dynamic_replanning_enabled:
             self._enable_dynamic_replanning()
@@ -512,7 +508,8 @@ class UVMSBackendCore:
         if controller_name not in robot.list_controllers():
             return False, f"unknown controller '{controller_name}'"
         if not robot.set_controller(controller_name):
-            return False, f"controller {controller_name} rejected for {robot.prefix}"
+            return False, (getattr(robot, "controller_selection_error", "") or
+                           f"controller {controller_name} rejected for {robot.prefix}")
         return True, f"controller set to {controller_name} for {robot.prefix}"
 
     def set_robot_planner(self, robot: Robot, planner_name: str) -> tuple[bool, str]:
@@ -565,6 +562,9 @@ class UVMSBackendCore:
                 rot_rep='quat_wxyz', frame='NWU').get_pose_as_Pose_msg()
         except (ValueError, RuntimeError) as error:
             return False, f'Joint-space state capture failed: {error}'
+        gate = getattr(robot, 'execution_gate', None)
+        was_authorized = gate is not None and gate.authorized
+        active_components = set(getattr(gate, 'active_components', ('vehicle', 'manipulator')))
         # Cancel pending/old plans before re-enabling the joint-space sampler.
         robot.abrupt_planner_stop(publish_zero=False)
         self.vehicle_waypoint_missions[robot.k_robot].stop()
@@ -576,6 +576,11 @@ class UVMSBackendCore:
         self.target_vehicle_pose = vehicle_world
         self.target_arm_base_endeffector_pose = arm_marker
         self.target_world_endeffector_pose = task_marker
+        notify = getattr(self, 'on_targets_reset', None)
+        if notify is not None:
+            notify()
+        if was_authorized:
+            robot.authorize_motion(components=active_components)
         return True, 'Joint-space targets initialized from measured state'
 
     def set_robot_dynamics_profile(self, robot: Robot, profile_name: str, on_success=None) -> tuple[bool, str]:
@@ -641,7 +646,10 @@ class UVMSBackendCore:
             return True
         if obstacle_msg.header.frame_id != self.world_frame:
             raise ValueError(f"{label}: expected frame {self.world_frame}")
-        return self._edit_obstacles('replace', obstacle_msg.obstacles)
+        # Robot records describe observed entities, never editable simulated objects.
+        editable = [item for item in obstacle_msg.obstacles
+                    if not item.owner_robot and item.source != 'robot']
+        return self._edit_obstacles('replace', editable)
 
     def select_replay_profile(self, robot: Robot, profile_name: str) -> tuple[bool, str]:
         controller = self._cmd_replay_controller(robot)
@@ -676,30 +684,34 @@ class UVMSBackendCore:
             if feedback is None or robot._controller_is_replay(feedback):
                 return False, 'requested feedback controller is unavailable'
 
+        robot._hold_after_arm_replay = False
         if not robot.activate_cmd_replay_controller():
             return False, f"CmdReplay activation failed for {robot.prefix}"
         request = controller.build_reset_request()
         if not controller.begin_sequence(request.hold_commands):
             return False, f"CmdReplay reset rejected for {robot.prefix}"
         execution_id = controller.execution_id
+        mode_epoch = getattr(robot, '_control_mode_epoch', 0)
         robot._replay_reset_pending = True
 
         def _still_preparing():
-            return (controller.execution_id == execution_id
+            return (getattr(robot, '_control_mode_epoch', 0) == mode_epoch
+                    and robot.control_mode == ControlMode.REPLAY
+                    and controller.execution_id == execution_id
                     and controller.playback_status() == 'resetting'
                     and robot.controller_name == 'CmdReplay')
 
         def _fail_replay_reset():
-            robot._replay_reset_pending = False
             if not _still_preparing():
                 return
+            robot._replay_reset_pending = False
             controller.mark_reset_failed()
             robot.publish_commands([0.0] * 6, [0.0] * 5)
 
         if hasattr(controller, "reset_mode") and controller.reset_mode() == "controller_settle":
             def _settle_after_dynamics():
-                robot._replay_reset_pending = False
                 if _still_preparing():
+                    robot._replay_reset_pending = False
                     robot.start_replay_controller_settle(controller)
             robot.apply_sim_dynamics_from_reset_request(
                 request,
@@ -709,9 +721,9 @@ class UVMSBackendCore:
             return True, f"CmdReplay controller-settle reset requested for {robot.prefix}"
 
         def _start_after_reset():
-            robot._replay_reset_pending = False
             if not _still_preparing():
                 return
+            robot._replay_reset_pending = False
             robot.set_control_mode(ControlMode.REPLAY)
             controller.mark_reset_succeeded()
 
@@ -729,6 +741,7 @@ class UVMSBackendCore:
         if hasattr(robot, "cancel_replay_settle"):
             robot.cancel_replay_settle(mark_failed=False)
         controller.stop_playback()
+        robot._replay_reset_pending = False
         if hasattr(robot, "_stop_replay_session_recording"):
             robot._stop_replay_session_recording("stopped")
         robot.publish_commands([0.0] * 6, [0.0] * 5)
@@ -763,6 +776,8 @@ class UVMSBackendCore:
         return clipped_pose, clipped
 
     def set_vehicle_target(self, robot: Robot, pose: Pose) -> tuple[bool, str]:
+        if getattr(self, 'scene_transition', False):
+            return False, 'Target changes are paused during scene switching'
         self.set_robot_selected(robot.k_robot)
         self.target_vehicle_pose, clipped = self._clip_pose_to_environment_bounds(pose)
         if not robot.task_based_controller:
@@ -772,12 +787,16 @@ class UVMSBackendCore:
         return True, f"vehicle target set for {robot.prefix}{suffix}"
 
     def set_task_target_world(self, robot: Robot, pose: Pose) -> tuple[bool, str]:
+        if getattr(self, 'scene_transition', False):
+            return False, 'Target changes are paused during scene switching'
         self.set_robot_selected(robot.k_robot)
         self.target_world_endeffector_pose, clipped = self._clip_pose_to_environment_bounds(pose)
         suffix = " within environment bounds" if clipped else ""
         return True, f"world task target set for {robot.prefix}{suffix}"
 
     def set_task_target_arm_base(self, robot: Robot, pose: Pose) -> tuple[bool, str]:
+        if getattr(self, 'scene_transition', False):
+            return False, 'Target changes are paused during scene switching'
         self.set_robot_selected(robot.k_robot)
         if not self.is_valid_arm_base_task(pose):
             return False, f"arm-base task target rejected for {robot.prefix}: outside reachable workspace"
@@ -879,6 +898,16 @@ class UVMSBackendCore:
                 return self._api_response(response, *self.select_robot(request.robot_index))
             if robot is None:
                 return self._api_response(response, False, f"invalid robot_index={request.robot_index}")
+            if command == 'hold_arm':
+                robot.start_arm_hold(request.name or 'PID')
+                return self._api_response(response, True, json.dumps({'holding': True, 'position': robot._arm_hold_target.tolist()}))
+            if command == 'replay_start_from_hold':
+                robot.start_arm_replay_from_hold(self._cmd_replay_controller(robot))
+                return self._api_response(response, True, 'Arm reference playback started from hold')
+            if command == "stop_execution":
+                self.vehicle_waypoint_missions[robot.k_robot].stop()
+                robot.stop_execution()
+                return self._api_response(response, True, 'Execution stopped; effort zero, physics pause state unchanged')
             if command == "set_controller":
                 return self._api_response(response, *self.set_robot_controller(robot, request.name))
             if command == "set_planner":
@@ -1122,6 +1151,8 @@ class UVMSBackendCore:
         return True
 
     def plan_execute_selected(self) -> bool:
+        if getattr(self, "scene_transition", False):
+            return False
         robot = self.selected_robot
         if robot.controller_name == "CmdReplay":
             self.node.get_logger().warn(
@@ -1222,6 +1253,11 @@ class UVMSBackendCore:
             robot.planner.clear_path(stamp_now, robot.world_frame)
             robot.planner.clear_target(stamp_now, robot.world_frame)
 
+    def stop_selected_execution(self):
+        robot = self.selected_robot
+        self.vehicle_waypoint_missions[robot.k_robot].stop()
+        robot.stop_execution()
+
     def stop_selected_vehicle_waypoints(self) -> None:
         mission = self.selected_vehicle_waypoint_mission()
         if not mission.executing:
@@ -1233,6 +1269,8 @@ class UVMSBackendCore:
         self.node.get_logger().info(f"Stopped vehicle waypoint mission for {self.selected_robot.prefix}.")
 
     def execute_selected_vehicle_waypoints(self) -> bool:
+        if getattr(self, "scene_transition", False):
+            return False
         robot = self.selected_robot
         if robot.control_mode in (ControlMode.REPLAY, ControlMode.REPLAY_SETTLE):
             self.node.get_logger().warn(
@@ -1258,7 +1296,11 @@ class UVMSBackendCore:
             robot.set_control_mode(ControlMode.PLANNER)
             robot.hold_current_state_with_feedback()
 
+            mode_epoch = getattr(robot, '_control_mode_epoch', 0)
             def _start_after_release() -> None:
+                if (robot.control_mode != ControlMode.PLANNER
+                        or getattr(robot, '_control_mode_epoch', 0) != mode_epoch):
+                    return
                 if mission.executing:
                     return
                 if not mission.start():
@@ -1274,6 +1316,7 @@ class UVMSBackendCore:
                 f"Vehicle waypoint mission for {robot.prefix} queued until reset hold is released."
             )
             return True
+        robot.set_control_mode(ControlMode.PLANNER)
         if not mission.start():
             self.node.get_logger().warn(f"No saved vehicle waypoints for {robot.prefix}.")
             return False
@@ -1281,7 +1324,6 @@ class UVMSBackendCore:
         self.node.get_logger().info(
             f"Executing {len(mission.waypoints)} vehicle waypoints for {robot.prefix}."
         )
-        robot.set_control_mode(ControlMode.PLANNER)
         robot.abrupt_planner_stop()
         return self._dispatch_vehicle_waypoint_if_ready(robot, mission)
 
@@ -1296,28 +1338,40 @@ class UVMSBackendCore:
         self.env_aabb_pub.publish(max_marker)
 
     def format_robot_metrics_overlay_text(self) -> str:
-        lines = [
-            'Robot Control Status',
-            '',
-        ]
+        def number(value, precision=3):
+            try:
+                value = float(value)
+            except (TypeError, ValueError):
+                return "unavailable"
+            return f"{value:.{precision}f}" if np.isfinite(value) else "unavailable"
+
+        def total(values, keys):
+            try:
+                numbers = np.asarray([values[key] for key in keys], dtype=float)
+            except (KeyError, TypeError, ValueError):
+                return float('nan')
+            return float(np.sum(numbers)) if np.all(np.isfinite(numbers)) else float('nan')
+
+        lines = ['Robot Control Status', '']
         for index, robot in enumerate(self.robots):
             metrics = robot.get_energy_metrics()
             tracking = robot.get_controller_performance_metrics()
             mission = self.vehicle_waypoint_missions[robot.k_robot]
             state = robot.get_state()
-            ned_vel = np.asarray(state.get("ned_vel", [0.0] * 6), dtype=float).reshape(-1)
-            linear_speed_mps = float(np.linalg.norm(ned_vel[:3])) if ned_vel.size >= 3 else 0.0
-            controller_in_use = robot.controller_name
+            ned_vel = np.asarray(state.get("ned_vel", []), dtype=float).reshape(-1)
+            linear_speed_mps = (float(np.linalg.norm(ned_vel[:3]))
+                                if ned_vel.size >= 3 and np.all(np.isfinite(ned_vel[:3]))
+                                else float('nan'))
             selected = ' *' if robot == self.selected_robot else ''
             hold_state = 'HELD' if robot.sim_reset_hold else 'RELEASED'
-            total_energy = (
-                metrics['vehicle_control_energy_abs'] +
-                metrics['arm_control_energy_abs']
-            )
-            total_power = (
-                metrics['vehicle_control_power_abs'] +
-                metrics['arm_control_power_abs']
-            )
+            total_energy = total(metrics, ('vehicle_control_energy_abs', 'arm_control_energy_abs'))
+            total_power = total(metrics, ('vehicle_control_power_abs', 'arm_control_power_abs'))
+            receive_age = tracking.get('feedback_age_sec', float('nan'))
+            if (tracking.get('feedback_valid') is False or
+                    (tracking.get('active', False) and not tracking.get('valid', False))):
+                # Energy counters and speed can otherwise look current after
+                # the tracking pipeline has rejected stale feedback.
+                total_energy = total_power = linear_speed_mps = float('nan')
             if index > 0:
                 lines.append('-' * 72)
             if mission.executing:
@@ -1329,17 +1383,42 @@ class UVMSBackendCore:
             else:
                 waypoint_info = "WP none"
             lines.append(
-                f"{metrics['prefix']}{selected} | {hold_state} | {controller_in_use} | "
-                f"v {linear_speed_mps:.3f} m/s | payload {metrics['arm_payload_mass']:.3f} kg | "
-                f"g {metrics['arm_gravity']:.3f} m/s^2 | {waypoint_info} | "
-                f"score {tracking.get('tracking_score', 0.0):.3f} "
-                f"(rms {tracking.get('tracking_score_rms', 0.0):.3f}) | "
-                f"nXTE {tracking.get('vehicle_n_cross_track', 0.0):.3f} | "
-                f"nATE {tracking.get('vehicle_n_along_track', 0.0):.3f} | "
-                f"nVel {tracking.get('vehicle_n_linear_velocity', 0.0):.3f} | "
-                f"nAtt {tracking.get('vehicle_n_attitude', 0.0):.3f} | "
-                f"nArm {tracking.get('arm_n_position', 0.0):.3f} | "
-                f"E {total_energy:.2f} J | dE/dt {total_power:.2f} W"
+                f"{metrics.get('prefix', robot.prefix)}{selected} | {hold_state} | {robot.controller_name} | "
+                f"v {number(linear_speed_mps)} m/s | payload {number(metrics.get('arm_payload_mass'))} kg | "
+                f"g {number(metrics.get('arm_gravity'))} m/s² | {waypoint_info}"
+            )
+            if not tracking.get('active', False):
+                lines.append('Tracking: inactive')
+            elif not tracking.get('valid', False):
+                reason = str(tracking.get('status', 'missing valid measurements'))
+                lines.append(f'Tracking: unavailable ({reason})')
+            else:
+                value = lambda key: number(tracking.get(key))
+                lines.append(
+                    f"score {value('tracking_score')} (time RMS {value('tracking_score_rms')}) | "
+                    f"nXTE {value('vehicle_n_cross_track')} | nATE {value('vehicle_n_along_track')} | "
+                    f"nVel {value('vehicle_n_linear_velocity')} | nAtt SO(3)/π {value('vehicle_n_attitude')} | "
+                    f"nArm {value('arm_n_position')}"
+                )
+                if tracking.get('tool_valid', False):
+                    lines.append(
+                        f"Tool reference tracking: position {value('tool_position_error_m')} m "
+                        f"(time RMS {value('tool_position_error_m_rms')}) | "
+                        f"orientation SO(3) {value('tool_attitude_error_rad')} rad "
+                        f"(time RMS {value('tool_attitude_error_rad_rms')})"
+                    )
+                else:
+                    lines.append('Tool reference tracking: unavailable')
+                band_status = 'dwell confirmed' if tracking.get('settled', False) else 'dwell not confirmed'
+                lines.append(
+                    f"Valid duration {value('valid_duration_sec')} s | coverage {value('coverage_fraction')} | "
+                    f"score band: {band_status} ({value('within_tolerance_duration_sec')} / "
+                    f"{value('settling_dwell_sec')} s)"
+                )
+            lines.append(f"Feedback receive age {number(receive_age)} s (not sensor age)")
+            lines.append(
+                f"Absolute mechanical work {number(total_energy, 2)} J | "
+                f"absolute mechanical power {number(total_power, 2)} W (not electrical)"
             )
         return '\n'.join(lines)
 
@@ -1348,15 +1427,18 @@ class UVMSBackendCore:
 
     def publish_robot_metrics_overlay_callback(self) -> None:
         text = self.format_robot_metrics_overlay_text()
-        lines = text.splitlines() or [""]
+        # Explicit wrapping keeps long validity reasons and multi-robot rows
+        # inside the overlay; size height from displayed lines, not robot count.
+        lines = [part for line in text.splitlines()
+                 for part in (textwrap.wrap(line, width=128) or [''])] or ['']
+        text = '\n'.join(lines)
         longest_line = max(len(line) for line in lines)
         msg = OverlayText()
         msg.action = OverlayText.ADD
         msg.text_size = 14.0
         char_width = msg.text_size * 0.92
-        robot_count = sum(1 for line in lines if line.startswith("robot_"))
         msg.width = min(1800, max(900, int(longest_line * char_width) + 96))
-        msg.height = max(356, int(238 + 118 * max(robot_count, 1)))
+        msg.height = max(200, int(len(lines) * msg.text_size * 1.6) + 48)
         msg.horizontal_distance = 28
         msg.vertical_distance = 170
         msg.horizontal_alignment = OverlayText.RIGHT
@@ -1384,6 +1466,24 @@ class UVMSBackendCore:
         for robot in self.robots:
             robot._mocap_pose_cb(msg)
 
+    def task_vehicle_bounds(self):
+        # Keep commanded endpoints inside the tracking allowance. This is a
+        # coordinate-domain allowance only; obstacle clearance is never relaxed.
+        bounds = np.asarray(self.fcl_world.env_xyz_bounds, float).reshape(3, 2).copy()
+        bounds[:, 0] += self.task_boundary_tracking_tolerance
+        bounds[:, 1] -= self.task_boundary_tracking_tolerance
+        return bounds
+
+    def validate_task_vehicle_motion(self, start, goal, robot_prefix):
+        if getattr(self, 'scene_transition', False):
+            raise ValueError('environment transition in progress')
+        if self.fcl_update_rate <= 0 or not self.fcl_world.update_from_tf(self.tf_buffer, rclpy.time.Time()):
+            raise ValueError('collision monitoring/frames unavailable')
+        PlannerWorld(fcl_world=self.fcl_world, dynamic_world=self.dynamic_world,
+                     robot_prefix=robot_prefix).require_clear_segment(
+            start, goal, start_bounds_tolerance=self.task_boundary_tracking_tolerance)
+
+
     def fcl_update_callback(self):
         self.fcl_world.update_from_tf(self.tf_buffer, rclpy.time.Time())
 
@@ -1392,6 +1492,18 @@ class UVMSBackendCore:
             if r.k_robot == robot_k:
                 if getattr(self, "robot_selected", None) is r:
                     return
+                target_names = ('target_vehicle_pose', 'target_arm_base_endeffector_pose',
+                                'target_world_endeffector_pose')
+                previous = self.robot_selected
+                if previous is not None:
+                    self._robot_targets[previous.k_robot] = tuple(
+                        copy.deepcopy(getattr(self, name)) for name in target_names)
+                targets = self._robot_targets.get(r.k_robot)
+                if targets is None:
+                    self.initialise_target_Poses()
+                else:
+                    for name, pose in zip(target_names, targets):
+                        setattr(self, name, copy.deepcopy(pose))
                 self.robot_selected = r
                 self.node.get_logger().info(f"Robot {self.selected_robot.prefix} selected for planning.")
                 self._set_camera_frame_for_robot(self.selected_robot)
@@ -1529,20 +1641,16 @@ class UVMSBackendCore:
         self.tf_broadcaster.sendTransform(endeffector_t)
 
     def vehicle_target_cloud_timer_callback(self):
-        header = Header()
-        header.frame_id = self.vehicle_target_frame
-        # Use the latest target TF; its timer has an independent timestamp.
-        header.stamp = Time().to_msg()
+        # Geometry and its zero timestamp are fixed; the target TF moves it.
+        workspace, vehicle, empty = self._target_cloud_messages
         # RViz retains the last cloud when publication stops. Explicitly clear
         # vehicle-target previews in task mode, including for new subscribers.
-        task_mode = self.selected_robot.task_based_controller
-        empty = np.empty((0, 3), dtype=np.float32)
+        task_mode = (self.selected_robot.task_based_controller
+                     or getattr(self, 'scene_transition', False))
         if self.taskspace_pc_publisher_.get_subscription_count() > 0:
-            self.taskspace_pc_publisher_.publish(pc2.create_cloud_xyz32(
-                header, empty if task_mode else self.workspace_pts))
+            self.taskspace_pc_publisher_.publish(empty if task_mode else workspace)
         if self.rov_pc_publisher_.get_subscription_count() > 0:
-            self.rov_pc_publisher_.publish(pc2.create_cloud_xyz32(
-                header, empty if task_mode else self.rov_ellipsoid_cl_pts))
+            self.rov_pc_publisher_.publish(empty if task_mode else vehicle)
 
     def is_valid_arm_base_task(self, target_arm_base_endeffector_pose: Pose) -> bool:
         pose_v = self.selected_robot.try_transform_pose(
@@ -1599,12 +1707,8 @@ class UVMSBackendCore:
     ) -> bool:
         if not mission.executing:
             return False
-        if robot.control_mode in (ControlMode.REPLAY, ControlMode.REPLAY_SETTLE):
+        if robot.control_mode != ControlMode.PLANNER:
             mission.stop()
-            robot.abrupt_planner_stop()
-            self.node.get_logger().info(
-                f"Waypoint dispatch stopped for {robot.prefix}; CmdReplay is active."
-            )
             return False
         if mission.active_index is not None:
             self.node.get_logger().debug(
@@ -1618,7 +1722,9 @@ class UVMSBackendCore:
                 throttle_duration_sec=1.0,
             )
             return False
-        if robot.planner_action_client.busy:
+        if (robot.planner_action_client.busy
+                    or getattr(robot, "_planning_settle_timer", None) is not None
+                    or getattr(robot, "_motion_calculation", None) is not None):
             self.node.get_logger().info(
                 f"Waypoint dispatch blocked for {robot.prefix}: planner action is still busy.",
                 throttle_duration_sec=1.0,
@@ -1715,20 +1821,14 @@ class UVMSBackendCore:
         return reached, metrics
 
     def vehicle_waypoint_execution_callback(self) -> None:
+        if getattr(self, "scene_transition", False):
+            return
         for robot in self.robots:
             mission = self.vehicle_waypoint_missions[robot.k_robot]
-            if getattr(robot, 'navigation_blocked_goal', None) is not None:
-                if mission.executing:
-                    mission.pause()
-                continue
             if not mission.executing:
                 continue
-            if robot.control_mode in (ControlMode.REPLAY, ControlMode.REPLAY_SETTLE):
+            if robot.control_mode != ControlMode.PLANNER:
                 mission.stop()
-                robot.abrupt_planner_stop()
-                self.node.get_logger().info(
-                    f"Stopped vehicle waypoint mission for {robot.prefix}; CmdReplay is active."
-                )
                 continue
             if robot.sim_reset_hold:
                 mission.stop()
@@ -1751,7 +1851,9 @@ class UVMSBackendCore:
                 speed_tolerance_mps=mission.speed_tolerance_mps,
             )
 
-            if robot.planner_action_client.busy:
+            if (robot.planner_action_client.busy
+                    or getattr(robot, "_planning_settle_timer", None) is not None
+                    or getattr(robot, "_motion_calculation", None) is not None):
                 continue
 
             trajectory = robot.vehicle_cart_traj
@@ -1835,6 +1937,8 @@ class UVMSBackendCore:
         return msg
 
     def plan_and_execute_task_trajectory_wrt_vehicle(self):
+        if getattr(self, "scene_transition", False):
+            return
         if getattr(self.robot_selected, "_arm_feedback_hold", False):
             return
         if self.robot_selected.sim_reset_hold:
@@ -1851,7 +1955,6 @@ class UVMSBackendCore:
             )
             return
         if self.robot_selected.task_based_controller and self.robot_selected.task_pose_in_world:
-            self.robot_selected.enable_planner_output()
             self.robot_selected.solve_inverse_kinematics_wrt_world_frame(self.target_world_endeffector_pose)
             self.node.get_logger().info(f"task trajectory plan & control", throttle_duration_sec=2.0)
             self.node.get_logger().info(f"{self.robot_selected.task_pose_in_world} robot.", throttle_duration_sec=2.0)
